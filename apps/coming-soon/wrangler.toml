@@ -1,0 +1,17 @@
+name = "dispatchos-coming-soon"
+main = "dist/worker.js"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+# KV binding — namespace already exists, ID matches
+[[kv_namespaces]]
+binding = "SUBSCRIBERS"
+id = "35604aaaed394333b7ba4c65a9ce3c48"
+
+# Custom domains — these are managed separately via API
+# (Workers Builds will auto-redeploy on push, but won't change domain bindings)
+
+# Note: ADMIN_TOKEN secret must be set manually via:
+#   wrangler secret put ADMIN_TOKEN
+# or via dashboard: Worker → Settings → Variables and Secrets
+# It's NOT in this file (secrets never go into git).
