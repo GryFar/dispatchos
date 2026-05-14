@@ -3,6 +3,10 @@
 const HTML = __HTML__;
 const CSS = __CSS__;
 const JS = __JS__;
+const PRIVACY = __PRIVACY__;
+const TERMS = __TERMS__;
+const FAVICON = __FAVICON__;
+const OG_B64 = __OG_B64__;
 
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
@@ -12,21 +16,38 @@ const SECURITY_HEADERS = {
 };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+function htmlResp(body, maxAge = 60) {
+  return new Response(body, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': `public, max-age=${maxAge}`, ...SECURITY_HEADERS }});
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
+    const p = url.pathname;
 
-    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-      return new Response(HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=60', ...SECURITY_HEADERS }});
-    }
-    if (req.method === 'GET' && url.pathname === '/styles.css') {
-      return new Response(CSS, { headers: { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'public, max-age=300', ...SECURITY_HEADERS }});
-    }
-    if (req.method === 'GET' && url.pathname === '/app.js') {
-      return new Response(JS, { headers: { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'public, max-age=300', ...SECURITY_HEADERS }});
+    if (req.method === 'GET') {
+      if (p === '/' || p === '/index.html') return htmlResp(HTML, 60);
+      if (p === '/privacy' || p === '/privacy.html') return htmlResp(PRIVACY, 3600);
+      if (p === '/terms' || p === '/terms.html') return htmlResp(TERMS, 3600);
+      if (p === '/styles.css') return new Response(CSS, { headers: { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'public, max-age=300', ...SECURITY_HEADERS }});
+      if (p === '/app.js') return new Response(JS, { headers: { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'public, max-age=300', ...SECURITY_HEADERS }});
+      if (p === '/favicon.svg' || p === '/favicon.ico') return new Response(FAVICON, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400', ...SECURITY_HEADERS }});
+      if (p === '/og.png') return new Response(b64ToBytes(OG_B64), { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400', ...SECURITY_HEADERS }});
+      if (p === '/robots.txt') return new Response('User-agent: *\nAllow: /\nSitemap: https://dispatchos.co/sitemap.xml\n', { headers: { 'content-type': 'text/plain', 'cache-control': 'public, max-age=86400' }});
+      if (p === '/sitemap.xml') {
+        const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://dispatchos.co/</loc><priority>1.0</priority></url>\n  <url><loc>https://dispatchos.co/privacy</loc><priority>0.3</priority></url>\n  <url><loc>https://dispatchos.co/terms</loc><priority>0.3</priority></url>\n</urlset>\n`;
+        return new Response(xml, { headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=86400' }});
+      }
     }
 
-    if (url.pathname === '/api/subscribe' && req.method === 'POST') {
+    if (p === '/api/subscribe' && req.method === 'POST') {
       try {
         const body = await req.json();
         const email = (body.email || '').toString().trim().toLowerCase();
@@ -63,14 +84,14 @@ export default {
       }
     }
 
-    if (url.pathname === '/api/admin/subscribers' && req.method === 'GET') {
+    if (p === '/api/admin/subscribers' && req.method === 'GET') {
       const auth = req.headers.get('authorization');
       if (!env.ADMIN_TOKEN || auth !== 'Bearer ' + env.ADMIN_TOKEN) return jsonResp({ error: 'unauthorized' }, 401);
       const indexRaw = (await env.SUBSCRIBERS.get('_index')) || '[]';
       return new Response(indexRaw, { headers: { 'content-type': 'application/json' }});
     }
 
-    if (url.pathname === '/api/health') return jsonResp({ ok: true, time: new Date().toISOString() });
+    if (p === '/api/health') return jsonResp({ ok: true, time: new Date().toISOString() });
 
     return new Response('Not found', { status: 404 });
   },
