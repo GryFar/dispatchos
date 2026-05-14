@@ -1,0 +1,4 @@
+# Cloudflare Workers Builds
+# Connected: 2026-05-14
+# Triggers on push to main, watch path: apps/coming-soon/**
+# Auto-deploys to dispatchos.co and www.dispatchos.co

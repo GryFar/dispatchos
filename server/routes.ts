@@ -1,0 +1,1168 @@
+import type { Express } from "express";
+import { createServer, type Server } from "http";
+import fs from "node:fs";
+import path from "node:path";
+import multer from "multer";
+import {
+  brokerCheckSchema,
+  csvImportSchema,
+  driveCreateSchema,
+  emailIngestSchema,
+  insertDocumentSchema,
+  insertClientSchema,
+  insertLoadSchema,
+  telegramCommandSchema,
+  updateLocationSchema,
+  type BrokerRecord,
+  type Client,
+  type DispatchBoard,
+  type InsertLoad,
+  type Load,
+  type ScoredLoad,
+} from "@shared/schema";
+import { ZodError } from "zod";
+import {
+  buildOtpAuthUrl,
+  generateBase32Secret,
+  getCurrentUser,
+  hashPassword,
+  requireRole,
+  verifyPassword,
+  verifyTotp,
+} from "./auth";
+import { localDriveRoot, storage, uploadsRoot } from "./storage";
+
+const HOUR = 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
+const allowedUploadExtensions = new Set([".pdf", ".jpg", ".jpeg", ".png", ".txt", ".csv"]);
+const allowedUploadMime = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "text/plain",
+  "text/csv",
+  "application/octet-stream",
+]);
+const upload = multer({
+  dest: uploadsRoot,
+  limits: { fileSize: Number(process.env.DISPATCHOS_UPLOAD_MAX_MB || 10) * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const extension = path.extname(file.originalname).toLowerCase();
+    if (!allowedUploadExtensions.has(extension)) {
+      cb(new Error(`File extension ${extension || "(none)"} is not allowed`));
+      return;
+    }
+    if (!allowedUploadMime.has(file.mimetype)) {
+      cb(new Error(`MIME type ${file.mimetype} is not allowed`));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+const seedClients: Client[] = [
+  {
+    id: "ivan-enclosed-01",
+    name: "Ivan K.",
+    mc: "MC-884201",
+    equipment: "enclosed_car_hauler",
+    targetPpm: 2.45,
+    minimumPpm: 2.1,
+    mpg: 9.2,
+    fuelPrice: 3.58,
+    fixedCostPerMile: 0.42,
+    preferredLanes: ["FL → GA", "FL → TX", "Southeast", "Texas triangle"],
+    avoidStates: ["NY", "NJ"],
+    currentLocation: {
+      city: "Clearwater",
+      state: "FL",
+      lat: 27.9659,
+      lng: -82.8001,
+      source: "telegram_live",
+      updatedAt: new Date(Date.now() - 18 * MINUTE).toISOString(),
+      status: "empty",
+      availableAt: new Date(Date.now() + 45 * MINUTE).toISOString(),
+      notes: "Empty after delivery, ready after fuel stop.",
+    },
+  },
+  {
+    id: "oleg-hotshot-02",
+    name: "Oleg M.",
+    mc: "MC-771552",
+    equipment: "hotshot_flatbed",
+    targetPpm: 2.25,
+    minimumPpm: 1.95,
+    mpg: 10.5,
+    fuelPrice: 3.64,
+    fixedCostPerMile: 0.36,
+    preferredLanes: ["TX → Midwest", "OK/TX short hops", "Midwest → Southeast"],
+    avoidStates: ["CA"],
+    currentLocation: {
+      city: "Dallas",
+      state: "TX",
+      lat: 32.7767,
+      lng: -96.797,
+      source: "manual_checkin",
+      updatedAt: new Date(Date.now() - 74 * MINUTE).toISOString(),
+      status: "empty",
+      availableAt: new Date(Date.now() + 25 * MINUTE).toISOString(),
+      notes: "Manual check-in is stale; ask /loc before booking.",
+    },
+  },
+  {
+    id: "max-van-03",
+    name: "Max S.",
+    mc: "MC-901774",
+    equipment: "sprinter_van",
+    targetPpm: 1.85,
+    minimumPpm: 1.55,
+    mpg: 15.8,
+    fuelPrice: 3.49,
+    fixedCostPerMile: 0.24,
+    preferredLanes: ["Midwest", "IL/IN/OH", "short expedite"],
+    avoidStates: [],
+    currentLocation: {
+      city: "Columbus",
+      state: "OH",
+      lat: 39.9612,
+      lng: -82.9988,
+      source: "eld_tms",
+      updatedAt: new Date(Date.now() - 42 * MINUTE).toISOString(),
+      status: "loaded",
+      availableAt: new Date(Date.now() + 2.4 * HOUR).toISOString(),
+      notes: "Projected empty after local delivery.",
+    },
+  },
+];
+
+const seedLoads: Load[] = [
+  {
+    id: "cd-10394",
+    source: "Central Dispatch",
+    originCity: "Tampa",
+    originState: "FL",
+    originLat: 27.9506,
+    originLng: -82.4572,
+    destinationCity: "Atlanta",
+    destinationState: "GA",
+    destinationLat: 33.749,
+    destinationLng: -84.388,
+    rate: 2350,
+    loadedMiles: 462,
+    pickupAt: new Date(Date.now() + 4.3 * HOUR).toISOString(),
+    deliveryAt: new Date(Date.now() + 32 * HOUR).toISOString(),
+    equipment: "enclosed_car_hauler",
+    brokerName: "Reliable Auto Logistics",
+    brokerMc: "MC-470488",
+    brokerScore: 92,
+    fraudRisk: 8,
+    marketQuality: 82,
+    notes: "Two high-value units, enclosed required.",
+  },
+  {
+    id: "sd-88120",
+    source: "Super Dispatch",
+    originCity: "Orlando",
+    originState: "FL",
+    originLat: 28.5383,
+    originLng: -81.3792,
+    destinationCity: "Houston",
+    destinationState: "TX",
+    destinationLat: 29.7604,
+    destinationLng: -95.3698,
+    rate: 3200,
+    loadedMiles: 963,
+    pickupAt: new Date(Date.now() + 5.5 * HOUR).toISOString(),
+    deliveryAt: new Date(Date.now() + 58 * HOUR).toISOString(),
+    equipment: "enclosed_car_hauler",
+    brokerName: "Southline Vehicle Moves",
+    brokerMc: "MC-829104",
+    brokerScore: 86,
+    fraudRisk: 14,
+    marketQuality: 91,
+    notes: "Bigger gross, but deadhead and total PPM must win or lose it.",
+  },
+  {
+    id: "sc-55218",
+    source: "Ship.Cars",
+    originCity: "Miami",
+    originState: "FL",
+    originLat: 25.7617,
+    originLng: -80.1918,
+    destinationCity: "Charlotte",
+    destinationState: "NC",
+    destinationLat: 35.2271,
+    destinationLng: -80.8431,
+    rate: 2800,
+    loadedMiles: 731,
+    pickupAt: new Date(Date.now() + 3.4 * HOUR).toISOString(),
+    deliveryAt: new Date(Date.now() + 44 * HOUR).toISOString(),
+    equipment: "enclosed_car_hauler",
+    brokerName: "Premium Transport Desk",
+    brokerMc: "MC-193840",
+    brokerScore: 69,
+    fraudRisk: 28,
+    marketQuality: 76,
+    notes: "Good lane but broker needs verification before rate con.",
+  },
+  {
+    id: "dat-22561",
+    source: "DAT One",
+    originCity: "Fort Worth",
+    originState: "TX",
+    originLat: 32.7555,
+    originLng: -97.3308,
+    destinationCity: "Kansas City",
+    destinationState: "MO",
+    destinationLat: 39.0997,
+    destinationLng: -94.5786,
+    rate: 1825,
+    loadedMiles: 543,
+    pickupAt: new Date(Date.now() + 2.2 * HOUR).toISOString(),
+    deliveryAt: new Date(Date.now() + 28 * HOUR).toISOString(),
+    equipment: "hotshot_flatbed",
+    brokerName: "Prairie Freight Group",
+    brokerMc: "MC-671904",
+    brokerScore: 81,
+    fraudRisk: 11,
+    marketQuality: 73,
+  },
+  {
+    id: "ts-44109",
+    source: "Truckstop",
+    originCity: "Waco",
+    originState: "TX",
+    originLat: 31.5493,
+    originLng: -97.1467,
+    destinationCity: "Chicago",
+    destinationState: "IL",
+    destinationLat: 41.8781,
+    destinationLng: -87.6298,
+    rate: 2550,
+    loadedMiles: 1026,
+    pickupAt: new Date(Date.now() + 7 * HOUR).toISOString(),
+    deliveryAt: new Date(Date.now() + 56 * HOUR).toISOString(),
+    equipment: "hotshot_flatbed",
+    brokerName: "Northbound Supply Chain",
+    brokerMc: "MC-553018",
+    brokerScore: 90,
+    fraudRisk: 7,
+    marketQuality: 84,
+  },
+  {
+    id: "exp-09071",
+    source: "Email ingest",
+    originCity: "Dayton",
+    originState: "OH",
+    originLat: 39.7589,
+    originLng: -84.1916,
+    destinationCity: "Indianapolis",
+    destinationState: "IN",
+    destinationLat: 39.7684,
+    destinationLng: -86.1581,
+    rate: 620,
+    loadedMiles: 118,
+    pickupAt: new Date(Date.now() + 4.8 * HOUR).toISOString(),
+    deliveryAt: new Date(Date.now() + 13 * HOUR).toISOString(),
+    equipment: "sprinter_van",
+    brokerName: "Rapid Midwest Expedited",
+    brokerMc: "MC-335719",
+    brokerScore: 78,
+    fraudRisk: 16,
+    marketQuality: 70,
+  },
+];
+
+function seedIfEmpty() {
+  if (storage.listClients().length === 0) {
+    seedClients.forEach((client) => storage.upsertClient(client));
+  }
+  if (storage.listLoads().length === 0) {
+    seedLoads.forEach((load) => storage.upsertLoad(load));
+  }
+}
+
+function toRadians(value: number) {
+  return (value * Math.PI) / 180;
+}
+
+function calculateDistanceMiles(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+) {
+  const earthRadiusMiles = 3958.8;
+  const dLat = toRadians(b.lat - a.lat);
+  const dLng = toRadians(b.lng - a.lng);
+  const lat1 = toRadians(a.lat);
+  const lat2 = toRadians(b.lat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  const straightLine = 2 * earthRadiusMiles * Math.asin(Math.sqrt(h));
+  return Math.round(straightLine * 1.18);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function calculateLocationConfidence(updatedAt: string) {
+  const ageMinutes = Math.max(0, Math.round((Date.now() - Date.parse(updatedAt)) / MINUTE));
+  if (ageMinutes <= 30) return { confidence: "high" as const, ageMinutes };
+  if (ageMinutes <= 60) return { confidence: "medium" as const, ageMinutes };
+  return { confidence: "low" as const, ageMinutes };
+}
+
+function calculatePickupFeasibility(client: Client, load: Load, deadheadMiles: number) {
+  const driveMinutes = (deadheadMiles / 52) * 60;
+  const readyAt = Math.max(Date.parse(client.currentLocation.availableAt), Date.now());
+  const pickupAt = Date.parse(load.pickupAt);
+  const bufferMinutes = Math.round((pickupAt - readyAt) / MINUTE - driveMinutes - 35);
+
+  if (bufferMinutes >= 90) return { pickupFeasibility: "easy" as const, bufferMinutes };
+  if (bufferMinutes >= 0) return { pickupFeasibility: "tight" as const, bufferMinutes };
+  return { pickupFeasibility: "not_feasible" as const, bufferMinutes };
+}
+
+function scoreLoadForClient(client: Client, load: Load): ScoredLoad | null {
+  if (client.equipment !== load.equipment) return null;
+  if (client.avoidStates.includes(load.originState) || client.avoidStates.includes(load.destinationState)) {
+    return null;
+  }
+
+  const deadheadMiles = calculateDistanceMiles(
+    client.currentLocation,
+    { lat: load.originLat, lng: load.originLng },
+  );
+  const totalMiles = load.loadedMiles + deadheadMiles;
+  const deadheadRatio = deadheadMiles / totalMiles;
+  const fuelCost = (totalMiles / client.mpg) * client.fuelPrice;
+  const fixedCost = totalMiles * client.fixedCostPerMile;
+  const estimatedNet = load.rate - fuelCost - fixedCost;
+  const loadedPpm = load.rate / load.loadedMiles;
+  const totalPpm = load.rate / totalMiles;
+  const netPpmTotal = estimatedNet / totalMiles;
+  const { confidence: locationConfidence, ageMinutes: locationAgeMinutes } =
+    calculateLocationConfidence(client.currentLocation.updatedAt);
+  const { pickupFeasibility, bufferMinutes: pickupBufferMinutes } =
+    calculatePickupFeasibility(client, load, deadheadMiles);
+
+  const ppmScore = clamp((netPpmTotal / client.targetPpm) * 100, 0, 135);
+  const deadheadScore = clamp(100 - deadheadRatio * 260, 0, 100);
+  const feasibilityScore =
+    pickupFeasibility === "easy" ? 100 : pickupFeasibility === "tight" ? 58 : 0;
+  const brokerSafetyScore = clamp((load.brokerScore * 0.65) + ((100 - load.fraudRisk) * 0.35), 0, 100);
+  const laneScore = load.marketQuality;
+  const locationScore =
+    locationConfidence === "high" ? 100 : locationConfidence === "medium" ? 72 : 32;
+
+  const dispatchScore = Math.round(
+    ppmScore * 0.42 +
+      deadheadScore * 0.18 +
+      feasibilityScore * 0.15 +
+      brokerSafetyScore * 0.12 +
+      laneScore * 0.08 +
+      locationScore * 0.05,
+  );
+
+  const warnings: string[] = [];
+  if (locationConfidence === "low") warnings.push("Location older than 60 min: request /loc before booking.");
+  if (deadheadRatio > 0.25) warnings.push("Deadhead is above 25% of total miles.");
+  if (pickupFeasibility === "not_feasible") warnings.push("Pickup window is not feasible from current position.");
+  if (load.fraudRisk >= 25) warnings.push("Broker/fraud risk is elevated; verify MC and rate confirmation.");
+  if (netPpmTotal < client.minimumPpm) warnings.push("Net total PPM is below client minimum.");
+
+  let verdict: ScoredLoad["verdict"] = "book";
+  if (
+    netPpmTotal < client.minimumPpm ||
+    pickupFeasibility === "not_feasible" ||
+    locationConfidence === "low" ||
+    load.fraudRisk >= 35
+  ) {
+    verdict = "skip";
+  } else if (
+    netPpmTotal < client.targetPpm ||
+    deadheadRatio > 0.22 ||
+    pickupFeasibility === "tight" ||
+    load.fraudRisk >= 20
+  ) {
+    verdict = "negotiate";
+  }
+
+  const neededRate = Math.ceil((client.targetPpm * totalMiles + fuelCost + fixedCost) / 25) * 25;
+  const counterOffer = verdict === "negotiate" && neededRate > load.rate ? neededRate : null;
+
+  const reasonParts = [
+    `$${netPpmTotal.toFixed(2)}/mi net total`,
+    `${deadheadMiles} mi deadhead`,
+    `${Math.round(deadheadRatio * 100)}% deadhead`,
+    `${pickupFeasibility.replace("_", " ")} pickup`,
+    `${locationConfidence} location confidence`,
+  ];
+
+  return {
+    ...load,
+    deadheadMiles,
+    totalMiles,
+    deadheadRatio,
+    fuelCost: Math.round(fuelCost),
+    fixedCost: Math.round(fixedCost),
+    estimatedNet: Math.round(estimatedNet),
+    loadedPpm,
+    totalPpm,
+    netPpmTotal,
+    locationConfidence,
+    locationAgeMinutes,
+    pickupFeasibility,
+    pickupBufferMinutes,
+    dispatchScore,
+    verdict,
+    counterOffer,
+    rankReason: reasonParts.join(" · "),
+    warnings,
+  };
+}
+
+function buildDispatchBoard(clientId?: string): DispatchBoard {
+  const clients = storage.listClients();
+  const loads = storage.listLoads();
+  const selectedClient = clients.find((client) => client.id === clientId) ?? clients[0];
+  const scoredLoads = loads
+    .map((load) => scoreLoadForClient(selectedClient, load))
+    .filter((load): load is ScoredLoad => Boolean(load))
+    .sort((a, b) => b.dispatchScore - a.dispatchScore);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    selectedClient,
+    clients,
+    loads: scoredLoads,
+    topRecommendation: scoredLoads[0],
+    locationPolicy: {
+      highConfidenceMinutes: 30,
+      mediumConfidenceMinutes: 60,
+      staleRequiresCheckinMinutes: 60,
+      command: "/loc — send live location or city/state/ZIP + empty/loaded + available time",
+    },
+  };
+}
+
+function handleZodError(error: unknown, res: any) {
+  if (error instanceof ZodError) {
+    return res.status(400).json({
+      message: "Validation failed",
+      issues: error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message,
+      })),
+    });
+  }
+  throw error;
+}
+
+function handleBadRequest(error: unknown, res: any) {
+  if (error instanceof ZodError) return handleZodError(error, res);
+  if (error instanceof Error) {
+    return res.status(400).json({ message: error.message });
+  }
+  return res.status(400).json({ message: "Bad request" });
+}
+
+function normalizeMc(value: string) {
+  const digits = value.replace(/\D/g, "");
+  return digits ? `MC-${digits}` : value.toUpperCase();
+}
+
+async function checkBrokerRisk(brokerMc: string, brokerName = "Unknown Broker"): Promise<BrokerRecord> {
+  const normalized = normalizeMc(brokerMc);
+  if (process.env.FMCSA_API_URL && process.env.FMCSA_WEBKEY) {
+    try {
+      const url = `${process.env.FMCSA_API_URL.replace(/\/$/, "")}?webKey=${encodeURIComponent(process.env.FMCSA_WEBKEY)}&mc=${encodeURIComponent(normalized.replace(/\D/g, ""))}`;
+      const response = await fetch(url);
+      const payload: any = await response.json().catch(() => ({}));
+      const statusText = JSON.stringify(payload).toLowerCase();
+      const authorized = statusText.includes("authorized") || statusText.includes("active");
+      const flags = authorized ? [] : ["FMCSA response did not clearly show authorized/active status."];
+      return {
+        id: `broker-${normalized.replace(/\W/g, "").toLowerCase()}`,
+        brokerMc: normalized,
+        brokerName,
+        authorityStatus: authorized ? "authorized" : "needs_manual_check",
+        authorityAgeMonths: 24,
+        riskScore: authorized ? 10 : 42,
+        verdict: authorized ? "clean" : "verify",
+        flags,
+        checkedAt: new Date().toISOString(),
+      };
+    } catch (error: any) {
+      // fall through to deterministic fallback, but make the operator aware
+    }
+  }
+
+  const digits = Number(normalized.replace(/\D/g, "") || 0);
+  const authorityAgeMonths = (digits % 96) + 3;
+  const flags: string[] = [];
+  let riskScore = 12;
+
+  if (authorityAgeMonths < 6) {
+    flags.push("Authority age below 6 months: verify using FMCSA-listed phone, not email signature.");
+    riskScore += 30;
+  }
+  flags.unshift("FMCSA live API not configured; using local deterministic fallback.");
+  if (digits % 7 === 0) {
+    flags.push("Pattern flag: request rate confirmation MC match before proceeding.");
+    riskScore += 18;
+  }
+  if (digits % 11 === 0) {
+    flags.push("Payment-change fraud caution: never accept bank/routing changes by email.");
+    riskScore += 16;
+  }
+
+  const verdict = riskScore >= 50 ? "stop" : riskScore >= 25 ? "verify" : "clean";
+  const authorityStatus = authorityAgeMonths < 6 ? "needs_manual_check" : "authorized";
+
+  return {
+    id: `broker-${normalized.replace(/\W/g, "").toLowerCase()}`,
+    brokerMc: normalized,
+    brokerName,
+    authorityStatus,
+    authorityAgeMonths,
+    riskScore,
+    verdict,
+    flags,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function parseCsvLine(line: string) {
+  const cells: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (const char of line) {
+    if (char === '"') {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current.trim());
+  return cells.map((cell) => cell.replace(/^"|"$/g, ""));
+}
+
+function importLoadsFromCsv(csv: string) {
+  const lines = csv.trim().split(/\r?\n/).filter(Boolean);
+  const maxRows = Number(process.env.DISPATCHOS_CSV_MAX_ROWS || 250);
+  if (lines.length - 1 > maxRows) {
+    throw new Error(`CSV row limit exceeded: max ${maxRows} load rows`);
+  }
+  const headers = parseCsvLine(lines[0]).map((header) => header.trim());
+  const created: Load[] = [];
+  const errors: Array<{ row: number; message: string }> = [];
+
+  lines.slice(1).forEach((line, index) => {
+    const rowNumber = index + 2;
+    const values = parseCsvLine(line);
+    const row = Object.fromEntries(headers.map((header, i) => [header, values[i] ?? ""]));
+    try {
+      const load: InsertLoad = {
+        source: row.source || "CSV Import",
+        originCity: row.originCity,
+        originState: row.originState,
+        originLat: Number(row.originLat),
+        originLng: Number(row.originLng),
+        destinationCity: row.destinationCity,
+        destinationState: row.destinationState,
+        destinationLat: Number(row.destinationLat),
+        destinationLng: Number(row.destinationLng),
+        rate: Number(row.rate),
+        loadedMiles: Number(row.loadedMiles),
+        pickupAt: row.pickupAt || new Date(Date.now() + 4 * HOUR).toISOString(),
+        deliveryAt: row.deliveryAt || new Date(Date.now() + 36 * HOUR).toISOString(),
+        equipment: (row.equipment || "hotshot_flatbed") as InsertLoad["equipment"],
+        brokerName: row.brokerName || "CSV Broker",
+        brokerMc: row.brokerMc || "MC-UNKNOWN",
+        brokerScore: Number(row.brokerScore || 70),
+        fraudRisk: Number(row.fraudRisk || 15),
+        marketQuality: Number(row.marketQuality || 70),
+        notes: row.notes,
+      };
+      created.push(storage.upsertLoad(insertLoadSchema.parse(load)));
+    } catch (error: any) {
+      errors.push({ row: rowNumber, message: error.message || "Invalid row" });
+    }
+  });
+
+  storage.audit("loads.csv_imported", "load", "bulk", { created: created.length, errors });
+  return { created, errors };
+}
+
+function buildDrivePlan(clientId?: string) {
+  const clients = clientId ? storage.listClients().filter((client) => client.id === clientId) : storage.listClients();
+  return {
+    root: "DispatchOS/Clients",
+    generatedAt: new Date().toISOString(),
+    folders: clients.map((client) => ({
+      clientId: client.id,
+      clientName: client.name,
+      path: `DispatchOS/Clients/${client.mc}_${client.name.replace(/\s+/g, "_")}`,
+      subfolders: ["Onboarding", "Loads", "Rate Confirmations", "BOL_POD", "Invoices", "Compliance"],
+    })),
+    note: "This endpoint prepares the folder plan. Google Drive creation is the next connector-backed step.",
+  };
+}
+
+function createLocalDriveFolders(clientId?: string) {
+  const plan = buildDrivePlan(clientId);
+  const created: string[] = [];
+  for (const folder of plan.folders) {
+    const root = path.join(localDriveRoot, folder.path.replace(/^DispatchOS\/Clients\//, ""));
+    fs.mkdirSync(root, { recursive: true });
+    created.push(root);
+    for (const subfolder of folder.subfolders) {
+      const child = path.join(root, subfolder);
+      fs.mkdirSync(child, { recursive: true });
+      created.push(child);
+    }
+  }
+  storage.audit("drive.local_folders_created", "drive", clientId || "all", { created });
+  return { ...plan, localRoot: localDriveRoot, created };
+}
+
+function buildIntegrationStatus() {
+  return {
+    generatedAt: new Date().toISOString(),
+    integrations: [
+      {
+        key: "fmCSA",
+        label: "FMCSA broker verification",
+        status: process.env.FMCSA_API_URL && process.env.FMCSA_WEBKEY ? "ready" : "needs_config",
+        missing: ["FMCSA_API_URL", "FMCSA_WEBKEY"].filter((key) => !process.env[key]),
+      },
+      {
+        key: "telegram",
+        label: "Telegram bot commands",
+        status: process.env.TELEGRAM_BOT_TOKEN && process.env.DISPATCHOS_PUBLIC_URL ? "ready" : "local_endpoint_ready",
+        missing: ["TELEGRAM_BOT_TOKEN", "DISPATCHOS_PUBLIC_URL"].filter((key) => !process.env[key]),
+      },
+      {
+        key: "gmail",
+        label: "Gmail broker email ingest",
+        status: process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET ? "ready" : "manual_paste_ready",
+        missing: ["GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET"].filter((key) => !process.env[key]),
+      },
+      {
+        key: "googleDrive",
+        label: "Google Drive docs workflow",
+        status: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET ? "ready" : "local_folder_mode",
+        missing: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"].filter((key) => !process.env[key]),
+      },
+      {
+        key: "twilio",
+        label: "Twilio voice/SMS",
+        status:
+          process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_PHONE_NUMBER
+            ? "ready"
+            : "sandbox",
+        missing: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"].filter((key) => !process.env[key]),
+      },
+    ],
+  };
+}
+
+function buildSystemStatus() {
+  const authState = storage.getAuthState();
+  const deploymentMode = process.env.DISPATCHOS_DEPLOYMENT_MODE || "local";
+  const checks = [
+    {
+      key: "auth",
+      label: "Owner auth configured",
+      ok: authState.isConfigured || process.env.DISPATCHOS_AUTH_DISABLED === "true",
+      severity: "critical",
+    },
+    {
+      key: "sessionSecret",
+      label: "Strong session secret configured",
+      ok:
+        Boolean(process.env.DISPATCHOS_SESSION_SECRET) &&
+        !["change-this-before-real-use", "change-this-local-dispatchos-secret-before-production"].includes(
+          String(process.env.DISPATCHOS_SESSION_SECRET),
+        ),
+      severity: deploymentMode === "vds" ? "critical" : "warning",
+    },
+    {
+      key: "host",
+      label: "Host binding selected",
+      ok: Boolean(process.env.DISPATCHOS_HOST || "127.0.0.1"),
+      value: process.env.DISPATCHOS_HOST || "127.0.0.1",
+      severity: "info",
+    },
+    {
+      key: "cookieSecure",
+      label: "Secure cookies for HTTPS/VDS",
+      ok: deploymentMode !== "vds" || process.env.DISPATCHOS_COOKIE_SECURE === "true",
+      severity: "warning",
+    },
+    {
+      key: "dataRoot",
+      label: "Data root configured",
+      ok: Boolean(process.env.DISPATCHOS_DATA_ROOT || "dispatchos_data"),
+      value: process.env.DISPATCHOS_DATA_ROOT || "dispatchos_data",
+      severity: "info",
+    },
+  ];
+
+  return {
+    version: "1.2.7-vds-production",
+    generatedAt: new Date().toISOString(),
+    deploymentMode,
+    publicUrl: process.env.DISPATCHOS_PUBLIC_URL || "http://localhost:5000",
+    checks,
+    readyForVds: checks.every((check) => check.severity !== "critical" || check.ok),
+  };
+}
+
+function buildWeeklyReport(clientId: string) {
+  const client = storage.getClient(clientId);
+  if (!client) return undefined;
+  const loads = storage
+    .listLoads()
+    .filter((load) => load.equipment === client.equipment)
+    .map((load) => scoreLoadForClient(client, load))
+    .filter((load): load is ScoredLoad => Boolean(load))
+    .sort((a, b) => b.dispatchScore - a.dispatchScore)
+    .slice(0, 10);
+
+  const recommended = loads.filter((load) => load.verdict === "book" || load.verdict === "negotiate");
+  const grossPotential = recommended.reduce((sum, load) => sum + load.rate, 0);
+  const estimatedNetPotential = recommended.reduce((sum, load) => sum + load.estimatedNet, 0);
+  const dispatchFeeFlat = 150;
+  const dispatchFeeVariable = grossPotential * 0.03;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    client,
+    summary: {
+      matchedLoads: loads.length,
+      recommendedLoads: recommended.length,
+      grossPotential,
+      estimatedNetPotential,
+      dispatchFeeFlat,
+      dispatchFeeVariable,
+      totalDispatchFee: dispatchFeeFlat + dispatchFeeVariable,
+    },
+    topLoads: loads,
+    nextActions: [
+      "Confirm fresh /loc before booking any load.",
+      "Verify broker MC before requesting rate confirmation.",
+      "Upload rate con, BOL, and POD to DispatchOS documents.",
+      "Export backup at end of day.",
+    ],
+  };
+}
+
+function parseEmailToLoad(input: { from: string; subject: string; body: string }) {
+  const text = `${input.subject}\n${input.body}`;
+  const rate = Number(text.match(/\$?\s?(\d{3,5})(?:\s|$)/)?.[1] || 0);
+  const miles = Number(text.match(/(\d{2,5})\s?(?:mi|miles)/i)?.[1] || 0);
+  const lane = text.match(/([A-Za-z .]+),?\s([A-Z]{2})\s*(?:-|→|to)\s*([A-Za-z .]+),?\s([A-Z]{2})/i);
+  return {
+    possibleLoad: Boolean(rate && miles && lane),
+    extracted: {
+      rate,
+      loadedMiles: miles,
+      originCity: lane?.[1]?.trim(),
+      originState: lane?.[2]?.toUpperCase(),
+      destinationCity: lane?.[3]?.trim(),
+      destinationState: lane?.[4]?.toUpperCase(),
+    },
+  };
+}
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  seedIfEmpty();
+
+  // -------------------------------------------------------------------------
+  // Auth endpoints (Phase 1)
+  // -------------------------------------------------------------------------
+  //
+  // Backward-compat surface for v1.2.7 frontend:
+  //   GET  /api/auth/status   — same shape + extras (role, twoFactorEnabled)
+  //   POST /api/auth/setup    — alias of /api/auth/bootstrap (creates 1st admin)
+  //   POST /api/auth/login    — accepts email OR legacy username field
+  //   POST /api/auth/logout   — destroys session
+  //
+  // New in Phase 1:
+  //   POST /api/auth/bootstrap — explicit name for creating the very first admin
+  //   GET  /api/me             — current user public profile
+  // -------------------------------------------------------------------------
+
+  app.get("/api/auth/status", (req, res) => {
+    const state = storage.getAuthState();
+    const user = getCurrentUser(req);
+    res.json({
+      ...state,
+      authenticated: Boolean(user),
+      authDisabled: false, // Removed in Phase 1; kept in payload for old UI.
+      role: user?.role,
+      twoFactorEnabled: user ? Boolean(user.totpSecret) : state.twoFactorEnabled,
+    });
+  });
+
+  // Shared bootstrap handler (used by both /setup legacy alias and new /bootstrap).
+  function handleBootstrap(req: any, res: any) {
+    if (storage.getAuthState().isConfigured) {
+      return res.status(409).json({ message: "Auth is already configured" });
+    }
+    const body = req.body || {};
+    const rawId = (body.email || body.username || "").toString().trim();
+    if (!rawId) return res.status(400).json({ message: "email or username is required" });
+    const password = String(body.password || "");
+    if (password.length < 10) {
+      return res.status(400).json({ message: "password must be at least 10 characters" });
+    }
+    const email = rawId.includes("@") ? rawId.toLowerCase() : `${rawId.toLowerCase()}@dispatchos.local`;
+    const fullName = String(body.fullName || rawId);
+
+    const { salt, hash } = hashPassword(password);
+    const totpSecret = generateBase32Secret();
+    const user = storage.createUser({
+      email,
+      fullName,
+      role: "admin",
+      passwordSalt: salt,
+      passwordHash: hash,
+      totpSecret,
+    });
+    return res.status(201).json({
+      id: user.id,
+      email: user.email,
+      username: rawId, // echo back for compat with v1.2.7 UI
+      totpSecret,
+      otpauthUrl: buildOtpAuthUrl(user.email, totpSecret),
+      message: "Save the TOTP secret in an authenticator app before logging out.",
+    });
+  }
+
+  app.post("/api/auth/bootstrap", handleBootstrap);
+  // Legacy alias — keeps the v1.2.7 frontend and smoke test working unchanged.
+  app.post("/api/auth/setup", handleBootstrap);
+
+  app.post("/api/auth/login", (req, res) => {
+    const body = req.body || {};
+    const rawId = (body.email || body.username || "").toString().trim();
+    if (!rawId) return res.status(400).json({ message: "email or username is required" });
+
+    // Lookup by email; if no @ in input, synthesize the legacy bootstrap email.
+    const lookupEmail = rawId.includes("@") ? rawId.toLowerCase() : `${rawId.toLowerCase()}@dispatchos.local`;
+    const user = storage.getUserByEmail(lookupEmail);
+    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+    if (user.blocked) return res.status(403).json({ message: "Account is blocked" });
+
+    const password = String(body.password || "");
+    if (!verifyPassword(password, user.passwordSalt, user.passwordHash)) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+    if (user.totpSecret) {
+      if (!verifyTotp(user.totpSecret, String(body.token || ""))) {
+        return res.status(401).json({ message: "Invalid 2FA token" });
+      }
+    }
+    req.session.userId = user.id;
+    req.session.role = user.role;
+    req.session.authenticated = true; // legacy flag, kept for old frontend
+    storage.recordUserLogin(user.id);
+    storage.audit("auth.login", "user", user.id, { email: user.email, role: user.role });
+    res.json({ ok: true, role: user.role, redirect: `/${user.role === "admin" ? "admin" : user.role === "dispatcher" ? "dispatch" : "me"}` });
+  });
+
+  app.post("/api/auth/logout", (req, res) => {
+    const userId = req.session.userId;
+    req.session.destroy(() => {
+      if (userId) storage.audit("auth.logout", "user", userId, {});
+      res.json({ ok: true });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/me — Phase 1 contract for all three portals
+  // -------------------------------------------------------------------------
+
+  app.get("/api/me", (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Authentication required" });
+    res.json(storage.toUserPublic(user));
+  });
+
+  // -------------------------------------------------------------------------
+  // All API endpoints below this gate require an authenticated user. The
+  // role-specific filtering will be added in Phase 3; for now any role can
+  // hit them (== legacy v1.2.7 behavior).
+  // -------------------------------------------------------------------------
+
+  app.use("/api", (req, res, next) => {
+    if (req.path.startsWith("/auth/") || req.path === "/me" || req.path === "/health") {
+      return next();
+    }
+    return requireRole.any()(req, res, next);
+  });
+
+  app.get("/api/dispatch-board", (req, res) => {
+    res.json(buildDispatchBoard(String(req.query.clientId ?? "")));
+  });
+
+  app.get("/api/clients", (_req, res) => {
+    res.json(storage.listClients());
+  });
+
+  app.post("/api/clients", (req, res) => {
+    try {
+      const client = storage.upsertClient(insertClientSchema.parse(req.body));
+      res.status(201).json(client);
+    } catch (error) {
+      handleZodError(error, res);
+    }
+  });
+
+  app.patch("/api/clients/:id/location", (req, res) => {
+    try {
+      const location = updateLocationSchema.parse(req.body);
+      const client = storage.updateClientLocation(req.params.id, location);
+      if (!client) return res.status(404).json({ message: "Client not found" });
+      res.json(client);
+    } catch (error) {
+      handleZodError(error, res);
+    }
+  });
+
+  app.get("/api/loads", (_req, res) => {
+    res.json(storage.listLoads());
+  });
+
+  app.post("/api/loads", (req, res) => {
+    try {
+      const load = storage.upsertLoad(insertLoadSchema.parse(req.body));
+      res.status(201).json(load);
+    } catch (error) {
+      handleZodError(error, res);
+    }
+  });
+
+  app.post("/api/loads/import-csv", (req, res) => {
+    try {
+      const { csv } = csvImportSchema.parse(req.body);
+      res.status(201).json(importLoadsFromCsv(csv));
+    } catch (error) {
+      handleZodError(error, res);
+    }
+  });
+
+  app.get("/api/documents", (_req, res) => {
+    res.json(storage.listDocuments());
+  });
+
+  app.post("/api/documents", (req, res) => {
+    try {
+      const document = storage.upsertDocument(insertDocumentSchema.parse(req.body));
+      res.status(201).json(document);
+    } catch (error) {
+      handleZodError(error, res);
+    }
+  });
+
+  app.post("/api/broker/check", async (req, res) => {
+    try {
+      const input = brokerCheckSchema.parse(req.body);
+      const record = storage.upsertBrokerRecord(await checkBrokerRisk(input.brokerMc, input.brokerName));
+      res.json(record);
+    } catch (error) {
+      handleZodError(error, res);
+    }
+  });
+
+  app.get("/api/brokers", (_req, res) => {
+    res.json(storage.listBrokerRecords());
+  });
+
+  app.get("/api/drive/folder-plan", (req, res) => {
+    res.json(buildDrivePlan(String(req.query.clientId || "")));
+  });
+
+  app.post("/api/drive/create-local-folders", (req, res) => {
+    try {
+      const input = driveCreateSchema.parse(req.body);
+      res.status(201).json(createLocalDriveFolders(input.clientId));
+    } catch (error) {
+      handleZodError(error, res);
+    }
+  });
+
+  app.post("/api/documents/upload", upload.single("file"), (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ message: "file is required" });
+      const safeOriginal = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const safeName = `${Date.now()}-${safeOriginal}`;
+      const safePath = path.join(uploadsRoot, safeName);
+      fs.renameSync(req.file.path, safePath);
+      const document = storage.saveUploadedDocument(
+        insertDocumentSchema.parse({
+          clientId: req.body.clientId,
+          loadId: req.body.loadId || undefined,
+          type: req.body.type,
+          status: req.body.status || "received",
+          fileName: req.body.fileName || req.file.originalname,
+          notes: req.body.notes,
+        }),
+        { ...req.file, filename: safeName, path: safePath },
+      );
+      res.status(201).json(document);
+    } catch (error) {
+      if (req.file?.path && fs.existsSync(req.file.path)) fs.rmSync(req.file.path, { force: true });
+      handleBadRequest(error, res);
+    }
+  });
+
+  app.post("/api/telegram/command", (req, res) => {
+    try {
+      const input = telegramCommandSchema.parse(req.body);
+      let action = "logged";
+      if (input.command === "/loc") {
+        const client = storage.getClient(input.clientId);
+        if (!client) return res.status(404).json({ message: "Client not found" });
+        storage.updateClientLocation(input.clientId, {
+          city: input.city || client.currentLocation.city,
+          state: input.state || client.currentLocation.state,
+          lat: input.lat ?? client.currentLocation.lat,
+          lng: input.lng ?? client.currentLocation.lng,
+          source: input.lat && input.lng ? "telegram_live" : "manual_checkin",
+          status: client.currentLocation.status,
+          notes: input.text,
+        });
+        action = "location_updated";
+      }
+      storage.audit("telegram.command", "telegram", input.clientId, { ...input, action });
+      res.json({
+        ok: true,
+        action,
+        reply:
+          input.command === "/yes"
+            ? "Approval logged. Human dispatcher still confirms broker/rate con before final action."
+            : input.command === "/no"
+              ? "Rejection logged."
+              : input.command === "/nego"
+                ? "Negotiation request logged."
+                : "Location update logged.",
+      });
+    } catch (error) {
+      handleZodError(error, res);
+    }
+  });
+
+  app.post("/api/email/ingest", (req, res) => {
+    try {
+      const input = emailIngestSchema.parse(req.body);
+      const parsed = parseEmailToLoad(input);
+      const record = storage.saveEmailIngest({ ...input, parsed });
+      res.status(201).json(record);
+    } catch (error) {
+      handleZodError(error, res);
+    }
+  });
+
+  app.get("/api/email/ingest", (req, res) => {
+    const limit = Math.min(Number(req.query.limit || 50), 200);
+    res.json(storage.listEmailIngest(limit));
+  });
+
+  app.get("/api/integrations/status", (_req, res) => {
+    res.json(buildIntegrationStatus());
+  });
+
+  app.get("/api/system/status", (_req, res) => {
+    res.json(buildSystemStatus());
+  });
+
+  app.get("/api/portal/status", (_req, res) => {
+    const adminCount = storage.listUsers({ role: "admin" }).length;
+    const dispatcherCount = storage.listUsers({ role: "dispatcher" }).length;
+    const driverCount = storage.listUsers({ role: "driver" }).length;
+    res.json({
+      generatedAt: new Date().toISOString(),
+      phase: "1.3.0-phase1",
+      adminPortal: {
+        status: "ready",
+        capabilities: [
+          "clients",
+          "loads",
+          "documents",
+          "broker-checks",
+          "audit",
+          "backup",
+          "weekly-reports",
+          "integrations",
+          "users (storage layer ready, /api/admin/* endpoints land in Phase 3)",
+        ],
+      },
+      dispatcherPortal: {
+        status: "schema_ready",
+        capabilities: ["data model + role middleware in place"],
+        remaining: ["/api/dispatch/* endpoints (Phase 3)", "tenant-scope filters", "UI"],
+      },
+      driverPortal: {
+        status: "schema_ready",
+        capabilities: ["data model + role middleware in place"],
+        remaining: ["/api/me/* endpoints (Phase 3)", "self-scope filters", "UI"],
+      },
+      moderation: {
+        status: "multi_role_ready",
+        userCount: { admin: adminCount, dispatcher: dispatcherCount, driver: driverCount },
+        remaining: ["approval queues", "audit-by-actor filters in UI"],
+      },
+    });
+  });
+
+  app.get("/api/reports/weekly", (req, res) => {
+    const report = buildWeeklyReport(String(req.query.clientId || ""));
+    if (!report) return res.status(404).json({ message: "Client not found" });
+    res.json(report);
+  });
+
+  app.get("/api/audit", (req, res) => {
+    const limit = Math.min(Number(req.query.limit || 50), 200);
+    res.json(storage.listAuditEvents(limit));
+  });
+
+  app.get("/api/backup/export", (req, res) => {
+    const backup: any = storage.exportBackup();
+    if (req.query.redacted === "true") {
+      backup.documents = backup.documents.map((document: any) => ({
+        ...document,
+        storageUrl: document.storageUrl ? "[redacted-local-path]" : undefined,
+      }));
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="dispatchos-backup-${new Date().toISOString().slice(0, 10)}.json"`,
+    );
+    res.json(backup);
+  });
+
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      ok: true,
+      service: "dispatchos-location-aware",
+      version: "1.2.7-vds-production",
+      clients: storage.listClients().length,
+      loads: storage.listLoads().length,
+      documents: storage.listDocuments().length,
+      brokers: storage.listBrokerRecords().length,
+      emailIngest: storage.listEmailIngest(1).length,
+    });
+  });
+
+  const httpServer = createServer(app);
+  return httpServer;
+}

@@ -67,3 +67,6 @@ coverage/
 !docs/**/*.zip
 .tmp/
 tmp/
+
+# Build outputs
+apps/*/dist/
