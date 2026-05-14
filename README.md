@@ -1,74 +1,59 @@
 # DispatchOS
 
-Dispatcher service platform for hot shot and car hauler owner-operators. Florida LLC. Russian-speaking team, US market.
+Dispatcher service platform for hot shot and car hauler owner-operators. Florida LLC. Team in Florida + Odessa + Canada. Native Ukrainian, Russian, English.
 
 ## Status
 
-**Phase 1 — Migration from v1.2.7 → v1.3.0 (multi-role architecture)**
+**Phase 2 — Admin Portal** (in progress, owned by Vlad)
 
-See [`docs/architecture/migration-plan.md`](docs/architecture/migration-plan.md) for the full 6-phase plan by Vlad (12 May 2026).
+See [`docs/architecture/migration-plan.md`](docs/architecture/migration-plan.md) for the 6-phase plan.
 
 ## Repository Layout
 
-This is a **monorepo**. Each portal is a separate frontend; the backend is shared.
+This is a **monolith**. One backend + one frontend, side by side.
 
 ```
 dispatchos/
-├── backend/                  # Node.js / Express / SQLite (Drizzle later → Postgres)
-│   ├── shared/schema.ts      # Source of truth for all types — shared with all frontends
-│   ├── server/               # routes, auth, storage, lib
-│   └── scripts/              # smoke tests, seeds, migrations
+├── package.json        ← monorepo root (or single project)
+├── client/             ← React SPA (admin + future dispatcher/driver/client portals via routing)
+├── server/             ← Node/Express/SQLite backend
+├── shared/             ← shared types (schema.ts is source of truth)
+├── scripts/            ← smoke tests, seeds, migrations
 │
-├── frontend-admin/           # Owner / super admin portal
-├── frontend-dispatcher/      # Internal dispatch team workspace
-├── frontend-driver/          # Minimal driver UI (POD upload, check-ins)
-├── frontend-client/          # Carrier-owner portal (their fleet, loads, billing)
-│
-├── shared/                   # Cross-frontend code: types, API client, design tokens
-│   ├── types/
-│   ├── api-client/
-│   └── design-system/
+├── apps/
+│   └── coming-soon/    ← Cloudflare Worker for dispatchos.co landing (independent, auto-deployed)
 │
 └── docs/
-    ├── api/                  # OpenAPI specs, endpoint references
-    ├── architecture/         # Migration plan, role matrix, ADRs
-    └── runbooks/             # Deploy, backup, incident response
+    ├── api/            ← OpenAPI specs
+    ├── architecture/   ← migration plan, role matrix, ADRs
+    └── runbooks/       ← deploy, backup, incident response
 ```
 
-## Roles & Ownership
+When `dispatcher` and `driver` portals are added (Phase 5), they live as routes inside `client/` (e.g. `client/src/pages/dispatch/*`, `client/src/pages/me/*`), not as separate sub-apps.
 
-| Area | Owner | Status |
-|---|---|---|
-| `backend/` | **Vlad** (Claude) | Phase 1 in progress |
-| `frontend-admin/` | **Vlad** (own Computer) | Started |
-| `frontend-dispatcher/` | **Founder** (Perplexity Computer) | Waiting for backend |
-| `frontend-driver/` | **Founder** (Perplexity Computer) | Waiting for backend |
-| `frontend-client/` | **Second AI** (Claude Design separate chat) | Phase 5 |
-| `shared/design-system/` | **Claude Design** | Phase 2 |
-| `shared/types/` | Synced from `backend/shared/schema.ts` | Auto |
-| `docs/api/` | Vlad writes, others consume | — |
+## Roles
 
-## Quick Start (when backend is uploaded)
+| Area | Owner |
+|---|---|
+| `client/`, `server/`, `shared/` | **Vlad** (Snapakdominator) |
+| `client/src/pages/dispatch/*` (future) | Computer |
+| `client/src/pages/me/*` (future, driver) | Computer |
+| `apps/coming-soon/` | Computer (auto-deploys via CF Workers Builds) |
+| `docs/` | Shared |
 
-```bash
-git clone https://github.com/GryFar/dispatchos.git
-cd dispatchos/backend
-npm install
-cp .env.example .env
-# fill in .env values — see docs/runbooks/env-vars.md
-npm run dev
-```
+## Branches
+
+- `main` — production (PR only)
+- `develop` — integration
+- `phase0-...`, `phase1-...`, `phase2-frontend-admin`, etc. — phase branches
 
 ## Communication
 
-- **Telegram:** `DispatchOSDev` chat (team-only)
-- **Issues:** GitHub Issues with labels `area:backend`, `area:frontend-*`, `phase:1`...`phase:6`
-- **Decisions:** ADRs in `docs/architecture/adr/`
-- **Urgent broken things:** Telegram, then issue
+- Telegram: `DispatchOSDev` chat
+- Computer-bot: `@DispatchOS_Computer_Bot` (tag `Перплексити`)
+- Issues: GitHub Issues with `area:*` and `phase:*` labels
 
-## Security
+## Live
 
-- ⚠️ No secrets in code. Use `.env`, never commit `.env.local`.
-- ⚠️ No production data in repo. Use seed scripts for dev DB.
-- ⚠️ All clients/brokers' PII stays in the running DB only.
-- Main branch is protected. PRs only.
+- Landing: https://dispatchos.co (auto-deployed from `apps/coming-soon/` on push)
+- App: not deployed yet (Phase 4+)
