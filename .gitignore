@@ -1,0 +1,69 @@
+# Dependencies
+node_modules/
+*/node_modules/
+.pnp
+.pnp.js
+.yarn-integrity
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+.vite/
+*.tsbuildinfo
+
+# Environment & secrets — NEVER COMMIT
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production
+.env.production.local
+*.pem
+*.key
+*.crt
+auth_config.json
+sessions/
+session-secret*
+
+# Databases (real data)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+backend/data/
+backend/backups/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Test outputs
+coverage/
+.nyc_output/
+
+# Cache
+.cache/
+.parcel-cache/
+.eslintcache
+
+# Misc
+*.zip
+*.tar.gz
+*.rar
+!docs/**/*.zip
+.tmp/
+tmp/
