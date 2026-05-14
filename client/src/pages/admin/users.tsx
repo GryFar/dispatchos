@@ -1,0 +1,1071 @@
+import { useMemo, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Copy,
+  KeyRound,
+  Lock,
+  Mail,
+  MoreHorizontal,
+  Plus,
+  Search,
+  Send,
+  ShieldOff,
+  ShieldCheck,
+  Trash2,
+  Unlock,
+  Users as UsersIcon,
+} from "lucide-react";
+import type {
+  CreateInviteInput,
+  Invite,
+  UserPublic,
+  UserRole,
+} from "@shared/schema";
+import { apiJson } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { useClipboard } from "@/lib/use-clipboard";
+import { formatDateFull, formatRelativeAgo } from "@/lib/format";
+import { DataTable, type DataTableColumn } from "@/components/dispatch/DataTable";
+import { RoleBadge } from "@/components/dispatch/RoleBadge";
+import { StatusBadge } from "@/components/dispatch/StatusBadge";
+import { EmptyState } from "@/components/dispatch/EmptyState";
+import { EndpointPending, isEndpointMissing } from "@/components/dispatch/EndpointPending";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+type UserListResponse = {
+  items: UserPublic[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  total: number | null;
+};
+
+type InviteListResponse = {
+  items: Invite[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  total: number | null;
+};
+
+/**
+ * Users page — single most important admin screen.
+ *
+ * Two tabs: Users + Invites (active invites that haven't been consumed yet).
+ *
+ * Actions (per user):
+ *   - Reset password → modal w/ temp password + copy button
+ *   - Reset TOTP → modal w/ new QR + secret
+ *   - Block / Unblock
+ *
+ * Top action: Create invite → modal w/ form → success modal w/ code, signup URL, copy.
+ *
+ * All endpoints are Phase 3 (P0/P1 priorities). UI ловит 404 и показывает
+ * <EndpointPending> на месте таблиц. Когда бэкендер выкатит — таблицы оживут.
+ */
+export default function UsersPage() {
+  const [tab, setTab] = useState<"users" | "invites">("users");
+  const [createOpen, setCreateOpen] = useState(false);
+
+  return (
+    <div className="space-y-6">
+      <header className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Admin / Пользователи
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Пользователи</h1>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            Управление admin / диспетчеров / водителей. Создание идёт через invite-коды.
+          </p>
+        </div>
+        <Button onClick={() => setCreateOpen(true)}>
+          <Plus className="h-4 w-4" />
+          Создать invite
+        </Button>
+      </header>
+
+      <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+        <TabsList>
+          <TabsTrigger value="users">Пользователи</TabsTrigger>
+          <TabsTrigger value="invites">Активные invites</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {tab === "users" ? <UsersTab /> : <InvitesTab />}
+
+      <CreateInviteDialog open={createOpen} onOpenChange={setCreateOpen} />
+    </div>
+  );
+}
+
+// ===========================================================================
+// USERS TAB
+// ===========================================================================
+
+function UsersTab() {
+  const [q, setQ] = useState("");
+  const [roleFilter, setRoleFilter] = useState<"all" | UserRole>("all");
+  const [blockedFilter, setBlockedFilter] = useState<"all" | "active" | "blocked">("all");
+
+  const queryUrl = useMemo(() => {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (roleFilter !== "all") params.set("role", roleFilter);
+    if (blockedFilter !== "all") params.set("blocked", blockedFilter === "blocked" ? "true" : "false");
+    params.set("limit", "50");
+    return `/api/admin/users?${params.toString()}`;
+  }, [q, roleFilter, blockedFilter]);
+
+  const { data, isLoading, error } = useQuery<UserListResponse>({
+    queryKey: [queryUrl],
+    queryFn: () => apiJson<UserListResponse>("GET", queryUrl),
+    staleTime: 30_000,
+  });
+
+  if (isEndpointMissing(error)) {
+    return (
+      <EndpointPending
+        endpoint="GET /api/admin/users"
+        description="Реестр пользователей ещё не реализован. Управление user'ами появится после Phase 3 (priority P0)."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative flex-1 sm:max-w-xs">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Поиск по email или ФИО"
+            className="pl-9"
+          />
+        </div>
+        <Select value={roleFilter} onValueChange={(v) => setRoleFilter(v as typeof roleFilter)}>
+          <SelectTrigger className="sm:w-40">
+            <SelectValue placeholder="Все роли" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Все роли</SelectItem>
+            <SelectItem value="admin">Admin</SelectItem>
+            <SelectItem value="dispatcher">Диспетчер</SelectItem>
+            <SelectItem value="driver">Водитель</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={blockedFilter} onValueChange={(v) => setBlockedFilter(v as typeof blockedFilter)}>
+          <SelectTrigger className="sm:w-40">
+            <SelectValue placeholder="Все" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Все статусы</SelectItem>
+            <SelectItem value="active">Активные</SelectItem>
+            <SelectItem value="blocked">Заблокированы</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <UsersTable rows={data?.items ?? []} loading={isLoading} error={error as Error | null} />
+
+      {data && data.total != null && (
+        <p className="text-xs text-muted-foreground">
+          {data.total} пользователей{data.hasMore ? " (показано первые 50)" : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function UsersTable({ rows, loading, error }: { rows: UserPublic[]; loading: boolean; error: Error | null }) {
+  const [resetPwUser, setResetPwUser] = useState<UserPublic | null>(null);
+  const [resetTotpUser, setResetTotpUser] = useState<UserPublic | null>(null);
+
+  const columns: DataTableColumn<UserPublic>[] = [
+    {
+      key: "name",
+      header: "Пользователь",
+      cell: (u) => (
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
+            {u.fullName?.[0]?.toUpperCase() ?? "?"}
+          </span>
+          <div className="min-w-0">
+            <p className="truncate font-medium">{u.fullName}</p>
+            <p className="truncate text-xs text-muted-foreground">{u.email}</p>
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "role",
+      header: "Роль",
+      cell: (u) => <RoleBadge role={u.role} />,
+      width: "140px",
+    },
+    {
+      key: "status",
+      header: "Статус",
+      cell: (u) =>
+        u.blocked ? (
+          <StatusBadge variant="blocked" dot>Заблокирован</StatusBadge>
+        ) : (
+          <StatusBadge variant="active" dot>Активен</StatusBadge>
+        ),
+      width: "150px",
+    },
+    {
+      key: "2fa",
+      header: "2FA",
+      cell: (u) =>
+        u.twoFactorEnabled ? (
+          <span className="inline-flex items-center gap-1 text-xs text-success">
+            <ShieldCheck className="h-3.5 w-3.5" /> Включено
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            <ShieldOff className="h-3.5 w-3.5" /> Выключено
+          </span>
+        ),
+      width: "120px",
+      hideOnMobile: true,
+    },
+    {
+      key: "lastLogin",
+      header: "Последний вход",
+      cell: (u) => (
+        <span
+          className="text-xs text-muted-foreground"
+          title={u.lastLoginAt ? formatDateFull(u.lastLoginAt) : undefined}
+        >
+          {u.lastLoginAt ? formatRelativeAgo(u.lastLoginAt) : "Никогда"}
+        </span>
+      ),
+      width: "140px",
+      hideOnMobile: true,
+    },
+    {
+      key: "actions",
+      header: "",
+      cell: (u) => (
+        <UserActionsMenu
+          user={u}
+          onResetPassword={() => setResetPwUser(u)}
+          onResetTotp={() => setResetTotpUser(u)}
+        />
+      ),
+      width: "60px",
+      align: "right",
+    },
+  ];
+
+  if (error && !isEndpointMissing(error)) {
+    return (
+      <Alert variant="destructive">
+        <AlertDescription>Не удалось загрузить список: {error.message}</AlertDescription>
+      </Alert>
+    );
+  }
+
+  return (
+    <>
+      <DataTable
+        columns={columns}
+        rows={rows}
+        loading={loading}
+        empty={
+          <EmptyState
+            icon={<UsersIcon />}
+            title="Нет пользователей"
+            description="Создайте первый invite — после signup пользователь появится в этом списке."
+          />
+        }
+      />
+
+      {resetPwUser && (
+        <ResetPasswordDialog
+          user={resetPwUser}
+          onClose={() => setResetPwUser(null)}
+        />
+      )}
+      {resetTotpUser && (
+        <ResetTotpDialog
+          user={resetTotpUser}
+          onClose={() => setResetTotpUser(null)}
+        />
+      )}
+    </>
+  );
+}
+
+function UserActionsMenu({
+  user,
+  onResetPassword,
+  onResetTotp,
+}: {
+  user: UserPublic;
+  onResetPassword: () => void;
+  onResetTotp: () => void;
+}) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  const blockMutation = useMutation({
+    mutationFn: () =>
+      apiJson<UserPublic>("PATCH", `/api/admin/users/${user.id}`, { blocked: !user.blocked }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/users"], exact: false });
+      // Also invalidate all user-list queries (with filters).
+      qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/admin/users") });
+      toast({
+        title: user.blocked ? "Разблокирован" : "Заблокирован",
+        description: user.fullName,
+      });
+    },
+    onError: (err: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Ошибка",
+        description: err.message,
+      });
+    },
+  });
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="h-8 w-8">
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-52 shadow-pop">
+        <DropdownMenuItem onClick={onResetPassword}>
+          <KeyRound className="mr-2 h-4 w-4" /> Сбросить пароль
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onResetTotp}>
+          <Lock className="mr-2 h-4 w-4" /> Сбросить 2FA
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        {user.blocked ? (
+          <DropdownMenuItem onClick={() => blockMutation.mutate()}>
+            <Unlock className="mr-2 h-4 w-4" /> Разблокировать
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem
+            onClick={() => blockMutation.mutate()}
+            className="text-destructive focus:text-destructive"
+          >
+            <ShieldOff className="mr-2 h-4 w-4" /> Заблокировать
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// ===========================================================================
+// INVITES TAB
+// ===========================================================================
+
+function InvitesTab() {
+  const [statusFilter, setStatusFilter] = useState<"active" | "expired" | "consumed" | "all">("active");
+
+  const queryUrl = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set("status", statusFilter);
+    params.set("limit", "50");
+    return `/api/admin/invites?${params.toString()}`;
+  }, [statusFilter]);
+
+  const { data, isLoading, error } = useQuery<InviteListResponse>({
+    queryKey: [queryUrl],
+    queryFn: () => apiJson<InviteListResponse>("GET", queryUrl),
+    staleTime: 30_000,
+  });
+
+  if (isEndpointMissing(error)) {
+    return (
+      <EndpointPending
+        endpoint="GET /api/admin/invites"
+        description="Управление invite-кодами будет доступно после Phase 3 (priority P0)."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as typeof statusFilter)}>
+          <SelectTrigger className="sm:w-48">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="active">Активные</SelectItem>
+            <SelectItem value="expired">Истёкшие</SelectItem>
+            <SelectItem value="consumed">Использованные</SelectItem>
+            <SelectItem value="all">Все</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <InvitesTable rows={data?.items ?? []} loading={isLoading} error={error as Error | null} />
+    </div>
+  );
+}
+
+function InvitesTable({ rows, loading, error }: { rows: Invite[]; loading: boolean; error: Error | null }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { copy } = useClipboard();
+
+  const revokeMutation = useMutation({
+    mutationFn: (code: string) => apiJson("DELETE", `/api/admin/invites/${encodeURIComponent(code)}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/admin/invites") });
+      toast({ title: "Invite отозван" });
+    },
+    onError: (err: Error) => {
+      toast({ variant: "destructive", title: "Ошибка", description: err.message });
+    },
+  });
+
+  const columns: DataTableColumn<Invite>[] = [
+    {
+      key: "code",
+      header: "Код",
+      mono: true,
+      cell: (inv) => <span>{inv.code}</span>,
+    },
+    {
+      key: "role",
+      header: "Роль",
+      cell: (inv) => <RoleBadge role={inv.role} />,
+      width: "140px",
+    },
+    {
+      key: "email",
+      header: "Email",
+      cell: (inv) => inv.email ?? <span className="text-muted-foreground">(любой)</span>,
+      hideOnMobile: true,
+    },
+    {
+      key: "expires",
+      header: "Истекает",
+      cell: (inv) => {
+        const now = Date.now();
+        const exp = new Date(inv.expiresAt).getTime();
+        if (inv.consumedAt) {
+          return <StatusBadge variant="default">Использован</StatusBadge>;
+        }
+        if (exp < now) {
+          return <StatusBadge variant="default">Истёк</StatusBadge>;
+        }
+        return (
+          <span className="text-xs text-muted-foreground" title={formatDateFull(inv.expiresAt)}>
+            через {formatRelativeAgo(inv.expiresAt).replace("ago", "").trim() || "—"}
+          </span>
+        );
+      },
+      width: "140px",
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      width: "120px",
+      cell: (inv) => {
+        const isActive = !inv.consumedAt && new Date(inv.expiresAt).getTime() > Date.now();
+        if (!isActive) {
+          return null;
+        }
+        return (
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={async () => {
+                const ok = await copy(inv.code);
+                toast({ title: ok ? "Код скопирован" : "Не удалось скопировать" });
+              }}
+              aria-label="Копировать"
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-destructive hover:text-destructive"
+              onClick={() => revokeMutation.mutate(inv.code)}
+              disabled={revokeMutation.isPending}
+              aria-label="Отозвать"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        );
+      },
+    },
+  ];
+
+  if (error && !isEndpointMissing(error)) {
+    return (
+      <Alert variant="destructive">
+        <AlertDescription>Не удалось загрузить список: {error.message}</AlertDescription>
+      </Alert>
+    );
+  }
+
+  return (
+    <DataTable
+      columns={columns}
+      rows={rows}
+      loading={loading}
+      empty={
+        <EmptyState
+          icon={<Mail />}
+          title="Нет invite-кодов"
+          description="Создайте первый — admin → диспетчер → водитель через invite-flow."
+        />
+      }
+    />
+  );
+}
+
+// ===========================================================================
+// CREATE INVITE DIALOG
+// ===========================================================================
+
+const inviteFormSchema = z.object({
+  role: z.enum(["dispatcher", "driver"]),
+  email: z.string().email("Введите корректный email").optional().or(z.literal("")),
+  ttlHours: z.coerce.number().int().min(1).max(720),
+  linkedClientId: z.string().optional().or(z.literal("")),
+});
+type InviteFormValues = z.infer<typeof inviteFormSchema>;
+
+function CreateInviteDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (b: boolean) => void;
+}) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [success, setSuccess] = useState<(Invite & { signupUrl?: string }) | null>(null);
+
+  const form = useForm<InviteFormValues>({
+    resolver: zodResolver(inviteFormSchema),
+    defaultValues: { role: "dispatcher", email: "", ttlHours: 72, linkedClientId: "" },
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (values: InviteFormValues) => {
+      const body: CreateInviteInput = {
+        role: values.role,
+        email: values.email || undefined,
+        ttlHours: values.ttlHours,
+        linkedClientId: values.linkedClientId || undefined,
+      };
+      return apiJson<Invite & { signupUrl?: string }>("POST", "/api/admin/invites", body);
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/admin/invites") });
+      setSuccess(data);
+    },
+    onError: (err: Error) => {
+      if (isEndpointMissing(err)) {
+        toast({
+          variant: "destructive",
+          title: "Endpoint не реализован",
+          description: "POST /api/admin/invites появится в Phase 3 (P0).",
+        });
+      } else {
+        toast({ variant: "destructive", title: "Ошибка", description: err.message });
+      }
+    },
+  });
+
+  function handleClose() {
+    onOpenChange(false);
+    setTimeout(() => {
+      form.reset();
+      setSuccess(null);
+    }, 200);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(b) => (b ? onOpenChange(true) : handleClose())}>
+      <DialogContent className="sm:max-w-md">
+        {success ? (
+          <InviteSuccessView invite={success} onClose={handleClose} />
+        ) : (
+          <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))}>
+            <DialogHeader>
+              <DialogTitle>Создать invite</DialogTitle>
+              <DialogDescription>
+                Сгенерируется одноразовый код. Передайте его пользователю через Telegram.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="role">Роль</Label>
+                <Select
+                  value={form.watch("role")}
+                  onValueChange={(v) => form.setValue("role", v as "dispatcher" | "driver")}
+                >
+                  <SelectTrigger id="role">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="dispatcher">Диспетчер</SelectItem>
+                    <SelectItem value="driver">Водитель</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="email">Email (опционально)</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="привязать к конкретному email"
+                  {...form.register("email")}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Если задан — invite будет принят только с этого email.
+                </p>
+                {form.formState.errors.email && (
+                  <p className="text-xs text-destructive">{form.formState.errors.email.message}</p>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="ttlHours">Срок действия (часов)</Label>
+                <Input
+                  id="ttlHours"
+                  type="number"
+                  min={1}
+                  max={720}
+                  {...form.register("ttlHours")}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  По умолчанию 72 (3 дня). Максимум 720 (30 дней).
+                </p>
+              </div>
+
+              {form.watch("role") === "driver" && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="linkedClientId">Привязать к клиенту (опционально)</Label>
+                  <Input
+                    id="linkedClientId"
+                    placeholder="cli_..."
+                    {...form.register("linkedClientId")}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Driver увидит только своего клиента.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={handleClose}>
+                Отмена
+              </Button>
+              <Button type="submit" disabled={mutation.isPending}>
+                {mutation.isPending ? "Создание..." : "Создать"}
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function InviteSuccessView({
+  invite,
+  onClose,
+}: {
+  invite: Invite & { signupUrl?: string };
+  onClose: () => void;
+}) {
+  const { copy, copied } = useClipboard();
+  const { copy: copyUrl, copied: copiedUrl } = useClipboard();
+  const url = invite.signupUrl || `${window.location.origin}/#/signup?code=${invite.code}`;
+
+  return (
+    <>
+      <DialogHeader>
+        <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-success/10 text-success">
+          <CheckCircle2 className="h-6 w-6" />
+        </div>
+        <DialogTitle className="text-center">Invite создан</DialogTitle>
+        <DialogDescription className="text-center">
+          Передайте код пользователю. Срок действия — до {formatDateFull(invite.expiresAt)}.
+        </DialogDescription>
+      </DialogHeader>
+
+      <div className="space-y-4 py-4">
+        <div>
+          <Label className="text-xs">Код</Label>
+          <div className="mt-1.5 flex items-center gap-2">
+            <Input readOnly value={invite.code} className="font-mono tracking-wider" />
+            <Button type="button" variant="outline" size="icon" onClick={() => copy(invite.code)}>
+              {copied ? <CheckCircle2 className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          <Label className="text-xs">Ссылка для регистрации</Label>
+          <div className="mt-1.5 flex items-center gap-2">
+            <Input readOnly value={url} className="text-xs" />
+            <Button type="button" variant="outline" size="icon" onClick={() => copyUrl(url)}>
+              {copiedUrl ? <CheckCircle2 className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+            </Button>
+          </div>
+        </div>
+
+        <Alert>
+          <AlertDescription className="text-xs">
+            <strong>Передайте код одним сообщением.</strong> После использования код станет недоступен.
+          </AlertDescription>
+        </Alert>
+      </div>
+
+      <DialogFooter className="gap-2 sm:gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => {
+            const msg = `DispatchOS invite: ${url}`;
+            window.open(`https://t.me/share/url?url=${encodeURIComponent(msg)}`, "_blank");
+          }}
+        >
+          <Send className="h-4 w-4" />
+          В Telegram
+        </Button>
+        <Button type="button" onClick={onClose}>
+          Готово
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+// ===========================================================================
+// RESET PASSWORD DIALOG
+// ===========================================================================
+
+type ResetPasswordResponse = {
+  temporaryPassword: string;
+  userId: string;
+  email: string;
+};
+
+function ResetPasswordDialog({ user, onClose }: { user: UserPublic; onClose: () => void }) {
+  const { toast } = useToast();
+  const { copy, copied } = useClipboard();
+  const [result, setResult] = useState<ResetPasswordResponse | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      apiJson<ResetPasswordResponse>("POST", `/api/admin/users/${user.id}/reset-password`, {}),
+    onSuccess: (data) => setResult(data),
+    onError: (err: Error) => {
+      if (isEndpointMissing(err)) {
+        toast({
+          variant: "destructive",
+          title: "Endpoint не реализован",
+          description: "Появится после Phase 3 (P1).",
+        });
+        onClose();
+      } else {
+        toast({ variant: "destructive", title: "Ошибка", description: err.message });
+      }
+    },
+  });
+
+  return (
+    <Dialog open onOpenChange={(b) => !b && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        {result ? (
+          <>
+            <DialogHeader>
+              <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-warning/10 text-warning">
+                <KeyRound className="h-6 w-6" />
+              </div>
+              <DialogTitle className="text-center">Пароль сброшен</DialogTitle>
+              <DialogDescription className="text-center">
+                Передайте временный пароль пользователю. Он увидит этот пароль только один раз.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4">
+              <div>
+                <Label className="text-xs">Временный пароль для {result.email}</Label>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <Input readOnly value={result.temporaryPassword} className="font-mono" />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => copy(result.temporaryPassword)}
+                  >
+                    {copied ? <CheckCircle2 className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+                  </Button>
+                </div>
+              </div>
+
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription className="text-xs">
+                  Сразу скопируйте и передайте. После закрытия диалога пароль будет недоступен.
+                </AlertDescription>
+              </Alert>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" onClick={onClose}>
+                Я передал пароль
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Сбросить пароль?</DialogTitle>
+              <DialogDescription>
+                Пароль <strong>{user.fullName}</strong> ({user.email}) будет заменён на временный.
+                Текущий пароль перестанет работать.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={onClose}>
+                Отмена
+              </Button>
+              <Button onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+                {mutation.isPending ? "Сброс..." : "Сбросить"}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ===========================================================================
+// RESET TOTP DIALOG
+// ===========================================================================
+
+type ResetTotpResponse =
+  | { userId: string; totpSecret: string; otpauthUrl: string }
+  | { userId: string; totpDisabled: true };
+
+function ResetTotpDialog({ user, onClose }: { user: UserPublic; onClose: () => void }) {
+  const { toast } = useToast();
+  const { copy, copied } = useClipboard();
+  const qc = useQueryClient();
+  const [result, setResult] = useState<ResetTotpResponse | null>(null);
+  const [mode, setMode] = useState<"reset" | "disable">("reset");
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      apiJson<ResetTotpResponse>("POST", `/api/admin/users/${user.id}/reset-totp`, {
+        disable: mode === "disable",
+      }),
+    onSuccess: (data) => {
+      setResult(data);
+      qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/admin/users") });
+    },
+    onError: (err: Error) => {
+      if (isEndpointMissing(err)) {
+        toast({
+          variant: "destructive",
+          title: "Endpoint не реализован",
+          description: "Появится после Phase 3 (P1).",
+        });
+        onClose();
+      } else {
+        toast({ variant: "destructive", title: "Ошибка", description: err.message });
+      }
+    },
+  });
+
+  return (
+    <Dialog open onOpenChange={(b) => !b && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        {result ? (
+          "totpDisabled" in result ? (
+            <>
+              <DialogHeader>
+                <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-warning/10 text-warning">
+                  <ShieldOff className="h-6 w-6" />
+                </div>
+                <DialogTitle className="text-center">2FA отключена</DialogTitle>
+                <DialogDescription className="text-center">
+                  Пользователь {user.fullName} теперь входит только по email + пароль.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button onClick={onClose}>Готово</Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <ResetTotpQRView result={result} user={user} onClose={onClose} copy={copy} copied={copied} />
+          )
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Сбросить 2FA</DialogTitle>
+              <DialogDescription>
+                Замените TOTP-секрет {user.fullName} или отключите 2FA полностью.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-3 py-4">
+              <button
+                type="button"
+                onClick={() => setMode("reset")}
+                className={cn_button(mode === "reset")}
+              >
+                <div className="flex items-start gap-3">
+                  <ShieldCheck className="mt-0.5 h-5 w-5 text-primary" />
+                  <div>
+                    <p className="text-sm font-medium">Перевыпустить</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Новый секрет, новый QR. Пользователь сразу сканирует.
+                    </p>
+                  </div>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("disable")}
+                className={cn_button(mode === "disable")}
+              >
+                <div className="flex items-start gap-3">
+                  <ShieldOff className="mt-0.5 h-5 w-5 text-warning" />
+                  <div>
+                    <p className="text-sm font-medium">Отключить 2FA</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Логин только по паролю. Менее безопасно.
+                    </p>
+                  </div>
+                </div>
+              </button>
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={onClose}>
+                Отмена
+              </Button>
+              <Button onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+                {mutation.isPending ? "Сброс..." : mode === "reset" ? "Перевыпустить" : "Отключить"}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function cn_button(active: boolean) {
+  return [
+    "w-full rounded-lg border p-3 text-left transition-all",
+    active
+      ? "border-primary bg-primary/5 shadow-sm"
+      : "border-border bg-card hover:border-primary/30 hover:bg-muted/40",
+  ].join(" ");
+}
+
+function ResetTotpQRView({
+  result,
+  user,
+  onClose,
+  copy,
+  copied,
+}: {
+  result: { userId: string; totpSecret: string; otpauthUrl: string };
+  user: UserPublic;
+  onClose: () => void;
+  copy: (s: string) => Promise<boolean>;
+  copied: boolean;
+}) {
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=0&data=${encodeURIComponent(result.otpauthUrl)}`;
+
+  return (
+    <>
+      <DialogHeader>
+        <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <ShieldCheck className="h-6 w-6" />
+        </div>
+        <DialogTitle className="text-center">Новая 2FA для {user.fullName}</DialogTitle>
+        <DialogDescription className="text-center">
+          Покажите QR пользователю. После сканирования его старые коды перестанут работать.
+        </DialogDescription>
+      </DialogHeader>
+
+      <div className="space-y-3 py-4">
+        <div className="flex justify-center rounded-md border border-border bg-card p-3">
+          <img src={qrUrl} alt="TOTP QR" className="h-44 w-44" />
+        </div>
+        <div>
+          <Label className="text-xs">Секрет (для ручного ввода)</Label>
+          <div className="mt-1.5 flex items-center gap-2">
+            <Input readOnly value={result.totpSecret} className="font-mono text-xs" />
+            <Button type="button" variant="outline" size="icon" onClick={() => copy(result.totpSecret)}>
+              {copied ? <CheckCircle2 className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+            </Button>
+          </div>
+        </div>
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription className="text-xs">
+            Секрет показывается один раз. После закрытия диалога восстановить нельзя — только снова сбросить.
+          </AlertDescription>
+        </Alert>
+      </div>
+
+      <DialogFooter>
+        <Button onClick={onClose}>Я передал секрет</Button>
+      </DialogFooter>
+    </>
+  );
+}
