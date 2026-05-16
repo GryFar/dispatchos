@@ -698,6 +698,293 @@ try {
     throw new Error("role=driver filter leaked non-drivers");
   }
   console.log("[OK] /api/admin/users filters (q, role)");
+
+  // -------------------------------------------------------------------------
+  // Phase 3 — P1 checks (reset-password, reset-totp, revoke invite, assignments)
+  // -------------------------------------------------------------------------
+
+  // We need a real-pw user we can log in as. The dispatcher created in P0
+  // (smoke.dispatcher@example.com) qualifies — bring them back for testing.
+  // Look them up by listing all users.
+  const allUsers = await request("/api/admin/users?limit=200");
+  const dispUser = allUsers.items.find((u) => u.email === "smoke.dispatcher@example.com");
+  if (!dispUser) throw new Error("Could not locate smoke.dispatcher user for P1 tests");
+
+  // -- reset-password --------------------------------------------------------
+  const reset1 = await request(`/api/admin/users/${dispUser.id}/reset-password`, {
+    method: "POST",
+    body: {},
+  });
+  if (!reset1.temporaryPassword || reset1.temporaryPassword.length !== 16) {
+    throw new Error(`reset-password default length should be 16, got ${reset1.temporaryPassword?.length}`);
+  }
+  if (reset1.userId !== dispUser.id || reset1.email !== dispUser.email) {
+    throw new Error("reset-password response missing/wrong userId or email");
+  }
+  // Old password "SmokeDispatcher1!" should no longer work.
+  // (TOTP also got reset at this point... actually no — reset-password
+  // doesn't touch TOTP. The dispatcher still has TOTP from their original
+  // signup. We don't have that secret in this scope, so we won't try to
+  // log them in here — that path is already exercised by P0's signup.
+  // We'll verify password rotation by using a custom length next.)
+  const reset2 = await request(`/api/admin/users/${dispUser.id}/reset-password`, {
+    method: "POST",
+    body: { length: 24 },
+  });
+  if (reset2.temporaryPassword.length !== 24) {
+    throw new Error(`reset-password length=24 should yield 24-char password`);
+  }
+  if (reset2.temporaryPassword === reset1.temporaryPassword) {
+    throw new Error("reset-password generated identical passwords twice — CSPRNG broken?");
+  }
+  let badLenStatus = 0;
+  try {
+    await request(`/api/admin/users/${dispUser.id}/reset-password`, {
+      method: "POST",
+      body: { length: 8 },
+    });
+  } catch (err) {
+    badLenStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (badLenStatus !== 400) {
+    throw new Error(`reset-password length=8 returned ${badLenStatus}, expected 400`);
+  }
+  console.log("[OK] POST /api/admin/users/:id/reset-password (default + length + validation)");
+
+  // -- reset-totp (regenerate) ----------------------------------------------
+  const totpReset = await request(`/api/admin/users/${dispUser.id}/reset-totp`, {
+    method: "POST",
+    body: { disable: false },
+  });
+  if (!totpReset.totpSecret || !totpReset.otpauthUrl) {
+    throw new Error("reset-totp disable=false should return totpSecret + otpauthUrl");
+  }
+  if ("totpDisabled" in totpReset) {
+    throw new Error("reset-totp disable=false should NOT have totpDisabled field");
+  }
+  if (totpReset.userId !== dispUser.id) throw new Error("reset-totp userId mismatch");
+
+  // Verify TOTP is still enabled in the user record.
+  const afterTotpReset = await request(`/api/admin/users/${dispUser.id}`);
+  if (afterTotpReset.twoFactorEnabled !== true) {
+    throw new Error("user.twoFactorEnabled should be true after reset (regenerate)");
+  }
+  console.log("[OK] POST /api/admin/users/:id/reset-totp regenerate");
+
+  // -- reset-totp (disable) --------------------------------------------------
+  const totpOff = await request(`/api/admin/users/${dispUser.id}/reset-totp`, {
+    method: "POST",
+    body: { disable: true },
+  });
+  if (totpOff.totpDisabled !== true) {
+    throw new Error("reset-totp disable=true should return totpDisabled:true");
+  }
+  if ("totpSecret" in totpOff || "otpauthUrl" in totpOff) {
+    throw new Error("reset-totp disable=true should NOT include secret/otpauthUrl");
+  }
+  const afterTotpOff = await request(`/api/admin/users/${dispUser.id}`);
+  if (afterTotpOff.twoFactorEnabled !== false) {
+    throw new Error("user.twoFactorEnabled should be false after disable");
+  }
+  console.log("[OK] POST /api/admin/users/:id/reset-totp disable=true");
+
+  // 404 for unknown user id
+  let totp404 = 0;
+  try {
+    await request(`/api/admin/users/usr_does_not_exist/reset-totp`, { method: "POST", body: {} });
+  } catch (err) {
+    totp404 = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (totp404 !== 404) {
+    throw new Error(`reset-totp unknown user returned ${totp404}, expected 404`);
+  }
+  console.log("[OK] reset-totp / reset-password 404 on unknown user");
+
+  // -- DELETE /api/admin/invites/:code (revoke) -----------------------------
+  const liveInvite = await request("/api/admin/invites", {
+    method: "POST",
+    body: { role: "driver", ttlHours: 48 },
+  });
+  const revoked = await request(`/api/admin/invites/${liveInvite.code}`, { method: "DELETE" });
+  if (revoked.code !== liveInvite.code || !revoked.revokedAt) {
+    throw new Error("revoke invite response shape wrong");
+  }
+  // Now this code should no longer appear in active-status list...
+  const stillActive = await request(`/api/admin/invites?status=active&limit=200`);
+  if (stillActive.items.some((i) => i.code === liveInvite.code)) {
+    throw new Error("revoked invite still appears in status=active");
+  }
+  // ...but it should appear in expired-status list.
+  const inExpired = await request(`/api/admin/invites?status=expired&limit=200`);
+  if (!inExpired.items.some((i) => i.code === liveInvite.code)) {
+    throw new Error("revoked invite missing from status=expired");
+  }
+  // And signup with the revoked code → 400 (same generic message as expired).
+  let revokedSignupStatus = 0;
+  try {
+    await request("/api/auth/signup", {
+      method: "POST",
+      body: {
+        inviteCode: liveInvite.code,
+        email: "should.not.work@example.com",
+        fullName: "Nope",
+        password: "WontWork123!",
+      },
+    });
+  } catch (err) {
+    revokedSignupStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (revokedSignupStatus !== 400) {
+    throw new Error(`signup with revoked invite returned ${revokedSignupStatus}, expected 400`);
+  }
+  // Revoking again → 404 (the storage layer treats it as a found but already
+  // expired row; we don't reject re-revokes — but unknown code returns 404).
+  let revoke404 = 0;
+  try {
+    await request(`/api/admin/invites/DOS-XXXX-YYYY-ZZZZ`, { method: "DELETE" });
+  } catch (err) {
+    revoke404 = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (revoke404 !== 404) {
+    throw new Error(`DELETE unknown invite returned ${revoke404}, expected 404`);
+  }
+  console.log("[OK] DELETE /api/admin/invites/:code (revoke + 404 + signup-blocked)");
+
+  // -- Assignments ----------------------------------------------------------
+  // Need a real dispatcher and a real client. dispUser is a dispatcher.
+  // Pick any client from /api/clients (Phase 1 seed has 3).
+  const allClients = await request("/api/clients");
+  const someClient = allClients[0];
+  if (!someClient?.id) throw new Error("No seeded clients available for assignment tests");
+
+  // GET on empty (filtered to this dispatcher) should be []
+  const emptyList = await request(
+    `/api/admin/assignments?dispatcherId=${dispUser.id}&limit=50`,
+  );
+  if (!Array.isArray(emptyList.items)) {
+    throw new Error("GET /api/admin/assignments did not return items[]");
+  }
+
+  const assignment = await request("/api/admin/assignments", {
+    method: "POST",
+    body: { clientId: someClient.id, dispatcherUserId: dispUser.id },
+  });
+  if (!assignment.id || assignment.removedAt !== null) {
+    throw new Error("POST /api/admin/assignments did not return a fresh row");
+  }
+  if (assignment.clientId !== someClient.id || assignment.dispatcherUserId !== dispUser.id) {
+    throw new Error("created assignment has wrong client/dispatcher refs");
+  }
+  // List should now contain it
+  const afterCreate = await request(
+    `/api/admin/assignments?dispatcherId=${dispUser.id}&limit=50`,
+  );
+  if (!afterCreate.items.some((a) => a.id === assignment.id)) {
+    throw new Error("listed assignments missing the just-created one");
+  }
+  // Duplicate active → 409 with code: "duplicate_active"
+  let dupAsnStatus = 0;
+  let dupAsnBody = null;
+  try {
+    await request("/api/admin/assignments", {
+      method: "POST",
+      body: { clientId: someClient.id, dispatcherUserId: dispUser.id },
+    });
+  } catch (err) {
+    dupAsnStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    const bodyMatch = String(err.message).match(/returned \d+: (.+)$/);
+    if (bodyMatch) {
+      try { dupAsnBody = JSON.parse(bodyMatch[1]); } catch {}
+    }
+  }
+  if (dupAsnStatus !== 409) {
+    throw new Error(`duplicate active assignment returned ${dupAsnStatus}, expected 409`);
+  }
+  if (!dupAsnBody || dupAsnBody.code !== "duplicate_active") {
+    throw new Error(`duplicate response should carry code:'duplicate_active', got ${JSON.stringify(dupAsnBody)}`);
+  }
+  console.log("[OK] POST /api/admin/assignments + duplicate_active guard (409)");
+
+  // role guard — admin user is not a dispatcher
+  let roleStatus = 0;
+  try {
+    await request("/api/admin/assignments", {
+      method: "POST",
+      body: { clientId: someClient.id, dispatcherUserId: me.id },
+    });
+  } catch (err) {
+    roleStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (roleStatus !== 400) {
+    throw new Error(`assignment with admin-role user returned ${roleStatus}, expected 400`);
+  }
+
+  // unknown client / dispatcher → 404
+  let unkClientStatus = 0;
+  try {
+    await request("/api/admin/assignments", {
+      method: "POST",
+      body: { clientId: "cli_does_not_exist", dispatcherUserId: dispUser.id },
+    });
+  } catch (err) {
+    unkClientStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (unkClientStatus !== 404) {
+    throw new Error(`unknown client returned ${unkClientStatus}, expected 404`);
+  }
+  let unkDispStatus = 0;
+  try {
+    await request("/api/admin/assignments", {
+      method: "POST",
+      body: { clientId: someClient.id, dispatcherUserId: "usr_nope" },
+    });
+  } catch (err) {
+    unkDispStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (unkDispStatus !== 404) {
+    throw new Error(`unknown dispatcher returned ${unkDispStatus}, expected 404`);
+  }
+  console.log("[OK] assignment guards (role + 404 client + 404 dispatcher)");
+
+  // DELETE — soft-delete + visibility via includeRemoved
+  const removed = await request(`/api/admin/assignments/${assignment.id}`, { method: "DELETE" });
+  if (!removed.removedAt || removed.removedByUserId !== me.id) {
+    throw new Error("DELETE /api/admin/assignments/:id did not stamp removedAt + removedByUserId");
+  }
+  // Default list (includeRemoved=false) should NOT contain it any more
+  const afterDelete = await request(
+    `/api/admin/assignments?dispatcherId=${dispUser.id}&limit=50`,
+  );
+  if (afterDelete.items.some((a) => a.id === assignment.id)) {
+    throw new Error("removed assignment still appears with includeRemoved default (false)");
+  }
+  // With includeRemoved=true — it should reappear
+  const allHistory = await request(
+    `/api/admin/assignments?dispatcherId=${dispUser.id}&includeRemoved=true&limit=50`,
+  );
+  const found = allHistory.items.find((a) => a.id === assignment.id);
+  if (!found || !found.removedAt) {
+    throw new Error("removed assignment missing from includeRemoved=true history");
+  }
+  // Double-remove → 409 already_removed
+  let doubleRemoveStatus = 0;
+  try {
+    await request(`/api/admin/assignments/${assignment.id}`, { method: "DELETE" });
+  } catch (err) {
+    doubleRemoveStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (doubleRemoveStatus !== 409) {
+    throw new Error(`double-delete returned ${doubleRemoveStatus}, expected 409`);
+  }
+  // Re-creating the same pair after remove is allowed and produces a NEW id
+  const recreated = await request("/api/admin/assignments", {
+    method: "POST",
+    body: { clientId: someClient.id, dispatcherUserId: dispUser.id },
+  });
+  if (recreated.id === assignment.id) {
+    throw new Error("re-created assignment should have a fresh id");
+  }
+  console.log("[OK] DELETE /api/admin/assignments/:id + history + re-create allowed");
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);

@@ -872,6 +872,140 @@ export const storage = {
     }));
   },
 
+  /**
+   * Phase 3 (P1): fetch a single assignment by id, including the `removedAt`
+   * fields if it has been soft-deleted. Returns undefined when the row does
+   * not exist at all.
+   */
+  getAssignmentById(id: string): Assignment | undefined {
+    const row = sqlite.prepare("SELECT * FROM assignments WHERE id = ?").get(id) as any;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      clientId: row.client_id,
+      dispatcherUserId: row.dispatcher_user_id,
+      createdAt: row.created_at,
+      createdByUserId: row.created_by_user_id,
+      removedAt: row.removed_at ?? undefined,
+      removedByUserId: row.removed_by_user_id ?? undefined,
+    };
+  },
+
+  /**
+   * Phase 3 (P1): find the active (not soft-deleted) assignment row for a
+   * given client/dispatcher pair, if any. Used to enforce the "no duplicate
+   * active" rule in POST /api/admin/assignments.
+   *
+   * NOTE: previously-removed pairs are intentionally NOT a conflict — admins
+   * can re-assign after a remove.
+   */
+  findActiveAssignment(clientId: string, dispatcherUserId: string): Assignment | undefined {
+    const row = sqlite
+      .prepare(
+        "SELECT * FROM assignments WHERE client_id = ? AND dispatcher_user_id = ? AND removed_at IS NULL LIMIT 1",
+      )
+      .get(clientId, dispatcherUserId) as any;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      clientId: row.client_id,
+      dispatcherUserId: row.dispatcher_user_id,
+      createdAt: row.created_at,
+      createdByUserId: row.created_by_user_id,
+    };
+  },
+
+  /**
+   * Phase 3 (P1): soft-delete by id with full return of the updated row.
+   * Returns:
+   *   - { notFound: true }       — no row with this id
+   *   - { alreadyRemoved: true } — removed_at is already set
+   *   - { assignment }           — successfully soft-deleted
+   * Caller is expected to map these to 404/409/200.
+   */
+  removeAssignmentById(id: string, removedByUserId: string):
+    | { assignment: Assignment }
+    | { notFound: true }
+    | { alreadyRemoved: true } {
+    const existing = this.getAssignmentById(id);
+    if (!existing) return { notFound: true };
+    if (existing.removedAt) return { alreadyRemoved: true };
+    const removedAt = now();
+    sqlite
+      .prepare("UPDATE assignments SET removed_at = ?, removed_by_user_id = ? WHERE id = ?")
+      .run(removedAt, removedByUserId, id);
+    this.audit("assignment.removed", "assignment", id, {
+      assignmentId: id,
+      removedByAdminId: removedByUserId,
+    });
+    return {
+      assignment: {
+        ...existing,
+        removedAt,
+        removedByUserId,
+      },
+    };
+  },
+
+  /**
+   * Phase 3 (P1): cursor-paginated assignment list.
+   *
+   * Default behaviour matches spec §3.1: `includeRemoved=false` → only rows
+   * with `removed_at IS NULL` are returned. Set `includeRemoved=true` for
+   * the soft-delete history (used by audit-trail views and future Phase 5
+   * reports — this is a feature, not a leak).
+   */
+  listAssignmentsPaginated(filter: {
+    limit?: number;
+    cursor?: string;
+    dispatcherId?: string;
+    clientId?: string;
+    includeRemoved?: boolean;
+  }): { items: Assignment[]; nextCursor: string | null; total: number } {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+
+    const where: string[] = ["1=1"];
+    const params: any[] = [];
+
+    if (!filter.includeRemoved) {
+      where.push("removed_at IS NULL");
+    }
+    if (filter.dispatcherId) {
+      where.push("dispatcher_user_id = ?");
+      params.push(filter.dispatcherId);
+    }
+    if (filter.clientId) {
+      where.push("client_id = ?");
+      params.push(filter.clientId);
+    }
+
+    const countQuery = `SELECT COUNT(*) as c FROM assignments WHERE ${where.join(" AND ")}`;
+    const total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
+
+    if (filter.cursor) {
+      where.push("created_at < ?");
+      params.push(filter.cursor);
+    }
+
+    const listQuery = `SELECT * FROM assignments WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT ?`;
+    const rows = sqlite.prepare(listQuery).all(...params, limit + 1) as any[];
+
+    const hasMore = rows.length > limit;
+    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+    const items: Assignment[] = pageRows.map((row) => ({
+      id: row.id,
+      clientId: row.client_id,
+      dispatcherUserId: row.dispatcher_user_id,
+      createdAt: row.created_at,
+      createdByUserId: row.created_by_user_id,
+      removedAt: row.removed_at ?? undefined,
+      removedByUserId: row.removed_by_user_id ?? undefined,
+    }));
+    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].created_at : null;
+
+    return { items, nextCursor, total };
+  },
+
   // -------------------------------------------------------------------------
   // Invoices (defined for contract; Phase 3 adds endpoints)
   // -------------------------------------------------------------------------

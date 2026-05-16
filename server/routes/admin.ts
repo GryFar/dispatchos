@@ -25,13 +25,20 @@ import crypto from "node:crypto";
 import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import {
+  createAssignmentSchema,
   createInviteSchema,
   createUserSchema,
   updateUserSchema,
   userRoleSchema,
   type UserPublic,
 } from "@shared/schema";
-import { getCurrentUser, requireRole } from "../auth";
+import {
+  buildOtpAuthUrl,
+  generateBase32Secret,
+  getCurrentUser,
+  hashPassword,
+  requireRole,
+} from "../auth";
 import { storage } from "../storage";
 
 // ---------------------------------------------------------------------------
@@ -125,6 +132,21 @@ function makeSentinelPasswordPair() {
   const salt = `unset-${crypto.randomBytes(8).toString("hex")}`;
   const hash = `unset-${crypto.randomBytes(16).toString("hex")}`;
   return { salt, hash };
+}
+
+/**
+ * Generate a one-time temporary password for admin reset-password flow.
+ * Spec §1.5: default length 16, range 12–32. CSPRNG source, base64url
+ * alphabet trimmed to a configurable size (no padding, no = signs).
+ *
+ * Slicing `randomBytes(N).toString("base64url")` to N gives us roughly
+ * `log2(64) * N = 6N` bits of entropy and a guaranteed N-char string.
+ */
+function generateTemporaryPassword(length = 16): string {
+  if (length < 12 || length > 32) {
+    throw new Error("Temp password length must be between 12 and 32");
+  }
+  return crypto.randomBytes(length).toString("base64url").slice(0, length);
 }
 
 /**
@@ -451,6 +473,329 @@ export function registerAdminRoutes(app: Express): void {
         nextCursor: page.nextCursor,
         hasMore: page.nextCursor !== null,
         total: page.total,
+      });
+    }),
+  );
+
+  // =========================================================================
+  // Phase 3 P1 — reset password / reset TOTP / revoke invite / assignments
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // POST /api/admin/users/:id/reset-password
+  // -------------------------------------------------------------------------
+  //
+  // Spec §1.5. Generates a one-time temp password, writes the new hash to
+  // the users table, returns the plaintext temp password to the admin
+  // *once* in the HTTP response body.
+  //
+  // The temp password is NEVER written to the audit log. The audit event
+  // carries only the actor + target IDs and the explicit
+  // `invalidated_sessions: false` flag so future log readers can see that
+  // pre-existing sessions remained valid.
+  //
+  // UX decision (locked in for P1): pre-existing sessions are NOT
+  // invalidated. A dispatcher who is mid-task does not get kicked when an
+  // admin resets their password — they keep working until natural session
+  // expiry (12h). The new password takes effect on next login. See spec
+  // §1.5 "Phase 3 can NOT invalidate sessions" + Phase 5 TODO below.
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/admin/users/:id/reset-password",
+    admin,
+    ah((req, res) => {
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+
+      // Body is optional: `{}` or `{ length: 16 }`. Validate inline rather
+      // than pulling a one-off Zod schema into shared/schema.ts.
+      const body = (req.body ?? {}) as { length?: unknown };
+      let length = 16;
+      if (body.length !== undefined) {
+        const n = Number(body.length);
+        if (!Number.isInteger(n) || n < 12 || n > 32) {
+          return res.status(400).json({
+            message: "Validation failed",
+            issues: [{ path: ["length"], message: "length must be an integer between 12 and 32" }],
+          });
+        }
+        length = n;
+      }
+
+      const target = storage.getUserById(String(req.params.id));
+      if (!target) return res.status(404).json({ message: "User not found" });
+
+      const temporaryPassword = generateTemporaryPassword(length);
+      const { salt, hash } = hashPassword(temporaryPassword);
+      const updated = storage.updateUser(
+        target.id,
+        { passwordSalt: salt, passwordHash: hash },
+        actor.id,
+      );
+      if (!updated) return res.status(404).json({ message: "User not found" });
+
+      // TODO(phase5): invalidate active sessions on password reset.
+      // For now we record the current behaviour explicitly in the audit
+      // event so it's auditable from the log without code archaeology.
+      storage.audit("user.password_reset", "user", target.id, {
+        targetUserId: target.id,
+        resetByAdminId: actor.id,
+        invalidated_sessions: false,
+        // temporaryPassword intentionally omitted — never log credentials.
+      });
+
+      return res.json({
+        temporaryPassword,
+        userId: target.id,
+        email: target.email,
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/admin/users/:id/reset-totp
+  // -------------------------------------------------------------------------
+  //
+  // Spec §1.6. Two modes selected via `{ disable: boolean }`:
+  //   disable=false (default) — generate a new TOTP secret + otpauthUrl,
+  //                              return them to the admin once for handoff
+  //   disable=true            — clear the TOTP secret entirely
+  //
+  // Response shape is discriminated by the presence of `totpDisabled`,
+  // matching the frontend's `ResetTotpResponse` union in
+  // client/src/pages/admin/users.tsx. NEVER include the secret in audit
+  // payloads — only the binary fact (reset vs disabled).
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/admin/users/:id/reset-totp",
+    admin,
+    ah((req, res) => {
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+
+      const body = (req.body ?? {}) as { disable?: unknown };
+      let disable = false;
+      if (body.disable !== undefined) {
+        if (typeof body.disable !== "boolean") {
+          return res.status(400).json({
+            message: "Validation failed",
+            issues: [{ path: ["disable"], message: "disable must be a boolean" }],
+          });
+        }
+        disable = body.disable;
+      }
+
+      const target = storage.getUserById(String(req.params.id));
+      if (!target) return res.status(404).json({ message: "User not found" });
+
+      if (disable) {
+        const updated = storage.updateUser(target.id, { totpSecret: null }, actor.id);
+        if (!updated) return res.status(404).json({ message: "User not found" });
+        storage.audit("user.totp_disabled", "user", target.id, {
+          targetUserId: target.id,
+          resetByAdminId: actor.id,
+        });
+        return res.json({ userId: target.id, totpDisabled: true });
+      }
+
+      const newSecret = generateBase32Secret();
+      const updated = storage.updateUser(target.id, { totpSecret: newSecret }, actor.id);
+      if (!updated) return res.status(404).json({ message: "User not found" });
+      storage.audit("user.totp_reset", "user", target.id, {
+        targetUserId: target.id,
+        resetByAdminId: actor.id,
+        // secret intentionally omitted.
+      });
+      return res.json({
+        userId: target.id,
+        totpSecret: newSecret,
+        otpauthUrl: buildOtpAuthUrl(target.email, newSecret),
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // DELETE /api/admin/invites/:code — soft-revoke
+  // -------------------------------------------------------------------------
+  //
+  // Spec §2.3. Sets `expiresAt = now()`, which moves the invite into the
+  // "expired" filter bucket on GET /api/admin/invites. The actual code row
+  // stays in the table for audit-trail visibility.
+  //
+  // Already-consumed invites cannot be revoked — they have a corresponding
+  // user record and are immutable from this endpoint (use the user CRUD
+  // endpoints to act on the resulting account).
+  // -------------------------------------------------------------------------
+  app.delete(
+    "/api/admin/invites/:code",
+    admin,
+    ah((req, res) => {
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+
+      const result = storage.revokeInvite(String(req.params.code), actor.id);
+      if ("notFound" in result) {
+        return res.status(404).json({ message: "Invite not found" });
+      }
+      if ("alreadyConsumed" in result) {
+        return res.status(409).json({ message: "Invite already consumed" });
+      }
+      return res.json({ code: result.invite.code, revokedAt: result.revokedAt });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/assignments
+  // -------------------------------------------------------------------------
+  //
+  // Spec §3.1. Default `includeRemoved=false`; pass `?includeRemoved=true`
+  // to see the soft-delete history (used for audit-trail screens and the
+  // upcoming Phase 5 reports — by design, not a leak).
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/admin/assignments",
+    admin,
+    ah((req, res) => {
+      const limitRaw = req.query.limit;
+      const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+      if (limit !== undefined && (!Number.isFinite(limit) || limit < 1 || limit > 200)) {
+        return res.status(400).json({ message: "limit must be an integer between 1 and 200" });
+      }
+      const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+      const dispatcherId =
+        typeof req.query.dispatcherId === "string" ? req.query.dispatcherId : undefined;
+      const clientId =
+        typeof req.query.clientId === "string" ? req.query.clientId : undefined;
+
+      let includeRemoved = false;
+      if (typeof req.query.includeRemoved === "string") {
+        if (req.query.includeRemoved === "true") includeRemoved = true;
+        else if (req.query.includeRemoved === "false") includeRemoved = false;
+        else {
+          return res
+            .status(400)
+            .json({ message: "includeRemoved must be 'true' or 'false'" });
+        }
+      }
+
+      const page = storage.listAssignmentsPaginated({
+        limit,
+        cursor,
+        dispatcherId,
+        clientId,
+        includeRemoved,
+      });
+      return res.json({
+        items: page.items.map((a) => ({
+          id: a.id,
+          clientId: a.clientId,
+          dispatcherUserId: a.dispatcherUserId,
+          createdAt: a.createdAt,
+          createdByUserId: a.createdByUserId,
+          removedAt: a.removedAt ?? null,
+          removedByUserId: a.removedByUserId ?? null,
+        })),
+        nextCursor: page.nextCursor,
+        hasMore: page.nextCursor !== null,
+        total: page.total,
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/admin/assignments
+  // -------------------------------------------------------------------------
+  //
+  // Spec §3.2. Many-to-many: a client can have multiple active dispatcher
+  // assignments (24h rotation). The duplicate guard is scoped to "active"
+  // rows only — admins can re-assign a previously removed pair, and that
+  // creates a fresh assignment with a new id.
+  //
+  // Duplicate response carries `code: "duplicate_active"` so the frontend
+  // can react beyond just showing the message string (see
+  // client/src/pages/admin/assignments.tsx).
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/admin/assignments",
+    admin,
+    ah((req, res) => {
+      const body = createAssignmentSchema.parse(req.body);
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+
+      const client = storage.getClient(body.clientId);
+      if (!client) return res.status(404).json({ message: "Client not found" });
+
+      const dispatcher = storage.getUserById(body.dispatcherUserId);
+      if (!dispatcher) return res.status(404).json({ message: "Dispatcher not found" });
+      if (dispatcher.role !== "dispatcher") {
+        return res.status(400).json({ message: "User is not a dispatcher" });
+      }
+
+      const existingActive = storage.findActiveAssignment(body.clientId, body.dispatcherUserId);
+      if (existingActive) {
+        return res
+          .status(409)
+          .json({ message: "Assignment already exists", code: "duplicate_active" });
+      }
+
+      const created = storage.createAssignment({
+        clientId: body.clientId,
+        dispatcherUserId: body.dispatcherUserId,
+        createdByUserId: actor.id,
+      });
+      // storage.createAssignment already emits a generic "assignment.created"
+      // audit; we add an extra context payload for admin filtering.
+      storage.audit("assignment.created.admin", "assignment", created.id, {
+        assignmentId: created.id,
+        clientId: created.clientId,
+        dispatcherUserId: created.dispatcherUserId,
+        createdByAdminId: actor.id,
+      });
+      return res.status(201).json({
+        id: created.id,
+        clientId: created.clientId,
+        dispatcherUserId: created.dispatcherUserId,
+        createdAt: created.createdAt,
+        createdByUserId: created.createdByUserId,
+        removedAt: null,
+        removedByUserId: null,
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // DELETE /api/admin/assignments/:id — soft-delete
+  // -------------------------------------------------------------------------
+  //
+  // Spec §3.3. Sets `removedAt` + `removedByUserId`. The row stays in the
+  // table; it remains queryable via GET /api/admin/assignments?includeRemoved=true
+  // for audit-trail purposes. Re-creating the same (client, dispatcher) pair
+  // afterwards is allowed and produces a fresh row with a new id.
+  // -------------------------------------------------------------------------
+  app.delete(
+    "/api/admin/assignments/:id",
+    admin,
+    ah((req, res) => {
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+
+      const result = storage.removeAssignmentById(String(req.params.id), actor.id);
+      if ("notFound" in result) {
+        return res.status(404).json({ message: "Assignment not found" });
+      }
+      if ("alreadyRemoved" in result) {
+        return res.status(409).json({ message: "Assignment already removed" });
+      }
+      const a = result.assignment;
+      return res.json({
+        id: a.id,
+        clientId: a.clientId,
+        dispatcherUserId: a.dispatcherUserId,
+        createdAt: a.createdAt,
+        createdByUserId: a.createdByUserId,
+        removedAt: a.removedAt ?? null,
+        removedByUserId: a.removedByUserId ?? null,
       });
     }),
   );
