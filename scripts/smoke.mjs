@@ -985,6 +985,291 @@ try {
     throw new Error("re-created assignment should have a fresh id");
   }
   console.log("[OK] DELETE /api/admin/assignments/:id + history + re-create allowed");
+
+  // -------------------------------------------------------------------------
+  // Phase 3 — P2 checks (billing preview/generate/list/patch + booking link)
+  // -------------------------------------------------------------------------
+
+  // Use one of the seeded clients for billing math.
+  const billingClient = allClients.find((c) => c.id === "ivan-enclosed-01") || allClients[0];
+  const billingClient2 = allClients.find((c) => c.id === "oleg-hotshot-02") || allClients[1];
+
+  // Create three loads tied to that client, all booked in 2026-05-04..05-10
+  const billingWeekStart = "2026-05-04";
+  const billingWeekEnd = "2026-05-10";
+
+  function makeBookableLoad({ rate, bookedAt, clientId, originCity = "Tampa", destinationCity = "Atlanta" }) {
+    return {
+      source: "P2 Smoke",
+      originCity,
+      originState: "FL",
+      originLat: 27.95,
+      originLng: -82.45,
+      destinationCity,
+      destinationState: "GA",
+      destinationLat: 33.75,
+      destinationLng: -84.38,
+      rate,
+      loadedMiles: 460,
+      pickupAt: new Date().toISOString(),
+      deliveryAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      equipment: "enclosed_car_hauler",
+      brokerName: "P2 Smoke Broker",
+      brokerMc: "MC-999000",
+      brokerScore: 80,
+      fraudRisk: 12,
+      marketQuality: 70,
+      clientId,
+      bookedAt,
+    };
+  }
+
+  const ivanLoad1 = await request("/api/loads", {
+    method: "POST",
+    body: makeBookableLoad({ rate: 850, bookedAt: "2026-05-05", clientId: billingClient.id }),
+  });
+  const ivanLoad2 = await request("/api/loads", {
+    method: "POST",
+    body: makeBookableLoad({
+      rate: 1200,
+      bookedAt: "2026-05-09",
+      clientId: billingClient.id,
+      originCity: "Miami",
+      destinationCity: "Charlotte",
+    }),
+  });
+  // Out-of-window load for ivan — should NOT contribute to the invoice
+  await request("/api/loads", {
+    method: "POST",
+    body: makeBookableLoad({ rate: 5000, bookedAt: "2026-04-30", clientId: billingClient.id }),
+  });
+  // Load for a different client — should NOT contribute either
+  await request("/api/loads", {
+    method: "POST",
+    body: makeBookableLoad({ rate: 9999, bookedAt: "2026-05-07", clientId: billingClient2.id }),
+  });
+
+  if (!ivanLoad1.id || !ivanLoad2.id) {
+    throw new Error("Failed to create bookable loads for P2 smoke");
+  }
+  console.log("[OK] POST /api/loads accepts optional clientId + bookedAt");
+
+  // -- preview ---------------------------------------------------------------
+  const preview = await request("/api/admin/billing/preview", {
+    method: "POST",
+    body: { clientId: billingClient.id, weekStart: billingWeekStart, weekEnd: billingWeekEnd },
+  });
+  if (preview.id !== null || preview.status !== null || preview.generatedAt !== null) {
+    throw new Error("billing preview must have id/status/generatedAt = null");
+  }
+  if (preview.grossBooked !== 2050) {
+    throw new Error(`grossBooked should be 2050 (850 + 1200), got ${preview.grossBooked}`);
+  }
+  if (preview.flatFee !== 150) {
+    throw new Error(`flatFee should be 150, got ${preview.flatFee}`);
+  }
+  // 2050 * 0.03 = 61.5 — round-cents must NOT collapse trailing zero
+  if (Math.abs(preview.percentFee - 61.5) > 0.001) {
+    throw new Error(`percentFee should be 61.5 (2050 * 0.03), got ${preview.percentFee}`);
+  }
+  if (Math.abs(preview.totalDue - 211.5) > 0.001) {
+    throw new Error(`totalDue should be 211.5 (150 + 61.5), got ${preview.totalDue}`);
+  }
+  if (preview.breakdown.loadCount !== 2) {
+    throw new Error(`breakdown.loadCount should be 2, got ${preview.breakdown.loadCount}`);
+  }
+  if (preview.breakdown.loads.length !== 2) {
+    throw new Error("breakdown.loads length mismatch");
+  }
+  if (!preview.breakdown.loads.every((l) => l.loadId && l.originCity && l.destinationCity)) {
+    throw new Error("breakdown.loads missing required fields");
+  }
+  console.log("[OK] POST /api/admin/billing/preview (math + breakdown + nulls)");
+
+  // Preview for client with no bookings → flat only
+  const emptyPreview = await request("/api/admin/billing/preview", {
+    method: "POST",
+    body: { clientId: "max-van-03", weekStart: billingWeekStart, weekEnd: billingWeekEnd },
+  });
+  if (emptyPreview.grossBooked !== 0 || emptyPreview.percentFee !== 0 || emptyPreview.totalDue !== 150) {
+    throw new Error(
+      `empty preview should be grossBooked=0, percentFee=0, totalDue=150; got ${JSON.stringify({
+        g: emptyPreview.grossBooked,
+        p: emptyPreview.percentFee,
+        t: emptyPreview.totalDue,
+      })}`,
+    );
+  }
+  if (emptyPreview.breakdown.loadCount !== 0) {
+    throw new Error("empty preview should have loadCount=0");
+  }
+  console.log("[OK] preview with no bookings returns flat-fee only");
+
+  // Validation paths
+  let prev404 = 0;
+  try {
+    await request("/api/admin/billing/preview", {
+      method: "POST",
+      body: { clientId: "cli_does_not_exist", weekStart: billingWeekStart, weekEnd: billingWeekEnd },
+    });
+  } catch (err) {
+    prev404 = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (prev404 !== 404) throw new Error(`preview unknown client returned ${prev404}, expected 404`);
+
+  let prevBadDate = 0;
+  try {
+    await request("/api/admin/billing/preview", {
+      method: "POST",
+      body: { clientId: billingClient.id, weekStart: "not-a-date", weekEnd: billingWeekEnd },
+    });
+  } catch (err) {
+    prevBadDate = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (prevBadDate !== 400) throw new Error(`preview bad date returned ${prevBadDate}, expected 400`);
+
+  let prevBadRange = 0;
+  try {
+    await request("/api/admin/billing/preview", {
+      method: "POST",
+      body: { clientId: billingClient.id, weekStart: "2026-05-10", weekEnd: "2026-05-04" },
+    });
+  } catch (err) {
+    prevBadRange = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (prevBadRange !== 400) throw new Error(`preview reversed range returned ${prevBadRange}, expected 400`);
+  console.log("[OK] preview validation (404 unknown / 400 bad date / 400 reversed range)");
+
+  // -- generate --------------------------------------------------------------
+  const invoiceDraft = await request("/api/admin/billing/generate", {
+    method: "POST",
+    body: { clientId: billingClient.id, weekStart: billingWeekStart, weekEnd: billingWeekEnd },
+  });
+  if (!invoiceDraft.id || invoiceDraft.status !== "draft" || !invoiceDraft.generatedAt) {
+    throw new Error("generate must return persisted invoice with id + status=draft + generatedAt");
+  }
+  if (Math.abs(invoiceDraft.totalDue - 211.5) > 0.001) {
+    throw new Error(`generated totalDue should be 211.5, got ${invoiceDraft.totalDue}`);
+  }
+  // Duplicate generate for same (client, weekStart) → 409 with existingInvoiceId
+  let dupGenStatus = 0;
+  let dupGenBody = null;
+  try {
+    await request("/api/admin/billing/generate", {
+      method: "POST",
+      body: { clientId: billingClient.id, weekStart: billingWeekStart, weekEnd: billingWeekEnd },
+    });
+  } catch (err) {
+    dupGenStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    const bm = String(err.message).match(/returned \d+: (.+)$/);
+    if (bm) { try { dupGenBody = JSON.parse(bm[1]); } catch {} }
+  }
+  if (dupGenStatus !== 409) throw new Error(`duplicate generate returned ${dupGenStatus}, expected 409`);
+  if (!dupGenBody || dupGenBody.existingInvoiceId !== invoiceDraft.id) {
+    throw new Error(`duplicate generate should carry existingInvoiceId, got ${JSON.stringify(dupGenBody)}`);
+  }
+  console.log("[OK] POST /api/admin/billing/generate (persist + 409 dup with existingInvoiceId)");
+
+  // generate with status="sent" stamps sentAt
+  const invoiceSent = await request("/api/admin/billing/generate", {
+    method: "POST",
+    body: {
+      clientId: billingClient2.id,
+      weekStart: billingWeekStart,
+      weekEnd: billingWeekEnd,
+      status: "sent",
+    },
+  });
+  if (invoiceSent.status !== "sent" || !invoiceSent.sentAt) {
+    throw new Error(`generate status=sent should stamp sentAt; got ${JSON.stringify(invoiceSent)}`);
+  }
+  console.log("[OK] generate status='sent' stamps sentAt at creation");
+
+  // -- list ------------------------------------------------------------------
+  const allInvoices = await request("/api/admin/billing/invoices?limit=50");
+  if (!Array.isArray(allInvoices.items) || allInvoices.items.length < 2) {
+    throw new Error("invoice list should have at least 2 items");
+  }
+  // Filter by client
+  const byClient = await request(`/api/admin/billing/invoices?clientId=${billingClient.id}&limit=50`);
+  if (!byClient.items.every((inv) => inv.clientId === billingClient.id)) {
+    throw new Error("clientId filter leaked other clients");
+  }
+  if (!byClient.items.some((inv) => inv.id === invoiceDraft.id)) {
+    throw new Error("clientId filter dropped our draft invoice");
+  }
+  // Filter by status
+  const sentOnly = await request("/api/admin/billing/invoices?status=sent&limit=50");
+  if (!sentOnly.items.every((inv) => inv.status === "sent")) {
+    throw new Error("status=sent filter leaked other statuses");
+  }
+  if (!sentOnly.items.some((inv) => inv.id === invoiceSent.id)) {
+    throw new Error("status=sent filter dropped our sent invoice");
+  }
+  console.log("[OK] GET /api/admin/billing/invoices (list + clientId + status filters)");
+
+  // -- PATCH transitions -----------------------------------------------------
+  // draft → sent
+  const toSent = await request(`/api/admin/billing/invoices/${invoiceDraft.id}`, {
+    method: "PATCH",
+    body: { status: "sent" },
+  });
+  if (toSent.status !== "sent" || !toSent.sentAt) {
+    throw new Error("PATCH draft→sent did not stamp sentAt");
+  }
+  // sent → paid
+  const toPaid = await request(`/api/admin/billing/invoices/${invoiceDraft.id}`, {
+    method: "PATCH",
+    body: { status: "paid" },
+  });
+  if (toPaid.status !== "paid" || !toPaid.paidAt) {
+    throw new Error("PATCH sent→paid did not stamp paidAt");
+  }
+  // paid → void: forbidden (paid is immutable)
+  let pVStatus = 0;
+  let pVBody = null;
+  try {
+    await request(`/api/admin/billing/invoices/${invoiceDraft.id}`, {
+      method: "PATCH",
+      body: { status: "void" },
+    });
+  } catch (err) {
+    pVStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    const bm = String(err.message).match(/returned \d+: (.+)$/);
+    if (bm) { try { pVBody = JSON.parse(bm[1]); } catch {} }
+  }
+  if (pVStatus !== 409) throw new Error(`paid→void returned ${pVStatus}, expected 409`);
+  if (!pVBody || pVBody.from !== "paid" || pVBody.to !== "void") {
+    throw new Error(`invalid transition should carry from/to, got ${JSON.stringify(pVBody)}`);
+  }
+  // Notes-only update is allowed even on paid (immutable applies to status)
+  const noted = await request(`/api/admin/billing/invoices/${invoiceDraft.id}`, {
+    method: "PATCH",
+    body: { notes: "Paid via Telegram by Ivan" },
+  });
+  if (noted.notes !== "Paid via Telegram by Ivan") {
+    throw new Error("PATCH notes did not persist");
+  }
+  // Unknown id → 404
+  let patch404 = 0;
+  try {
+    await request(`/api/admin/billing/invoices/inv-nope`, { method: "PATCH", body: { status: "sent" } });
+  } catch (err) {
+    patch404 = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (patch404 !== 404) throw new Error(`PATCH unknown id returned ${patch404}, expected 404`);
+  // Bad status → 400
+  let patchBad = 0;
+  try {
+    await request(`/api/admin/billing/invoices/${invoiceSent.id}`, {
+      method: "PATCH",
+      body: { status: "garbage" },
+    });
+  } catch (err) {
+    patchBad = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (patchBad !== 400) throw new Error(`PATCH bad status returned ${patchBad}, expected 400`);
+  console.log("[OK] PATCH /api/admin/billing/invoices/:id transitions + notes + 404 + 400");
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);

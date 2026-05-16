@@ -608,3 +608,47 @@ export const signupResponseSchema = z.object({
   redirect: z.string(),
 });
 export type SignupResponse = z.infer<typeof signupResponseSchema>;
+
+// ===========================================================================
+// PHASE 3 P2 ADDITIONS — load <-> client booking link
+// ===========================================================================
+//
+// Billing needs to know "which loads were booked for which client during which
+// week" (see admin-api-spec.md §4.1). Phase 1 loadSchema has neither field, so
+// Phase 3 extends it with two OPTIONAL columns:
+//
+//   clientId  — string, the booking owner. Set by dispatcher (Phase 4) or the
+//               admin via the future POST /api/loads/:id/book hook.
+//   bookedAt  — "YYYY-MM-DD" date-only string. We intentionally drop the
+//               clock + timezone to avoid coordination pain between admins in
+//               FL, devs in Odessa, Canada, etc. If a per-second timestamp is
+//               ever needed, add a second `bookedAtTs` field — don't repurpose
+//               this one.
+//
+// Storage keeps two copies: the JSON payload (source of truth, backward-compat
+// with v1.2.7 listLoads) AND dedicated SQLite columns + index, so billing can
+// run an indexed SQL query rather than a full table scan.
+// ---------------------------------------------------------------------------
+
+/** YYYY-MM-DD validator. Reused for bookedAt and for weekStart/weekEnd. */
+export const dateOnlySchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD");
+
+/**
+ * Optional billing-link fields, additively applied to loadSchema / insertLoadSchema.
+ * NOT included in the original loadSchema definition (Phase 1 contract) so that
+ * existing v1.2.7 callers and seeds continue to validate.
+ */
+export const loadBookingFieldsSchema = z.object({
+  clientId: z.string().optional(),
+  bookedAt: dateOnlySchema.optional(),
+});
+
+/** loadSchema extended with the optional booking-link fields. */
+export const loadWithBookingSchema = loadSchema.merge(loadBookingFieldsSchema);
+export type LoadWithBooking = z.infer<typeof loadWithBookingSchema>;
+
+/** insertLoadSchema extended likewise. POST /api/loads accepts the same body. */
+export const insertLoadWithBookingSchema = insertLoadSchema.merge(loadBookingFieldsSchema);
+export type InsertLoadWithBooking = z.infer<typeof insertLoadWithBookingSchema>;

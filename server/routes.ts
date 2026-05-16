@@ -11,6 +11,7 @@ import {
   insertDocumentSchema,
   insertClientSchema,
   insertLoadSchema,
+  insertLoadWithBookingSchema,
   signupSchema,
   telegramCommandSchema,
   updateLocationSchema,
@@ -1035,7 +1036,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/loads", (req, res) => {
     try {
-      const load = storage.upsertLoad(insertLoadSchema.parse(req.body));
+      // Phase 3 P2: accept optional clientId/bookedAt for billing linkage.
+      // Pre-Phase-3 callers (v1.2.7 frontend, Phase 1 smoke) keep working —
+      // those fields are optional, validation is strict-superset.
+      const load = storage.upsertLoad(insertLoadWithBookingSchema.parse(req.body));
       res.status(201).json(load);
     } catch (error) {
       handleZodError(error, res);

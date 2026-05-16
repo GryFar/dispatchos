@@ -28,6 +28,9 @@ import {
   createAssignmentSchema,
   createInviteSchema,
   createUserSchema,
+  dateOnlySchema,
+  generateInvoiceSchema,
+  invoiceStatusSchema,
   updateUserSchema,
   userRoleSchema,
   type UserPublic,
@@ -40,6 +43,7 @@ import {
   requireRole,
 } from "../auth";
 import { storage } from "../storage";
+import { computeInvoiceForWeek } from "../lib/billing";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -797,6 +801,242 @@ export function registerAdminRoutes(app: Express): void {
         removedAt: a.removedAt ?? null,
         removedByUserId: a.removedByUserId ?? null,
       });
+    }),
+  );
+
+  // =========================================================================
+  // Phase 3 P2 — billing (preview, generate, list, patch)
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // POST /api/admin/billing/preview
+  // -------------------------------------------------------------------------
+  //
+  // Spec §4.1. Computes the invoice using the shared billing.ts module but
+  // does NOT persist. Response includes a `breakdown.loads` array of each
+  // contributing load — the UI renders this as a table so the admin can sanity-
+  // check what's being charged for.
+  //
+  // weekStart/weekEnd are required date-only strings (YYYY-MM-DD). Inclusive
+  // on both ends. Anything timezone-related is intentionally out of scope —
+  // see the rationale in shared/schema.ts above `dateOnlySchema`.
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/admin/billing/preview",
+    admin,
+    ah((req, res) => {
+      const body = generateInvoiceSchema.parse(req.body);
+
+      // Stricter validation: date format + ordering. Zod's generateInvoiceSchema
+      // only requires non-empty strings; bill math relies on dates being
+      // sortable lexicographically, which only works for the YYYY-MM-DD shape.
+      const wsCheck = dateOnlySchema.safeParse(body.weekStart);
+      const weCheck = dateOnlySchema.safeParse(body.weekEnd);
+      if (!wsCheck.success || !weCheck.success) {
+        return res.status(400).json({
+          message: "weekStart and weekEnd must be YYYY-MM-DD date strings",
+        });
+      }
+      if (body.weekStart > body.weekEnd) {
+        return res.status(400).json({ message: "weekStart must be <= weekEnd" });
+      }
+
+      const client = storage.getClient(body.clientId);
+      if (!client) return res.status(404).json({ message: "Client not found" });
+
+      const calc = computeInvoiceForWeek(body.clientId, body.weekStart, body.weekEnd);
+
+      // Shape matches invoicePreviewSchema in shared/schema.ts: id/status/
+      // generatedAt explicitly null so the frontend's discriminated union
+      // narrows correctly.
+      return res.json({
+        id: null,
+        clientId: calc.clientId,
+        weekStart: calc.weekStart,
+        weekEnd: calc.weekEnd,
+        flatFee: calc.flatFee,
+        percentFee: calc.percentFee,
+        grossBooked: calc.grossBooked,
+        totalDue: calc.totalDue,
+        status: null,
+        generatedAt: null,
+        breakdown: calc.breakdown,
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/admin/billing/generate
+  // -------------------------------------------------------------------------
+  //
+  // Spec §4.2. Same math as preview, plus storage.createInvoice. Enforces
+  // the "one invoice per client per week" invariant — if an invoice already
+  // exists with the same (clientId, weekStart) pair, returns 409 with the
+  // existing invoice id so the admin can fetch or PATCH it instead.
+  //
+  // Optional `status: "draft" | "sent"` (default "draft"). When "sent" is
+  // requested, storage.createInvoice also stamps sent_at to keep the
+  // status timeline consistent without a follow-up PATCH.
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/admin/billing/generate",
+    admin,
+    ah((req, res) => {
+      const body = generateInvoiceSchema.parse(req.body);
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+
+      const wsCheck = dateOnlySchema.safeParse(body.weekStart);
+      const weCheck = dateOnlySchema.safeParse(body.weekEnd);
+      if (!wsCheck.success || !weCheck.success) {
+        return res.status(400).json({
+          message: "weekStart and weekEnd must be YYYY-MM-DD date strings",
+        });
+      }
+      if (body.weekStart > body.weekEnd) {
+        return res.status(400).json({ message: "weekStart must be <= weekEnd" });
+      }
+
+      const client = storage.getClient(body.clientId);
+      if (!client) return res.status(404).json({ message: "Client not found" });
+
+      const dup = storage.findInvoiceForWeek(body.clientId, body.weekStart);
+      if (dup) {
+        return res.status(409).json({
+          message: "Invoice for this client and week already exists",
+          existingInvoiceId: dup.id,
+        });
+      }
+
+      const calc = computeInvoiceForWeek(body.clientId, body.weekStart, body.weekEnd);
+      const invoice = storage.createInvoice({
+        clientId: calc.clientId,
+        weekStart: calc.weekStart,
+        weekEnd: calc.weekEnd,
+        flatFee: calc.flatFee,
+        percentFee: calc.percentFee,
+        grossBooked: calc.grossBooked,
+        status: body.status,
+      });
+      // storage.createInvoice already emits `invoice.created` audit; we add
+      // an admin-context event with the actor for traceability.
+      storage.audit("invoice.created.admin", "invoice", invoice.id, {
+        invoiceId: invoice.id,
+        clientId: invoice.clientId,
+        weekStart: invoice.weekStart,
+        weekEnd: invoice.weekEnd,
+        totalDue: invoice.totalDue,
+        createdByAdminId: actor.id,
+      });
+      return res.status(201).json(invoice);
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/billing/invoices
+  // -------------------------------------------------------------------------
+  //
+  // Spec §4.3. Cursor pagination over generated_at DESC. Filters: clientId,
+  // status (draft|sent|paid|void), weekStart (>=), weekEnd (<=).
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/admin/billing/invoices",
+    admin,
+    ah((req, res) => {
+      const limitRaw = req.query.limit;
+      const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+      if (limit !== undefined && (!Number.isFinite(limit) || limit < 1 || limit > 200)) {
+        return res.status(400).json({ message: "limit must be an integer between 1 and 200" });
+      }
+      const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+      const clientId =
+        typeof req.query.clientId === "string" ? req.query.clientId : undefined;
+
+      let status: "draft" | "sent" | "paid" | "void" | undefined;
+      if (typeof req.query.status === "string") {
+        const parsed = invoiceStatusSchema.safeParse(req.query.status);
+        if (!parsed.success) {
+          return res.status(400).json({
+            message: "status must be one of draft|sent|paid|void",
+          });
+        }
+        status = parsed.data;
+      }
+
+      const weekStart =
+        typeof req.query.weekStart === "string" ? req.query.weekStart : undefined;
+      const weekEnd =
+        typeof req.query.weekEnd === "string" ? req.query.weekEnd : undefined;
+
+      const page = storage.listInvoicesPaginated({
+        limit,
+        cursor,
+        clientId,
+        status,
+        weekStart,
+        weekEnd,
+      });
+      return res.json({
+        items: page.items,
+        nextCursor: page.nextCursor,
+        hasMore: page.nextCursor !== null,
+        total: page.total,
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // PATCH /api/admin/billing/invoices/:id
+  // -------------------------------------------------------------------------
+  //
+  // Spec §4.4. Status transitions enforced in storage.updateInvoice (see
+  // allowed table there). Notes can be edited independently. Forbidden
+  // transitions return 409 with from/to for actionable client errors.
+  //
+  // NOTE: the frontend (client/src/pages/admin/billing.tsx) does not yet
+  // call this endpoint as of Phase 2. We implement it per spec so that
+  // future UI iterations (Phase 5 or a hotfix) can wire it without backend
+  // churn.
+  // -------------------------------------------------------------------------
+  app.patch(
+    "/api/admin/billing/invoices/:id",
+    admin,
+    ah((req, res) => {
+      const body = (req.body ?? {}) as { status?: unknown; notes?: unknown };
+
+      const patch: { status?: "draft" | "sent" | "paid" | "void"; notes?: string } = {};
+      if (body.status !== undefined) {
+        const parsed = invoiceStatusSchema.safeParse(body.status);
+        if (!parsed.success) {
+          return res.status(400).json({
+            message: "Validation failed",
+            issues: [{ path: ["status"], message: "must be one of draft|sent|paid|void" }],
+          });
+        }
+        patch.status = parsed.data;
+      }
+      if (body.notes !== undefined) {
+        if (typeof body.notes !== "string") {
+          return res.status(400).json({
+            message: "Validation failed",
+            issues: [{ path: ["notes"], message: "must be a string" }],
+          });
+        }
+        patch.notes = body.notes;
+      }
+
+      const result = storage.updateInvoice(String(req.params.id), patch);
+      if ("notFound" in result) {
+        return res.status(404).json({ message: "Invoice not found" });
+      }
+      if ("invalidTransition" in result) {
+        return res.status(409).json({
+          message: "Invalid status transition",
+          from: result.from,
+          to: result.to,
+        });
+      }
+      return res.json(result.invoice);
     }),
   );
 }

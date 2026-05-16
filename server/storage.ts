@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS loads (
   id TEXT PRIMARY KEY,
   payload TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  client_id TEXT,
+  booked_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -152,7 +154,28 @@ CREATE INDEX IF NOT EXISTS invites_created_at_idx ON invites(created_at DESC);
 CREATE INDEX IF NOT EXISTS assignments_created_at_idx ON assignments(created_at DESC);
 CREATE INDEX IF NOT EXISTS invoices_generated_at_idx ON invoices(generated_at DESC);
 CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at DESC);
+
+-- Phase 3 P2: indexed lookup for billing (loads filtered by client + week).
+CREATE INDEX IF NOT EXISTS loads_client_booked_idx ON loads(client_id, booked_at);
 `);
+
+// ---------------------------------------------------------------------------
+// Phase 3 P2: idempotent ALTER for existing DBs (Phase 1 / Phase 2 deployments).
+// CREATE TABLE above only adds columns on fresh DBs; for an existing DB we
+// detect missing columns via PRAGMA and ALTER. SQLite has no
+// "ADD COLUMN IF NOT EXISTS", so we guard manually.
+// ---------------------------------------------------------------------------
+function ensureLoadBookingColumns() {
+  const cols = sqlite.prepare("PRAGMA table_info(loads)").all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("client_id")) {
+    sqlite.exec("ALTER TABLE loads ADD COLUMN client_id TEXT");
+  }
+  if (!names.has("booked_at")) {
+    sqlite.exec("ALTER TABLE loads ADD COLUMN booked_at TEXT");
+  }
+}
+ensureLoadBookingColumns();
 
 function now() {
   return new Date().toISOString();
@@ -1018,17 +1041,23 @@ export const storage = {
     percentFee: number;
     grossBooked: number;
     notes?: string;
+    /** Phase 3 P2: optional initial status (default "draft"). */
+    status?: "draft" | "sent";
   }): Invoice {
     const id = makeId("inv");
     const totalDue = input.flatFee + input.percentFee;
     const generatedAt = now();
+    const status: "draft" | "sent" = input.status ?? "draft";
+    // If admin chose to send immediately, we also stamp sent_at — keeps the
+    // status timeline consistent without a follow-up PATCH.
+    const sentAt = status === "sent" ? generatedAt : null;
     sqlite
       .prepare(
         `
         INSERT INTO invoices (
           id, client_id, week_start, week_end, flat_fee, percent_fee,
           gross_booked, total_due, status, generated_at, sent_at, paid_at, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, NULL, NULL, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
       `,
       )
       .run(
@@ -1040,7 +1069,9 @@ export const storage = {
         input.percentFee,
         input.grossBooked,
         totalDue,
+        status,
         generatedAt,
+        sentAt,
         input.notes ?? null,
       );
     const invoice: Invoice = {
@@ -1052,8 +1083,9 @@ export const storage = {
       percentFee: input.percentFee,
       grossBooked: input.grossBooked,
       totalDue,
-      status: "draft",
+      status,
       generatedAt,
+      sentAt: sentAt ?? undefined,
       notes: input.notes,
     };
     this.audit("invoice.created", "invoice", id, invoice);
@@ -1084,6 +1116,201 @@ export const storage = {
       paidAt: row.paid_at ?? undefined,
       notes: row.notes ?? undefined,
     }));
+  },
+
+  /** Phase 3 P2: fetch one invoice by id. Returns undefined if not found. */
+  getInvoice(id: string): Invoice | undefined {
+    const row = sqlite.prepare("SELECT * FROM invoices WHERE id = ?").get(id) as any;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      clientId: row.client_id,
+      weekStart: row.week_start,
+      weekEnd: row.week_end,
+      flatFee: row.flat_fee,
+      percentFee: row.percent_fee,
+      grossBooked: row.gross_booked,
+      totalDue: row.total_due,
+      status: row.status,
+      generatedAt: row.generated_at,
+      sentAt: row.sent_at ?? undefined,
+      paidAt: row.paid_at ?? undefined,
+      notes: row.notes ?? undefined,
+    };
+  },
+
+  /**
+   * Phase 3 P2: lookup an existing invoice for the same client + weekStart
+   * combination, used to enforce the "one invoice per client per week" rule
+   * (spec §4.2 → 409 Conflict).
+   */
+  findInvoiceForWeek(clientId: string, weekStart: string): Invoice | undefined {
+    const row = sqlite
+      .prepare("SELECT * FROM invoices WHERE client_id = ? AND week_start = ? LIMIT 1")
+      .get(clientId, weekStart) as any;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      clientId: row.client_id,
+      weekStart: row.week_start,
+      weekEnd: row.week_end,
+      flatFee: row.flat_fee,
+      percentFee: row.percent_fee,
+      grossBooked: row.gross_booked,
+      totalDue: row.total_due,
+      status: row.status,
+      generatedAt: row.generated_at,
+      sentAt: row.sent_at ?? undefined,
+      paidAt: row.paid_at ?? undefined,
+      notes: row.notes ?? undefined,
+    };
+  },
+
+  /**
+   * Phase 3 P2: cursor-paginated invoice listing. Filters: clientId, status,
+   * weekStart (>=), weekEnd (<=). Ordered by generated_at DESC (matches the
+   * existing index from Phase 3 P0).
+   */
+  listInvoicesPaginated(filter: {
+    limit?: number;
+    cursor?: string;
+    clientId?: string;
+    status?: "draft" | "sent" | "paid" | "void";
+    weekStart?: string;
+    weekEnd?: string;
+  }): { items: Invoice[]; nextCursor: string | null; total: number } {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+
+    const where: string[] = ["1=1"];
+    const params: any[] = [];
+    if (filter.clientId) {
+      where.push("client_id = ?");
+      params.push(filter.clientId);
+    }
+    if (filter.status) {
+      where.push("status = ?");
+      params.push(filter.status);
+    }
+    if (filter.weekStart) {
+      where.push("week_start >= ?");
+      params.push(filter.weekStart);
+    }
+    if (filter.weekEnd) {
+      where.push("week_end <= ?");
+      params.push(filter.weekEnd);
+    }
+
+    const countQuery = `SELECT COUNT(*) as c FROM invoices WHERE ${where.join(" AND ")}`;
+    const total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
+
+    if (filter.cursor) {
+      where.push("generated_at < ?");
+      params.push(filter.cursor);
+    }
+
+    const listQuery = `SELECT * FROM invoices WHERE ${where.join(" AND ")} ORDER BY generated_at DESC LIMIT ?`;
+    const rows = sqlite.prepare(listQuery).all(...params, limit + 1) as any[];
+    const hasMore = rows.length > limit;
+    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+    const items: Invoice[] = pageRows.map((row) => ({
+      id: row.id,
+      clientId: row.client_id,
+      weekStart: row.week_start,
+      weekEnd: row.week_end,
+      flatFee: row.flat_fee,
+      percentFee: row.percent_fee,
+      grossBooked: row.gross_booked,
+      totalDue: row.total_due,
+      status: row.status,
+      generatedAt: row.generated_at,
+      sentAt: row.sent_at ?? undefined,
+      paidAt: row.paid_at ?? undefined,
+      notes: row.notes ?? undefined,
+    }));
+    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].generated_at : null;
+    return { items, nextCursor, total };
+  },
+
+  /**
+   * Phase 3 P2: status / notes update.
+   *
+   * Allowed transitions (spec §4.4):
+   *   draft  -> sent | void
+   *   sent   -> paid | void
+   *   paid   -> (immutable)
+   *   void   -> (immutable)
+   *
+   * `notes` may be updated at any time, independently of status.
+   *
+   * Returns:
+   *   - { notFound: true }       — no invoice with this id
+   *   - { invalidTransition }    — current state forbids the requested status
+   *   - { invoice }              — success, full updated row
+   */
+  updateInvoice(
+    id: string,
+    patch: { status?: "draft" | "sent" | "paid" | "void"; notes?: string },
+  ):
+    | { invoice: Invoice }
+    | { notFound: true }
+    | { invalidTransition: true; from: string; to: string } {
+    const existing = this.getInvoice(id);
+    if (!existing) return { notFound: true };
+
+    const allowed: Record<string, Array<"draft" | "sent" | "paid" | "void">> = {
+      draft: ["sent", "void"],
+      sent: ["paid", "void"],
+      paid: [],
+      void: [],
+    };
+
+    const sets: string[] = [];
+    const params: any[] = [];
+
+    if (patch.status !== undefined && patch.status !== existing.status) {
+      const okTransitions = allowed[existing.status];
+      if (!okTransitions || !okTransitions.includes(patch.status)) {
+        return {
+          invalidTransition: true,
+          from: existing.status,
+          to: patch.status,
+        };
+      }
+      sets.push("status = ?");
+      params.push(patch.status);
+
+      // Stamp side-channel timestamps. Idempotent: if sent_at or paid_at is
+      // already set from a previous transition, we don't overwrite it.
+      if (patch.status === "sent" && !existing.sentAt) {
+        sets.push("sent_at = ?");
+        params.push(now());
+      }
+      if (patch.status === "paid" && !existing.paidAt) {
+        sets.push("paid_at = ?");
+        params.push(now());
+      }
+    }
+    if (patch.notes !== undefined) {
+      sets.push("notes = ?");
+      params.push(patch.notes);
+    }
+
+    if (sets.length === 0) {
+      // Nothing to update — return current state as-is.
+      return { invoice: existing };
+    }
+
+    params.push(id);
+    sqlite.prepare(`UPDATE invoices SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+    const updated = this.getInvoice(id)!;
+    if (patch.status !== undefined && patch.status !== existing.status) {
+      this.audit("invoice.status_changed", "invoice", id, {
+        invoiceId: id,
+        from: existing.status,
+        to: patch.status,
+      });
+    }
+    return { invoice: updated };
   },
 
   // -------------------------------------------------------------------------
@@ -1164,18 +1391,56 @@ export const storage = {
     const load = { ...input, id } as Load;
     const timestamp = now();
 
+    // Phase 3 P2: mirror clientId / bookedAt from the payload into dedicated
+    // SQLite columns so billing can run an indexed lookup. Payload JSON
+    // remains the source of truth (Phase 1 contract); columns are a denormal
+    // index. Cast through `any` because Phase 1 Load type doesn't yet declare
+    // these fields — they live in loadWithBookingSchema (additive).
+    const anyLoad = load as any;
+    const clientIdCol = typeof anyLoad.clientId === "string" ? anyLoad.clientId : null;
+    const bookedAtCol = typeof anyLoad.bookedAt === "string" ? anyLoad.bookedAt : null;
+
     sqlite
       .prepare(
         `
-        INSERT INTO loads (id, payload, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
+        INSERT INTO loads (id, payload, created_at, updated_at, client_id, booked_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          payload    = excluded.payload,
+          updated_at = excluded.updated_at,
+          client_id  = excluded.client_id,
+          booked_at  = excluded.booked_at
       `,
       )
-      .run(id, JSON.stringify(load), existing ? timestamp : timestamp, timestamp);
+      .run(id, JSON.stringify(load), existing ? timestamp : timestamp, timestamp, clientIdCol, bookedAtCol);
 
     this.audit(existing ? "load.updated" : "load.created", "load", id, load);
     return load;
+  },
+
+  /**
+   * Phase 3 P2 (billing): list loads for a client booked within a date range.
+   * `weekStart`/`weekEnd` are inclusive date-only strings ("YYYY-MM-DD"). Uses
+   * the (client_id, booked_at) index for O(log n + k) lookup; in-memory scans
+   * are skipped entirely.
+   *
+   * Loads without a booking link (client_id IS NULL) are never returned here,
+   * by design — they are not billable.
+   */
+  listBookedLoadsForClientWeek(
+    clientId: string,
+    weekStart: string,
+    weekEnd: string,
+  ): Load[] {
+    const rows = sqlite
+      .prepare(
+        `SELECT payload FROM loads
+         WHERE client_id = ? AND booked_at IS NOT NULL
+           AND booked_at >= ? AND booked_at <= ?
+         ORDER BY booked_at ASC`,
+      )
+      .all(clientId, weekStart, weekEnd) as Array<{ payload: string }>;
+    return parsePayloads<Load>(rows);
   },
 
   // -------------------------------------------------------------------------
