@@ -154,9 +154,6 @@ CREATE INDEX IF NOT EXISTS invites_created_at_idx ON invites(created_at DESC);
 CREATE INDEX IF NOT EXISTS assignments_created_at_idx ON assignments(created_at DESC);
 CREATE INDEX IF NOT EXISTS invoices_generated_at_idx ON invoices(generated_at DESC);
 CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at DESC);
-
--- Phase 3 P2: indexed lookup for billing (loads filtered by client + week).
-CREATE INDEX IF NOT EXISTS loads_client_booked_idx ON loads(client_id, booked_at);
 `);
 
 // ---------------------------------------------------------------------------
@@ -164,6 +161,10 @@ CREATE INDEX IF NOT EXISTS loads_client_booked_idx ON loads(client_id, booked_at
 // CREATE TABLE above only adds columns on fresh DBs; for an existing DB we
 // detect missing columns via PRAGMA and ALTER. SQLite has no
 // "ADD COLUMN IF NOT EXISTS", so we guard manually.
+//
+// IMPORTANT — this MUST run before any CREATE INDEX that references the new
+// columns, otherwise SQLite errors out on a freshly-upgraded Phase 1/2 DB
+// where the loads table doesn't yet have client_id / booked_at.
 // ---------------------------------------------------------------------------
 function ensureLoadBookingColumns() {
   const cols = sqlite.prepare("PRAGMA table_info(loads)").all() as Array<{ name: string }>;
@@ -176,6 +177,11 @@ function ensureLoadBookingColumns() {
   }
 }
 ensureLoadBookingColumns();
+
+// Phase 3 P2: indexed lookup for billing (loads filtered by client + week).
+// Created AFTER ensureLoadBookingColumns so the columns are guaranteed to
+// exist on both fresh and migrated databases.
+sqlite.exec("CREATE INDEX IF NOT EXISTS loads_client_booked_idx ON loads(client_id, booked_at)");
 
 function now() {
   return new Date().toISOString();
