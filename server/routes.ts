@@ -1225,9 +1225,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(report);
   });
 
+  // -------------------------------------------------------------------------
+  // GET /api/audit — Phase 1 contract preserved, Phase 3 P4 extension
+  // -------------------------------------------------------------------------
+  //
+  // Backward-compat: with NO query parameters, returns the legacy flat array
+  // (Event[]) for the v1.2.7 dashboard and Phase 1 smoke. With ANY new
+  // query param (limit, cursor, eventType, entityType, actorId, entityId,
+  // since, until) — switches to the new paginated shape with item enrichment
+  // (actorUserId + actorEmail resolved from payload).
+  //
+  // Spec §6.1.
+  // -------------------------------------------------------------------------
+
+  // Set of new param names that, if present, switch to the paginated format.
+  const AUDIT_NEW_PARAMS = ["limit", "cursor", "eventType", "entityType", "actorId", "entityId", "since", "until"];
+
   app.get("/api/audit", (req, res) => {
-    const limit = Math.min(Number(req.query.limit || 50), 200);
-    res.json(storage.listAuditEvents(limit));
+    const usesNewParams = AUDIT_NEW_PARAMS.some((key) => req.query[key] !== undefined);
+
+    if (!usesNewParams) {
+      // Legacy flat array path. Phase 1 default limit was 50; we keep it.
+      return res.json(storage.listAuditEvents(50));
+    }
+
+    // -- Paginated path -----------------------------------------------------
+    const limitRaw = req.query.limit;
+    const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+    if (limit !== undefined && (!Number.isFinite(limit) || limit < 1 || limit > 200)) {
+      return res.status(400).json({ message: "limit must be an integer between 1 and 200" });
+    }
+    const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+
+    // eventType supports either a single string OR an array (?eventType=a&eventType=b).
+    let eventType: string | string[] | undefined;
+    if (Array.isArray(req.query.eventType)) {
+      eventType = req.query.eventType.map(String);
+    } else if (typeof req.query.eventType === "string") {
+      eventType = req.query.eventType;
+    }
+
+    const entityType = typeof req.query.entityType === "string" ? req.query.entityType : undefined;
+    const actorId = typeof req.query.actorId === "string" ? req.query.actorId : undefined;
+    const entityId = typeof req.query.entityId === "string" ? req.query.entityId : undefined;
+    const since = typeof req.query.since === "string" ? req.query.since : undefined;
+    const until = typeof req.query.until === "string" ? req.query.until : undefined;
+
+    const page = storage.listAuditEventsPaginated({
+      limit,
+      cursor,
+      eventType,
+      entityType,
+      actorId,
+      entityId,
+      since,
+      until,
+    });
+    return res.json({
+      items: page.items,
+      nextCursor: page.nextCursor,
+      hasMore: page.nextCursor !== null,
+      total: page.total,
+    });
   });
 
   app.get("/api/backup/export", (req, res) => {

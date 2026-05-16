@@ -249,9 +249,13 @@ try {
     throw new Error("Created load is missing from scored dispatch board");
   }
 
-  const audit = await request("/api/audit?limit=10");
+  // Phase 1 smoke originally hit /api/audit?limit=10. Phase 3 P4 redefines
+  // ?limit=… as the paginated path (spec §6.1), so this assertion now uses
+  // the no-params path which keeps the legacy flat-array contract for v1.2.7
+  // dashboards. The paginated path is exercised in the P4 block below.
+  const audit = await request("/api/audit");
   if (!Array.isArray(audit) || audit.length < 3) {
-    throw new Error("/api/audit did not return create/update events");
+    throw new Error("/api/audit (legacy) did not return create/update events");
   }
 
   const broker = await request("/api/broker/check", {
@@ -1270,6 +1274,177 @@ try {
   }
   if (patchBad !== 400) throw new Error(`PATCH bad status returned ${patchBad}, expected 400`);
   console.log("[OK] PATCH /api/admin/billing/invoices/:id transitions + notes + 404 + 400");
+
+  // -------------------------------------------------------------------------
+  // Phase 3 — P3 checks (dashboard stats aggregate)
+  // -------------------------------------------------------------------------
+
+  const stats = await request("/api/admin/dashboard/stats");
+  if (!stats.mrr || !stats.users || !stats.loads || !stats.audit || !stats.integrations || !stats.system) {
+    throw new Error(`dashboard/stats missing top-level keys: ${Object.keys(stats).join(",")}`);
+  }
+  // MRR shape
+  if (typeof stats.mrr.currentUsd !== "number" || typeof stats.mrr.activeClients !== "number") {
+    throw new Error("mrr missing numeric currentUsd / activeClients");
+  }
+  // We've created 2 invoices in P2 (one draft→paid for ivan, one sent for oleg).
+  // monthToDatePercentFee should be > 0 (61.5 + 61.5 = 123 for May 2026 if
+  // both invoices count; status='paid' and status='sent' both qualify).
+  if (stats.mrr.currentUsd <= 0) {
+    throw new Error(`MRR currentUsd should be > 0 with active billing; got ${stats.mrr.currentUsd}`);
+  }
+  if (!stats.mrr.trend || !["up", "down", "flat"].includes(stats.mrr.trend.direction)) {
+    throw new Error("mrr.trend.direction must be up|down|flat");
+  }
+  // users shape — admins>=1, dispatchers>=1 (smoke.dispatcher), drivers>=1 (stub)
+  if (stats.users.admins < 1 || stats.users.dispatchers < 1 || stats.users.drivers < 1) {
+    throw new Error(`users counts low: ${JSON.stringify(stats.users)}`);
+  }
+  if (typeof stats.users.lastSignupAt !== "string") {
+    throw new Error("users.lastSignupAt should be set after P0 signup");
+  }
+  // loads shape — verdict object has exactly book/negotiate/skip
+  const verdictKeys = Object.keys(stats.loads.byVerdict).sort();
+  if (verdictKeys.join(",") !== "book,negotiate,skip") {
+    throw new Error(`loads.byVerdict keys wrong: ${verdictKeys.join(",")}`);
+  }
+  // audit shape
+  if (typeof stats.audit.eventsLast24h !== "number") {
+    throw new Error("audit.eventsLast24h not a number");
+  }
+  if (stats.audit.eventsLast24h < 1) {
+    throw new Error("audit.eventsLast24h should be >0 after running this smoke");
+  }
+  // integrations shape — at least the 5 keys mentioned in spec hint
+  const intKeys = Object.keys(stats.integrations);
+  if (intKeys.length < 4) {
+    throw new Error(`expected several integrations, got ${intKeys.length}`);
+  }
+  for (const [name, h] of Object.entries(stats.integrations)) {
+    if (!["ok", "warn", "missing", "error"].includes(h.status)) {
+      throw new Error(`integration ${name} has bad status: ${h.status}`);
+    }
+  }
+  // system shape
+  if (!stats.system.version || typeof stats.system.uptimeSeconds !== "number") {
+    throw new Error("system shape missing version/uptimeSeconds");
+  }
+  console.log("[OK] GET /api/admin/dashboard/stats (full shape + MRR + verdict + integrations)");
+
+  // period=month works
+  const statsMonth = await request("/api/admin/dashboard/stats?period=month");
+  if (!statsMonth.loads || typeof statsMonth.loads.weekCount !== "number") {
+    throw new Error("dashboard/stats?period=month did not return loads");
+  }
+  console.log("[OK] /api/admin/dashboard/stats?period=month");
+
+  // Dispatcher gets 403
+  const adminCookieForP3 = cookieHeader;
+  cookieHeader = "";
+  let dashForbidden = 0;
+  try {
+    // login as dispatcher first... we don't have the dispatcher's password
+    // (P1 reset rotated it, the new temp pw is in scope as reset2.temporaryPassword).
+    await request("/api/auth/login", {
+      method: "POST",
+      body: {
+        email: "smoke.dispatcher@example.com",
+        password: reset2.temporaryPassword,
+        // P1 disabled TOTP for this user — login without token is allowed.
+      },
+    });
+    await request("/api/admin/dashboard/stats");
+    dashForbidden = 200;
+  } catch (err) {
+    dashForbidden = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (dashForbidden !== 403) {
+    throw new Error(`dispatcher hitting /api/admin/dashboard/stats returned ${dashForbidden}, expected 403`);
+  }
+  cookieHeader = adminCookieForP3;
+  console.log("[OK] /api/admin/dashboard/stats blocks non-admin (403)");
+
+  // -------------------------------------------------------------------------
+  // Phase 3 — P4 checks (audit pagination extension + legacy backward-compat)
+  // -------------------------------------------------------------------------
+
+  // Legacy contract — no query params → flat array (Event[])
+  const legacy = await request("/api/audit");
+  if (!Array.isArray(legacy)) {
+    throw new Error("legacy /api/audit (no params) must return a flat array");
+  }
+
+  // ANY new query param → paginated shape
+  const paged = await request("/api/audit?limit=20");
+  if (!paged.items || !Array.isArray(paged.items)) {
+    throw new Error("/api/audit?limit=20 must return paginated { items: [...] }");
+  }
+  if (typeof paged.hasMore !== "boolean") {
+    throw new Error("paginated audit missing hasMore boolean");
+  }
+  if (paged.items.length === 0) {
+    throw new Error("/api/audit?limit=20 returned no items, expected many after smoke run");
+  }
+  // Items are enriched with actorUserId/actorEmail (may be null)
+  for (const ev of paged.items) {
+    if (!("actorUserId" in ev) || !("actorEmail" in ev)) {
+      throw new Error("paginated audit item missing actorUserId / actorEmail fields");
+    }
+    if (!("eventType" in ev) || !("createdAt" in ev)) {
+      throw new Error("paginated audit item missing core fields");
+    }
+  }
+  // At least one item should have a non-null actorUserId (admin actions throughout smoke)
+  if (!paged.items.some((ev) => ev.actorUserId && ev.actorEmail)) {
+    throw new Error("expected at least one audit event with actor enrichment");
+  }
+  console.log("[OK] /api/audit (paginated + actor enrichment)");
+
+  // Filter by eventType
+  const onlyUserCreated = await request("/api/audit?eventType=user.created&limit=50");
+  if (!onlyUserCreated.items.every((ev) => ev.eventType === "user.created")) {
+    throw new Error("eventType=user.created filter leaked other types");
+  }
+  if (onlyUserCreated.items.length < 1) {
+    throw new Error("expected at least 1 user.created event in audit");
+  }
+
+  // Multi-eventType (array form)
+  const twoTypes = await request("/api/audit?eventType=user.created&eventType=invite.created&limit=50");
+  if (!twoTypes.items.every((ev) => ev.eventType === "user.created" || ev.eventType === "invite.created")) {
+    throw new Error("multi eventType filter leaked other types");
+  }
+
+  // Filter by entityType
+  const onlyInvites = await request("/api/audit?entityType=invite&limit=50");
+  if (!onlyInvites.items.every((ev) => ev.entityType === "invite")) {
+    throw new Error("entityType=invite filter leaked other entity types");
+  }
+
+  // Filter by actorId (admin user, who did the most ops in smoke)
+  const byActor = await request(`/api/audit?actorId=${me.id}&limit=50`);
+  if (!byActor.items.every((ev) => ev.actorUserId === me.id)) {
+    throw new Error("actorId filter leaked other actors");
+  }
+  console.log("[OK] /api/audit filters (eventType single/multi, entityType, actorId)");
+
+  // Filter by since/until window — events in last hour should match total
+  const sinceIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const recent = await request(`/api/audit?since=${encodeURIComponent(sinceIso)}&limit=200`);
+  if (!recent.items.every((ev) => ev.createdAt >= sinceIso)) {
+    throw new Error("since filter let in older events");
+  }
+  console.log("[OK] /api/audit since filter");
+
+  // limit validation
+  let badLimit = 0;
+  try {
+    await request("/api/audit?limit=9999");
+  } catch (err) {
+    badLimit = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (badLimit !== 400) throw new Error(`audit limit=9999 returned ${badLimit}, expected 400`);
+  console.log("[OK] /api/audit limit validation");
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);
