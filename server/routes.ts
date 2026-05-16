@@ -11,6 +11,7 @@ import {
   insertDocumentSchema,
   insertClientSchema,
   insertLoadSchema,
+  signupSchema,
   telegramCommandSchema,
   updateLocationSchema,
   type BrokerRecord,
@@ -31,6 +32,7 @@ import {
   verifyTotp,
 } from "./auth";
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
+import { registerAdminRoutes } from "./routes/admin";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -887,6 +889,89 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // -------------------------------------------------------------------------
+  // POST /api/auth/signup — Phase 3 (consume invite, create user, auto-login)
+  // -------------------------------------------------------------------------
+  //
+  // Public (no existing session required) but invite-locked. On success the
+  // session is immediately bound to the new user, so the frontend can fetch
+  // /api/me right after this returns.
+  //
+  // Response shape matches `signupResponseSchema` in shared/schema.ts so the
+  // signup screen (client/src/pages/signup.tsx) can render the TOTP QR code
+  // from `otpauthUrl` once and only once.
+  // -------------------------------------------------------------------------
+
+  app.post("/api/auth/signup", (req, res) => {
+    let body: ReturnType<typeof signupSchema.parse>;
+    try {
+      body = signupSchema.parse(req.body);
+    } catch (error) {
+      return handleZodError(error, res);
+    }
+
+    const invite = storage.getInvite(body.inviteCode);
+    const nowMs = Date.now();
+    if (!invite || invite.consumedAt || new Date(invite.expiresAt).getTime() <= nowMs) {
+      // Single message for "doesn't exist / expired / already used" so we
+      // don't leak which it is to someone fishing for valid codes.
+      return res.status(400).json({ message: "Invite not found or expired" });
+    }
+
+    // Email-locked invites must match exactly (case-insensitive).
+    if (invite.email && invite.email.toLowerCase() !== body.email.toLowerCase()) {
+      return res.status(400).json({ message: "Invite is locked to a different email" });
+    }
+
+    // role=admin invites are never created in P3 (POST /api/admin/invites
+    // rejects them), but if a legacy row exists we still refuse to consume
+    // it through public signup — admins go through bootstrap.
+    if (invite.role === "admin") {
+      return res.status(400).json({ message: "Invite not found or expired" });
+    }
+
+    if (storage.getUserByEmail(body.email)) {
+      return res.status(409).json({ message: "Email already in use" });
+    }
+
+    const { salt, hash } = hashPassword(body.password);
+    const totpSecret = generateBase32Secret();
+    const created = storage.createUser({
+      email: body.email,
+      fullName: body.fullName,
+      role: invite.role,
+      passwordSalt: salt,
+      passwordHash: hash,
+      totpSecret,
+      linkedClientId: invite.role === "driver" ? invite.linkedClientId : undefined,
+    });
+    storage.consumeInvite(invite.code, created.id);
+    storage.audit("user.created", "user", created.id, {
+      source: "invite",
+      inviteCode: invite.code,
+      role: created.role,
+    });
+
+    // Auto-login: bind session so the frontend can call /api/me immediately.
+    req.session.userId = created.id;
+    req.session.role = created.role;
+    req.session.authenticated = true;
+    storage.recordUserLogin(created.id);
+    storage.audit("auth.signup_login", "user", created.id, { role: created.role });
+
+    const redirect =
+      created.role === "admin" ? "/admin" : created.role === "dispatcher" ? "/dispatch" : "/me";
+
+    return res.status(201).json({
+      id: created.id,
+      email: created.email,
+      role: created.role,
+      totpSecret,
+      otpauthUrl: buildOtpAuthUrl(created.email, totpSecret),
+      redirect,
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // GET /api/me — Phase 1 contract for all three portals
   // -------------------------------------------------------------------------
 
@@ -895,6 +980,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!user) return res.status(401).json({ message: "Authentication required" });
     res.json(storage.toUserPublic(user));
   });
+
+  // -------------------------------------------------------------------------
+  // Phase 3 admin routes. Registered BEFORE the shared `app.use("/api", ...)`
+  // gate below so each handler manages its own `requireRole('admin')` instead
+  // of double-gating through `requireRole.any()`. See server/routes/admin.ts.
+  // -------------------------------------------------------------------------
+  registerAdminRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The
