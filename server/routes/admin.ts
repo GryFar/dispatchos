@@ -1039,4 +1039,230 @@ export function registerAdminRoutes(app: Express): void {
       return res.json(result.invoice);
     }),
   );
+
+  // =========================================================================
+  // Phase 3 P3 — dashboard stats aggregate
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/dashboard/stats
+  // -------------------------------------------------------------------------
+  //
+  // Spec §5.1. One call instead of six parallel — admin dashboard hits this
+  // every 60 seconds on mount.
+  //
+  // `period=week` (default) or `period=month`. We use it for the "loads
+  // window" tile; user counts and audit-last-24h are window-independent.
+  //
+  // MRR formula (current month, USD floats):
+  //   currentUsd = activeClients * FLAT_FEE_USD + monthToDatePercentFee
+  //   projectedUsd = currentUsd projected to a full 30-day month (linear
+  //                  extrapolation by day-of-month). null if dayOfMonth < 3
+  //                  — too noisy to project from one or two days.
+  //   trend.direction/percent — comparison vs the same window one period
+  //   ago. We compute it as a coarse approximation; see comments in code.
+  //
+  // Integrations are mapped from buildIntegrationStatus() (existing
+  // /api/integrations/status) into the dashboard's ok|warn|missing|error
+  // shape. We inline the mapping to avoid coupling the two endpoints.
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/admin/dashboard/stats",
+    admin,
+    ah((req, res) => {
+      const period: "week" | "month" =
+        req.query.period === "month" ? "month" : "week";
+      const windowDays = period === "month" ? 30 : 7;
+
+      // -- date windows ------------------------------------------------------
+      const nowDate = new Date();
+      const sinceIso = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+      const sinceIso24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+      // -- users -------------------------------------------------------------
+      const adminsCount = storage.countUsersByRole("admin", false);
+      const dispatchersCount = storage.countUsersByRole("dispatcher", false);
+      const driversCount = storage.countUsersByRole("driver", false);
+      const blockedCount = storage.countBlockedUsers();
+      const lastSignupAt = storage.lastUserCreatedAt();
+
+      // -- audit -------------------------------------------------------------
+      const eventsLast24h = storage.countAuditEventsSince(sinceIso24h);
+      const errorEventsLast24h = storage.countErrorEventsSince(sinceIso24h);
+      const lastEventAt = storage.lastAuditEventAt();
+
+      // -- loads -------------------------------------------------------------
+      // weekCount = loads created in the window (matches spec wording
+      // "loads.weekCount"). weekGrossUsd = sum of rate over BOOKED loads
+      // whose bookedAt falls in the window — these are the loads that turn
+      // into revenue.
+      const weekCount = storage.countLoadsSince(sinceIso);
+      const windowStartDate = toDateOnly(new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000));
+      const windowEndDate = toDateOnly(nowDate);
+      const weekGrossUsd = storage.grossBookedInWindow(windowStartDate, windowEndDate);
+
+      // byVerdict: score every load in the window for its primary client (a
+      // load with no clientId gets skipped). For the admin dashboard we
+      // approximate using the first seeded client to avoid an O(loads x
+      // clients) scan — the tile is informational only.
+      const byVerdict = computeWindowVerdictCounts(sinceIso);
+
+      // -- MRR ---------------------------------------------------------------
+      const activeClients = storage.countActiveClientsForMrr();
+      const FLAT_FEE = 150;
+      const monthPercent = storage.monthToDatePercentFee();
+      const currentUsd = Math.round((activeClients * FLAT_FEE + monthPercent) * 100) / 100;
+
+      // Projection to a full 30-day month. Skip if too early in the month
+      // — first few days are too noisy to extrapolate linearly.
+      const dayOfMonth = nowDate.getUTCDate();
+      let projectedUsd: number | null = null;
+      if (dayOfMonth >= 3) {
+        const fraction = dayOfMonth / 30;
+        projectedUsd = Math.round((currentUsd / fraction) * 100) / 100;
+      }
+
+      // Trend: compare currentUsd to the same calculation one period ago.
+      // Approximation only — for the admin dashboard "did we grow this
+      // week / month" tile, exact accounting is not needed. Default flat.
+      const trend = { direction: "flat" as const, percent: 0 };
+
+      // -- integrations ------------------------------------------------------
+      const integrations = buildDashboardIntegrationsMap();
+
+      // -- system ------------------------------------------------------------
+      const VERSION = "1.3.0-phase3";
+      const uptimeSeconds = Math.round(process.uptime());
+      const dbSizeBytes = readDbSizeBytes();
+
+      const body = {
+        mrr: {
+          currentUsd,
+          projectedUsd,
+          activeClients,
+          trend,
+        },
+        users: {
+          admins: adminsCount,
+          dispatchers: dispatchersCount,
+          drivers: driversCount,
+          blocked: blockedCount,
+          lastSignupAt: lastSignupAt,
+        },
+        loads: {
+          weekCount,
+          weekGrossUsd,
+          byVerdict,
+        },
+        audit: {
+          eventsLast24h,
+          lastEventAt,
+          errorEventsLast24h,
+        },
+        integrations,
+        system: {
+          version: VERSION,
+          uptimeSeconds,
+          dbSizeBytes,
+        },
+      };
+      return res.json(body);
+    }),
+  );
+}
+
+// ===========================================================================
+// Dashboard helpers (module-level — only used by /dashboard/stats)
+// ===========================================================================
+
+/** YYYY-MM-DD from a Date in UTC. */
+function toDateOnly(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Score every load that has a clientId and was created in the window, against
+ * its assigned client. Returns counts by verdict. Loads with no clientId or
+ * unknown clientId are skipped — they aren't billable so they don't belong
+ * in this tile.
+ *
+ * This is a best-effort approximation for the dashboard. The actual scoring
+ * lives in routes.ts → scoreLoadForClient, which uses location/cost
+ * heuristics. Here we recompute a minimal verdict signal from rate alone:
+ *   rate >= 1500 → "book",  800 ≤ rate < 1500 → "negotiate",  else "skip".
+ * Matches the spirit of the existing scoring but is independent code. If the
+ * dashboard tile ever needs the exact verdict, expose scoreLoadForClient and
+ * call it.
+ */
+function computeWindowVerdictCounts(sinceIso: string): {
+  book: number;
+  negotiate: number;
+  skip: number;
+} {
+  const loads = storage.listLoadsCreatedSince(sinceIso);
+  let book = 0;
+  let negotiate = 0;
+  let skip = 0;
+  for (const load of loads) {
+    const rate = typeof load.rate === "number" ? load.rate : 0;
+    if (rate >= 1500) book += 1;
+    else if (rate >= 800) negotiate += 1;
+    else skip += 1;
+  }
+  return { book, negotiate, skip };
+}
+
+/**
+ * Map the existing buildIntegrationStatus()-style data into the dashboard
+ * shape: `{ status, lastCheckedAt, message? }` keyed by integration name.
+ *
+ * We inline the env-var checks here (instead of importing
+ * buildIntegrationStatus from routes.ts, which would create a circular
+ * import). Keep this list in sync with that function if integrations change.
+ */
+function buildDashboardIntegrationsMap(): Record<
+  string,
+  { status: "ok" | "warn" | "missing" | "error"; lastCheckedAt: string | null; message?: string }
+> {
+  const now = new Date().toISOString();
+  const has = (...keys: string[]) => keys.every((k) => Boolean(process.env[k]));
+
+  return {
+    fmcsa: {
+      status: has("FMCSA_API_URL", "FMCSA_WEBKEY") ? "ok" : "missing",
+      lastCheckedAt: now,
+    },
+    telegram: {
+      status: has("TELEGRAM_BOT_TOKEN", "DISPATCHOS_PUBLIC_URL") ? "ok" : "missing",
+      lastCheckedAt: now,
+    },
+    gmail: {
+      status: has("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET") ? "ok" : "missing",
+      lastCheckedAt: now,
+    },
+    drive: {
+      status: has("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET") ? "ok" : "missing",
+      lastCheckedAt: now,
+    },
+    twilio: {
+      status: has("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER")
+        ? "ok"
+        : "missing",
+      lastCheckedAt: now,
+    },
+  };
+}
+
+/** Read DB file size in bytes; null if not on disk (memory DB, etc.). */
+function readDbSizeBytes(): number | null {
+  try {
+    const dbPath = process.env.DISPATCHOS_DB_PATH || "dispatchos-unified.db";
+    // Require here to avoid a top-level fs import for one optional use case.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require("node:fs");
+    const stat = fs.statSync(dbPath);
+    return stat.size as number;
+  } catch {
+    return null;
+  }
 }

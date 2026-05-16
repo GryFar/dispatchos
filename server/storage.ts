@@ -194,6 +194,32 @@ function parsePayloads<T>(rows: Array<{ payload: string }>): T[] {
   return rows.map((row) => JSON.parse(row.payload) as T);
 }
 
+/**
+ * Phase 3 P4: extract the actor user id from an audit event payload.
+ *
+ * Different event types stash the actor under different keys. We probe
+ * them in order of specificity. Returns null when no recognised key is
+ * present (legacy v1.2.7 events, system-generated events).
+ */
+function pluckActorIdFromPayload(payload: any): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  // P0/P1/P2 conventions
+  const KEYS = [
+    "actorUserId",
+    "createdByAdminId",
+    "resetByAdminId",
+    "removedByAdminId",
+    "createdByUserId",
+    "removedByUserId",
+    "userId",
+  ];
+  for (const key of KEYS) {
+    const v = payload[key];
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return null;
+}
+
 export const dispatchosDataRoot = path.resolve(process.env.DISPATCHOS_DATA_ROOT || "dispatchos_data");
 export const uploadsRoot = path.join(dispatchosDataRoot, "uploads");
 export const localDriveRoot = path.join(dispatchosDataRoot, "drive");
@@ -1465,6 +1491,267 @@ export const storage = {
       )
       .all(limit)
       .map((row: any) => ({ ...row, payload: JSON.parse(row.payload) }));
+  },
+
+  /**
+   * Phase 3 P4: cursor-paginated audit listing with filters.
+   *
+   * Spec §6.1. Sorts by created_at DESC. The cursor is the created_at of
+   * the last row on the previous page.
+   *
+   * `eventType` filter accepts a single string or an array; we OR them
+   * together. Same for `entityType` (string only — spec didn't require
+   * array form, keeping signature small).
+   *
+   * Note on actor enrichment: audit_events has no actor_user_id column —
+   * the actor lives inside the JSON payload under varying keys depending
+   * on the event type (createdByAdminId, resetByAdminId, removedByUserId,
+   * createdByUserId, actorUserId, …). We pluck the first one we find and
+   * resolve email via getUserById. Legacy events with none → `null`. This
+   * matches the AuditEvent shape declared in shared/schema.ts.
+   */
+  listAuditEventsPaginated(filter: {
+    limit?: number;
+    cursor?: string;
+    eventType?: string | string[];
+    entityType?: string;
+    actorId?: string;
+    entityId?: string;
+    since?: string;
+    until?: string;
+  }): {
+    items: Array<{
+      id: string;
+      eventType: string;
+      entityType: string;
+      entityId: string | null;
+      actorUserId: string | null;
+      actorEmail: string | null;
+      payload: Record<string, unknown> | null;
+      createdAt: string;
+    }>;
+    nextCursor: string | null;
+    total: number;
+  } {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+
+    const where: string[] = ["1=1"];
+    const params: any[] = [];
+
+    if (filter.eventType) {
+      const types = Array.isArray(filter.eventType) ? filter.eventType : [filter.eventType];
+      if (types.length > 0) {
+        const placeholders = types.map(() => "?").join(",");
+        where.push(`event_type IN (${placeholders})`);
+        params.push(...types);
+      }
+    }
+    if (filter.entityType) {
+      where.push("entity_type = ?");
+      params.push(filter.entityType);
+    }
+    if (filter.entityId) {
+      where.push("entity_id = ?");
+      params.push(filter.entityId);
+    }
+    if (filter.since) {
+      where.push("created_at >= ?");
+      params.push(filter.since);
+    }
+    if (filter.until) {
+      where.push("created_at <= ?");
+      params.push(filter.until);
+    }
+
+    const countQuery = `SELECT COUNT(*) as c FROM audit_events WHERE ${where.join(" AND ")}`;
+    let total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
+
+    if (filter.cursor) {
+      where.push("created_at < ?");
+      params.push(filter.cursor);
+    }
+
+    // We over-fetch by limit+1 to determine hasMore. actorId filter is
+    // applied AFTER fetch because it lives inside JSON payload, not a
+    // SQL column; this means total/cursor accuracy degrades when actorId
+    // is set. Documented in the route handler.
+    const listQuery = `SELECT id, event_type as eventType, entity_type as entityType, entity_id as entityId, payload, created_at as createdAt FROM audit_events WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT ?`;
+    let rows = sqlite.prepare(listQuery).all(...params, limit + 1) as any[];
+
+    const enriched = rows.map((row) => {
+      const payload = row.payload ? JSON.parse(row.payload) : null;
+      const actorUserId = pluckActorIdFromPayload(payload);
+      const actorEmail = actorUserId ? this.getUserById(actorUserId)?.email ?? null : null;
+      return {
+        id: row.id,
+        eventType: row.eventType,
+        entityType: row.entityType,
+        entityId: row.entityId ?? null,
+        actorUserId,
+        actorEmail,
+        payload: payload as Record<string, unknown> | null,
+        createdAt: row.createdAt,
+      };
+    });
+
+    let filtered = enriched;
+    if (filter.actorId) {
+      filtered = enriched.filter((e) => e.actorUserId === filter.actorId);
+      total = filtered.length; // approximate — see comment above
+    }
+
+    const hasMore = filtered.length > limit;
+    const pageRows = hasMore ? filtered.slice(0, limit) : filtered;
+    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].createdAt : null;
+
+    return { items: pageRows, nextCursor, total };
+  },
+
+  /**
+   * Phase 3 P3 helper: count audit events in a recent time window.
+   * Used by dashboard.stats for `eventsLast24h` etc. `since` is an ISO
+   * datetime string.
+   */
+  countAuditEventsSince(since: string): number {
+    return (
+      sqlite
+        .prepare("SELECT COUNT(*) as c FROM audit_events WHERE created_at >= ?")
+        .get(since) as { c: number }
+    ).c;
+  },
+
+  /**
+   * Phase 3 P3 helper: count events that look like errors in a window.
+   * We don't have a dedicated error flag — heuristic: event_type starts
+   * with `error.` OR ends with `.error` OR `.failed`. Returns 0 for
+   * baseline projects; the dashboard tile will simply say "Без ошибок".
+   */
+  countErrorEventsSince(since: string): number {
+    return (
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) as c FROM audit_events
+           WHERE created_at >= ?
+             AND (event_type LIKE 'error.%' OR event_type LIKE '%.error' OR event_type LIKE '%.failed')`,
+        )
+        .get(since) as { c: number }
+    ).c;
+  },
+
+  /** Phase 3 P3 helper: most recent audit event timestamp, or null. */
+  lastAuditEventAt(): string | null {
+    const row = sqlite
+      .prepare("SELECT created_at FROM audit_events ORDER BY created_at DESC LIMIT 1")
+      .get() as { created_at: string } | undefined;
+    return row?.created_at ?? null;
+  },
+
+  /** Phase 3 P3 helper: user count by role, with optional blocked filter. */
+  countUsersByRole(role: UserRole, includeBlocked = false): number {
+    const query = includeBlocked
+      ? "SELECT COUNT(*) as c FROM users WHERE role = ?"
+      : "SELECT COUNT(*) as c FROM users WHERE role = ? AND blocked = 0";
+    return (sqlite.prepare(query).get(role) as { c: number }).c;
+  },
+
+  /** Phase 3 P3 helper: count of blocked users across all roles. */
+  countBlockedUsers(): number {
+    return (
+      sqlite.prepare("SELECT COUNT(*) as c FROM users WHERE blocked = 1").get() as { c: number }
+    ).c;
+  },
+
+  /** Phase 3 P3 helper: most recent user.created_at, or null. */
+  lastUserCreatedAt(): string | null {
+    const row = sqlite
+      .prepare("SELECT created_at FROM users ORDER BY created_at DESC LIMIT 1")
+      .get() as { created_at: string } | undefined;
+    return row?.created_at ?? null;
+  },
+
+  /**
+   * Phase 3 P3 helper: list loads created in a time window (used by
+   * dashboard verdict tile).
+   */
+  listLoadsCreatedSince(since: string): Load[] {
+    const rows = sqlite
+      .prepare("SELECT payload FROM loads WHERE created_at >= ? ORDER BY created_at DESC")
+      .all(since) as Array<{ payload: string }>;
+    return parsePayloads<Load>(rows);
+  },
+
+  /**
+   * Phase 3 P3 helper: count of loads created in a time window.
+   */
+  countLoadsSince(since: string): number {
+    return (
+      sqlite
+        .prepare("SELECT COUNT(*) as c FROM loads WHERE created_at >= ?")
+        .get(since) as { c: number }
+    ).c;
+  },
+
+  /**
+   * Phase 3 P3 helper: gross USD of loads booked in a date-only window.
+   * Uses the loads_client_booked_idx column added in P2. Sums load.rate
+   * across rows where booked_at IS NOT NULL AND in range.
+   */
+  grossBookedInWindow(weekStart: string, weekEnd: string): number {
+    const rows = sqlite
+      .prepare(
+        `SELECT payload FROM loads
+         WHERE booked_at IS NOT NULL AND booked_at >= ? AND booked_at <= ?`,
+      )
+      .all(weekStart, weekEnd) as Array<{ payload: string }>;
+    let sum = 0;
+    for (const row of rows) {
+      try {
+        const load = JSON.parse(row.payload);
+        if (typeof load.rate === "number") sum += load.rate;
+      } catch {
+        // skip corrupt rows
+      }
+    }
+    return Math.round(sum * 100) / 100;
+  },
+
+  /**
+   * Phase 3 P3 helper: count of active clients (any client with at least
+   * one active (removed_at IS NULL) dispatcher assignment, OR with at
+   * least one booked load in the last 30 days). We use this softer
+   * definition because "active" in the MRR sense means "still on the
+   * books and generating fees".
+   */
+  countActiveClientsForMrr(): number {
+    const row = sqlite
+      .prepare(
+        `SELECT COUNT(DISTINCT client_id) as c FROM (
+            SELECT client_id FROM assignments WHERE removed_at IS NULL
+            UNION
+            SELECT client_id FROM loads
+            WHERE client_id IS NOT NULL
+              AND booked_at IS NOT NULL
+              AND booked_at >= date('now','-30 days')
+         )`,
+      )
+      .get() as { c: number };
+    return row.c;
+  },
+
+  /**
+   * Phase 3 P3 helper: sum of percent_fee on invoices generated this
+   * calendar month (status in 'sent' or 'paid'). Used as the variable
+   * portion of currentUsd MRR.
+   */
+  monthToDatePercentFee(): number {
+    const row = sqlite
+      .prepare(
+        `SELECT COALESCE(SUM(percent_fee), 0) as s FROM invoices
+         WHERE status IN ('sent','paid')
+           AND generated_at >= strftime('%Y-%m-01T00:00:00.000Z', 'now')`,
+      )
+      .get() as { s: number };
+    return Math.round((row.s ?? 0) * 100) / 100;
   },
 
   listDocuments(): DocumentRecord[] {
