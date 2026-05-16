@@ -492,6 +492,212 @@ try {
     throw new Error(`/api/auth/bootstrap repeat returned ${bootstrapStatus}, expected 409`);
   }
   console.log("[OK] /api/auth/bootstrap rejects re-run after admin exists");
+
+  // -------------------------------------------------------------------------
+  // Phase 3 — P0 checks (admin users CRUD + invites + signup)
+  // -------------------------------------------------------------------------
+
+  // GET /api/admin/users — admin himself is in the list
+  const usersList = await request("/api/admin/users?limit=50");
+  if (!Array.isArray(usersList.items)) {
+    throw new Error("/api/admin/users did not return paginated { items: [...] }");
+  }
+  if (!usersList.items.some((u) => u.role === "admin")) {
+    throw new Error("/api/admin/users did not include the bootstrapped admin");
+  }
+  if (typeof usersList.hasMore !== "boolean") {
+    throw new Error("/api/admin/users response missing hasMore boolean");
+  }
+  if (usersList.items.some((u) => u.passwordHash || u.passwordSalt || u.totpSecret)) {
+    throw new Error("/api/admin/users leaked secret fields");
+  }
+  console.log("[OK] GET /api/admin/users paginated shape");
+
+  // POST /api/admin/invites — dispatcher invite
+  const dispatcherInvite = await request("/api/admin/invites", {
+    method: "POST",
+    body: { role: "dispatcher", ttlHours: 24 },
+  });
+  if (!/^DOS-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(dispatcherInvite.code)) {
+    throw new Error(`invite code does not match DOS-XXXX-XXXX-XXXX format: ${dispatcherInvite.code}`);
+  }
+  if (!dispatcherInvite.signupUrl || !dispatcherInvite.signupUrl.includes("#/signup?code=")) {
+    throw new Error(`invite signupUrl missing hash-route /#/signup: ${dispatcherInvite.signupUrl}`);
+  }
+  if (dispatcherInvite.role !== "dispatcher") {
+    throw new Error("invite did not return role=dispatcher");
+  }
+  console.log("[OK] POST /api/admin/invites (DOS-XXXX-XXXX-XXXX + hash signupUrl)");
+
+  // GET /api/admin/invites — status=active includes the new one
+  const activeInvites = await request("/api/admin/invites?status=active&limit=50");
+  if (!Array.isArray(activeInvites.items) || !activeInvites.items.some((i) => i.code === dispatcherInvite.code)) {
+    throw new Error("/api/admin/invites?status=active did not return the new invite");
+  }
+  console.log("[OK] GET /api/admin/invites?status=active");
+
+  // role=admin invites are rejected
+  let adminInviteStatus = 0;
+  try {
+    await request("/api/admin/invites", { method: "POST", body: { role: "admin" } });
+  } catch (err) {
+    adminInviteStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (adminInviteStatus !== 400) {
+    throw new Error(`POST /api/admin/invites role=admin returned ${adminInviteStatus}, expected 400`);
+  }
+  console.log("[OK] /api/admin/invites refuses role=admin");
+
+  // -------------------------------------------------------------------------
+  // Signup as a brand-new user (separate cookie jar)
+  // -------------------------------------------------------------------------
+  const adminCookieHeader = cookieHeader;
+  cookieHeader = "";
+  const signupRes = await request("/api/auth/signup", {
+    method: "POST",
+    body: {
+      inviteCode: dispatcherInvite.code,
+      email: "smoke.dispatcher@example.com",
+      fullName: "Smoke Dispatcher",
+      password: "SmokeDispatcher1!",
+    },
+  });
+  if (!signupRes.id || signupRes.role !== "dispatcher") {
+    throw new Error(`/api/auth/signup did not return dispatcher: ${JSON.stringify(signupRes)}`);
+  }
+  if (!signupRes.totpSecret || !signupRes.otpauthUrl) {
+    throw new Error("/api/auth/signup did not return TOTP onboarding fields");
+  }
+  if (signupRes.redirect !== "/dispatch") {
+    throw new Error(`/api/auth/signup redirect should be /dispatch, got ${signupRes.redirect}`);
+  }
+  // Session is auto-bound after signup — /api/me should now return the dispatcher.
+  const meAfterSignup = await request("/api/me");
+  if (meAfterSignup.id !== signupRes.id || meAfterSignup.role !== "dispatcher") {
+    throw new Error("/api/me after signup did not reflect the new user");
+  }
+  console.log("[OK] POST /api/auth/signup consumes invite + auto-login");
+
+  // Re-using the consumed code → 400
+  let reuseStatus = 0;
+  try {
+    await request("/api/auth/signup", {
+      method: "POST",
+      body: {
+        inviteCode: dispatcherInvite.code,
+        email: "another.dispatcher@example.com",
+        fullName: "Another",
+        password: "AnotherPass1!",
+      },
+    });
+  } catch (err) {
+    reuseStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (reuseStatus !== 400) {
+    throw new Error(`re-using a consumed invite returned ${reuseStatus}, expected 400`);
+  }
+  console.log("[OK] consumed invite cannot be re-used");
+
+  // Dispatcher cannot reach /api/admin/users (role gating)
+  let forbiddenStatus = 0;
+  try {
+    await request("/api/admin/users?limit=10");
+  } catch (err) {
+    forbiddenStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (forbiddenStatus !== 403) {
+    throw new Error(`/api/admin/users as dispatcher returned ${forbiddenStatus}, expected 403`);
+  }
+  console.log("[OK] /api/admin/users blocks non-admin (403)");
+
+  await request("/api/auth/logout", { method: "POST" });
+  cookieHeader = adminCookieHeader; // back to admin session
+
+  // -------------------------------------------------------------------------
+  // Admin POST /api/admin/users — create a stub driver, then GET by id
+  // -------------------------------------------------------------------------
+  const stubDriver = await request("/api/admin/users", {
+    method: "POST",
+    body: {
+      email: "stub.driver@example.com",
+      fullName: "Stub Driver",
+      role: "driver",
+    },
+  });
+  if (stubDriver.role !== "driver" || stubDriver.blocked !== false) {
+    throw new Error("POST /api/admin/users did not return the new driver");
+  }
+  if (stubDriver.twoFactorEnabled !== false) {
+    throw new Error("stub driver should have twoFactorEnabled=false (no TOTP yet)");
+  }
+  const fetched = await request(`/api/admin/users/${stubDriver.id}`);
+  if (fetched.id !== stubDriver.id) {
+    throw new Error("GET /api/admin/users/:id did not return the right user");
+  }
+  // Duplicate email rejected
+  let dupStatus = 0;
+  try {
+    await request("/api/admin/users", {
+      method: "POST",
+      body: { email: "stub.driver@example.com", fullName: "Dup", role: "driver" },
+    });
+  } catch (err) {
+    dupStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (dupStatus !== 409) {
+    throw new Error(`duplicate email returned ${dupStatus}, expected 409`);
+  }
+  console.log("[OK] POST + GET /api/admin/users (stub + duplicate guard)");
+
+  // PATCH — block then unblock the stub driver
+  const blocked = await request(`/api/admin/users/${stubDriver.id}`, {
+    method: "PATCH",
+    body: { blocked: true },
+  });
+  if (blocked.blocked !== true) throw new Error("PATCH blocked:true did not stick");
+  const unblocked = await request(`/api/admin/users/${stubDriver.id}`, {
+    method: "PATCH",
+    body: { blocked: false, fullName: "Stub Driver (renamed)" },
+  });
+  if (unblocked.blocked !== false || unblocked.fullName !== "Stub Driver (renamed)") {
+    throw new Error("PATCH unblock+rename did not persist");
+  }
+  console.log("[OK] PATCH /api/admin/users/:id");
+
+  // Last-admin protection: admin tries to block himself → 400
+  let selfBlockStatus = 0;
+  try {
+    await request(`/api/admin/users/${me.id}`, { method: "PATCH", body: { blocked: true } });
+  } catch (err) {
+    selfBlockStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (selfBlockStatus !== 400) {
+    throw new Error(`self-block returned ${selfBlockStatus}, expected 400`);
+  }
+  // Admin tries to demote himself away from role=admin → 400 (last admin)
+  let demoteStatus = 0;
+  try {
+    await request(`/api/admin/users/${me.id}`, {
+      method: "PATCH",
+      body: { role: "dispatcher" },
+    });
+  } catch (err) {
+    demoteStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (demoteStatus !== 400) {
+    throw new Error(`demote last admin returned ${demoteStatus}, expected 400`);
+  }
+  console.log("[OK] last-admin protection (block-self + role-demote)");
+
+  // Filters: q="stub" finds the driver, role=driver narrows correctly
+  const filteredQ = await request("/api/admin/users?q=stub&role=driver&limit=50");
+  if (!filteredQ.items.some((u) => u.id === stubDriver.id)) {
+    throw new Error("filter q=stub&role=driver missed the stub driver");
+  }
+  if (filteredQ.items.some((u) => u.role !== "driver")) {
+    throw new Error("role=driver filter leaked non-drivers");
+  }
+  console.log("[OK] /api/admin/users filters (q, role)");
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);

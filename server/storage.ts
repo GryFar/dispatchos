@@ -139,6 +139,19 @@ CREATE TABLE IF NOT EXISTS invoices (
 );
 
 CREATE INDEX IF NOT EXISTS invoices_client_week_idx ON invoices(client_id, week_start);
+
+-- ===========================================================================
+-- Phase 3: indexes for cursor-based pagination (created_at DESC ordering)
+-- ===========================================================================
+-- All admin list endpoints sort by created_at DESC and paginate with
+-- WHERE created_at < :cursor ORDER BY created_at DESC LIMIT N. These indexes
+-- keep that query fast as the tables grow past a few thousand rows.
+
+CREATE INDEX IF NOT EXISTS users_created_at_idx ON users(created_at DESC);
+CREATE INDEX IF NOT EXISTS invites_created_at_idx ON invites(created_at DESC);
+CREATE INDEX IF NOT EXISTS assignments_created_at_idx ON assignments(created_at DESC);
+CREATE INDEX IF NOT EXISTS invoices_generated_at_idx ON invoices(generated_at DESC);
+CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at DESC);
 `);
 
 function now() {
@@ -310,6 +323,67 @@ export const storage = {
 
   countUsers(): number {
     return (sqlite.prepare("SELECT COUNT(*) as c FROM users").get() as { c: number }).c;
+  },
+
+  /**
+   * Cursor-paginated user listing for the admin UI. Sorted by `created_at DESC`
+   * (newest first), so the cursor for the next page is the `created_at` of the
+   * last row on the current page.
+   *
+   * NOTE: this is intentionally a NEW method rather than a `listUsers` overload.
+   * `listUsers` is still used by Phase 1 code (`exportBackup`, `portal/status`)
+   * and the smoke suite, and its `created_at ASC` ordering is part of that
+   * contract.
+   */
+  listUsersPaginated(filter: {
+    limit?: number;
+    cursor?: string;
+    role?: UserRole;
+    blocked?: boolean;
+    q?: string;
+  }): { items: UserInternal[]; nextCursor: string | null; total: number } {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+
+    const where: string[] = ["1=1"];
+    const params: any[] = [];
+
+    if (filter.role) {
+      where.push("role = ?");
+      params.push(filter.role);
+    }
+    if (filter.blocked !== undefined) {
+      where.push("blocked = ?");
+      params.push(filter.blocked ? 1 : 0);
+    }
+    if (filter.q && filter.q.trim()) {
+      // Search by email OR full_name. LIKE without leading-wildcard would be
+      // index-friendly; spec accepts %q% for the team's current scale (<100
+      // users) and notes FTS as a future-Phase fix for 10k+.
+      where.push("(LOWER(email) LIKE ? OR LOWER(full_name) LIKE ?)");
+      const pattern = `%${filter.q.trim().toLowerCase()}%`;
+      params.push(pattern, pattern);
+    }
+
+    // Count BEFORE applying the cursor — `total` reflects all rows matching
+    // filters, not just rows on/after the current cursor (spec §0.3).
+    const countQuery = `SELECT COUNT(*) as c FROM users WHERE ${where.join(" AND ")}`;
+    const total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
+
+    if (filter.cursor) {
+      where.push("created_at < ?");
+      params.push(filter.cursor);
+    }
+
+    // Fetch limit+1 to determine `hasMore` without a second query.
+    const listQuery = `SELECT * FROM users WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT ?`;
+    const rows = sqlite.prepare(listQuery).all(...params, limit + 1) as UserRow[];
+
+    const hasMore = rows.length > limit;
+    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+    const items = pageRows.map((row) => rowToUserInternal(row)!).filter(Boolean);
+    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].created_at : null;
+
+    return { items, nextCursor, total };
   },
 
   createUser(input: {
@@ -563,6 +637,157 @@ export const storage = {
       createdAt: row.created_at,
       createdByUserId: row.created_by_user_id,
     }));
+  },
+
+  /**
+   * Phase 3 invite creation. Unlike `createInvite`, the caller provides the
+   * code (Phase 3 spec mandates `DOS-XXXX-XXXX-XXXX` format generated in the
+   * routes layer so the same code can be embedded in the signup URL we return
+   * to the admin). Throws if the code collides.
+   */
+  createInviteWithCode(input: {
+    code: string;
+    role: UserRole;
+    email?: string;
+    ttlHours?: number;
+    linkedClientId?: string;
+    createdByUserId: string;
+  }): Invite {
+    const ttlMs = (input.ttlHours ?? 72) * 60 * 60 * 1000;
+    const createdAt = now();
+    const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+    sqlite
+      .prepare(
+        `
+        INSERT INTO invites (
+          code, role, email, expires_at, consumed_at, consumed_by_user_id,
+          linked_client_id, created_at, created_by_user_id
+        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+      `,
+      )
+      .run(
+        input.code,
+        input.role,
+        input.email?.toLowerCase() ?? null,
+        expiresAt,
+        input.linkedClientId ?? null,
+        createdAt,
+        input.createdByUserId,
+      );
+    const invite: Invite = {
+      code: input.code,
+      role: input.role,
+      email: input.email?.toLowerCase(),
+      expiresAt,
+      linkedClientId: input.linkedClientId,
+      createdAt,
+      createdByUserId: input.createdByUserId,
+    };
+    // Audit (do NOT log linkedClientId payload as sensitive — but code is
+    // already addressable by admin, so safe to include).
+    this.audit("invite.created", "invite", input.code, {
+      role: input.role,
+      email: input.email,
+      ttlHours: input.ttlHours ?? 72,
+      linkedClientId: input.linkedClientId,
+      createdByUserId: input.createdByUserId,
+    });
+    return invite;
+  },
+
+  /**
+   * Cursor-paginated invite listing for the admin UI. Status semantics match
+   * spec §2.2:
+   *   active   = consumedAt IS NULL AND expiresAt >  now()
+   *   expired  = consumedAt IS NULL AND expiresAt <= now()
+   *   consumed = consumedAt IS NOT NULL
+   *   all      = no status filter
+   */
+  listInvitesPaginated(filter: {
+    limit?: number;
+    cursor?: string;
+    status?: "active" | "expired" | "consumed" | "all";
+    role?: UserRole;
+  }): { items: Invite[]; nextCursor: string | null; total: number } {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+    const status = filter.status ?? "active";
+
+    const where: string[] = ["1=1"];
+    const params: any[] = [];
+    const nowIso = now();
+
+    if (status === "active") {
+      where.push("consumed_at IS NULL");
+      where.push("expires_at > ?");
+      params.push(nowIso);
+    } else if (status === "expired") {
+      where.push("consumed_at IS NULL");
+      where.push("expires_at <= ?");
+      params.push(nowIso);
+    } else if (status === "consumed") {
+      where.push("consumed_at IS NOT NULL");
+    }
+    if (filter.role) {
+      where.push("role = ?");
+      params.push(filter.role);
+    }
+
+    const countQuery = `SELECT COUNT(*) as c FROM invites WHERE ${where.join(" AND ")}`;
+    const total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
+
+    if (filter.cursor) {
+      where.push("created_at < ?");
+      params.push(filter.cursor);
+    }
+
+    const listQuery = `SELECT * FROM invites WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT ?`;
+    const rows = sqlite.prepare(listQuery).all(...params, limit + 1) as any[];
+
+    const hasMore = rows.length > limit;
+    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+    const items: Invite[] = pageRows.map((row) => ({
+      code: row.code,
+      role: row.role,
+      email: row.email ?? undefined,
+      expiresAt: row.expires_at,
+      consumedAt: row.consumed_at ?? undefined,
+      consumedByUserId: row.consumed_by_user_id ?? undefined,
+      linkedClientId: row.linked_client_id ?? undefined,
+      createdAt: row.created_at,
+      createdByUserId: row.created_by_user_id,
+    }));
+    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].created_at : null;
+
+    return { items, nextCursor, total };
+  },
+
+  /**
+   * Soft-revoke an invite by setting expires_at = now(). Returns the revoked
+   * invite, or `undefined` if not found, or `{ alreadyConsumed: true }` if it
+   * was already consumed (the route layer maps that to HTTP 409).
+   */
+  revokeInvite(code: string, revokedByUserId: string):
+    | { invite: Invite; revokedAt: string }
+    | { notFound: true }
+    | { alreadyConsumed: true } {
+    const row = sqlite.prepare("SELECT * FROM invites WHERE code = ?").get(code) as any;
+    if (!row) return { notFound: true };
+    if (row.consumed_at) return { alreadyConsumed: true };
+    const revokedAt = now();
+    sqlite.prepare("UPDATE invites SET expires_at = ? WHERE code = ?").run(revokedAt, code);
+    const invite: Invite = {
+      code: row.code,
+      role: row.role,
+      email: row.email ?? undefined,
+      expiresAt: revokedAt,
+      consumedAt: undefined,
+      consumedByUserId: undefined,
+      linkedClientId: row.linked_client_id ?? undefined,
+      createdAt: row.created_at,
+      createdByUserId: row.created_by_user_id,
+    };
+    this.audit("invite.revoked", "invite", code, { code, revokedByUserId });
+    return { invite, revokedAt };
   },
 
   // -------------------------------------------------------------------------
