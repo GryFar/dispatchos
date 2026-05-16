@@ -873,3 +873,41 @@ export type DashboardStats = z.infer<typeof dashboardStatsSchema>;
 5. Если в Phase 3 решено что какой-то endpoint выше не реализуется — сообщи мне до старта; я скрою соответствующий UI-блок.
 
 — Claude Design
+
+---
+
+## 11. Phase 4 hooks (контракты, реализация позже)
+
+Эти endpoints НЕ входят в Phase 3 deliverable. Они описаны здесь, чтобы Phase 4-разработчик (dispatcher portal) не изобретал свой shape и был совместим с уже существующими полями в `loadSchema`.
+
+### `POST /api/loads/:id/book` — Phase 4
+
+Привязать груз к клиенту (booking). Вызывается dispatcher'ом при бронировании, или admin'ом вручную.
+
+**Auth:** `requireRole.any()` (dispatcher OR admin). Driver не имеет права книговать чужие грузы.
+
+**Request body:**
+```json
+{ "clientId": "ivan-enclosed-01" }
+```
+
+**Behavior:**
+
+| Состояние load | Результат |
+|---|---|
+| `load.clientId` не задан | UPDATE `clientId`, set `bookedAt = today (YYYY-MM-DD)`, audit `load.booked`, 200 |
+| `load.clientId == body.clientId` | Idempotent: НЕ UPDATE, НЕ audit, 200 с текущими полями |
+| `load.clientId != body.clientId` | 409 `{ message: "Load already booked for a different client", code: "already_booked_for_other_client", existingClientId: "..." }` |
+| Load не существует | 404 |
+| Body.clientId не существует | 404 |
+
+**Response 200:**
+```json
+{ "loadId": "cd-10394", "clientId": "ivan-enclosed-01", "bookedAt": "2026-05-16" }
+```
+
+**Storage hint:** уже в Phase 3 P2 storage есть `upsertLoad`, который пишет `clientId`/`bookedAt` в payload + denormal колонки. `POST /api/loads/:id/book` — это просто read-modify-write через `getLoad` + `upsertLoad`.
+
+**Audit:** `load.booked` с `{ loadId, clientId, dispatcherUserId | adminUserId, bookedAt }`. Идемпотентный повтор audit не пишет.
+
+**Why date-only `bookedAt`:** см. комментарий к `dateOnlySchema` в `shared/schema.ts`. Если когда-нибудь понадобится per-second timestamp, добавь отдельную колонку `booked_at_ts`, не реюзай эту.
