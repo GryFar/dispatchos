@@ -384,3 +384,26 @@
   70%  { transform: scale(1.8); opacity: 0;    }
   100% { transform: scale(1.8); opacity: 0;    }
 }
+
+/* ===========================================================================
+ * Phase 4 — driver/dispatcher portal theme override (orange accent).
+ *
+ * Per Vlad's Q1 answer (Phase 4 P0 kickoff): admin portal stays on the green
+ * Phase 2 palette in this PR. Driver shell wraps its tree in
+ *   <div className="dark theme-orange">
+ * which inherits all .dark tokens above and selectively overrides the brand
+ * + ring + background for the new portals. Numbers come straight from
+ * docs/architecture/design-system.md §1 (accent #f59e0b ≈ hsl 38 92% 50%,
+ * background #0a0e1a ≈ hsl 222 47% 4%).
+ * ========================================================================= */
+.theme-orange {
+  --background: 222 47% 4%;            /* #0a0e1a — design-system --bg */
+  --ring: 38 92% 50%;                  /* #f59e0b — focus ring matches accent */
+  --primary: 38 92% 50%;               /* #f59e0b — brand orange */
+  --primary-foreground: 222 47% 4%;    /* dark text on accent bg, per spec --accent-text */
+  --sidebar-accent: 38 92% 50%;
+  --sidebar-accent-foreground: 222 47% 4%;
+  --sidebar-accent-soft: 38 92% 18%;
+  --sidebar-accent-soft-foreground: 38 92% 75%;
+  --chart-1: 38 92% 50%;               /* keep chart hue family consistent */
+}

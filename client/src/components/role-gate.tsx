@@ -61,5 +61,7 @@ export function RoleGate({ allow, children }: { allow: UserRole[]; children: Rea
 export function defaultRouteForRole(role: UserRole): string {
   if (role === "admin") return "/admin";
   if (role === "dispatcher") return "/dispatch";
-  return "/me";
+  // Phase 4 P0: driver portal lives at /d (was /me during the Phase 2 stub
+  // era). The /api/me/* API namespace is unrelated and stays as-is.
+  return "/d";
 }
