@@ -8,6 +8,7 @@ import type {
   Client,
   DocumentRecord,
   DriverLocation,
+  DriverStatus,
   InsertClient,
   InsertDocument,
   InsertLoad,
@@ -183,6 +184,56 @@ ensureLoadBookingColumns();
 // exist on both fresh and migrated databases.
 sqlite.exec("CREATE INDEX IF NOT EXISTS loads_client_booked_idx ON loads(client_id, booked_at)");
 
+// ---------------------------------------------------------------------------
+// Phase 4 P0: idempotent ALTER for driver portal columns.
+//
+// Adds:
+//   - loads.driver_id              — mirror of payload.driverId; drives
+//                                     /api/me/loads tenant scoping and the
+//                                     loads_driver_id_idx for fast cursor pages.
+//   - users.phone                  — optional contact phone, surfaced in
+//                                     UserPublic + dashboards.
+//   - users.driver_status          — TEXT, NOT NULL DEFAULT 'available'. Only
+//                                     meaningful for role='driver'; toUserPublic
+//                                     hides it for other roles. We keep stale
+//                                     values across role changes (cheap, see §2
+//                                     of the Phase 4 handoff Q3 confirmation).
+//
+// Same PRAGMA pattern as ensureLoadBookingColumns: existing DBs (Vlad's
+// dev DB has an admin row already) get ALTERed without dropping data; fresh
+// DBs would already have the columns from CREATE TABLE — but since CREATE
+// TABLE above is locked to the Phase 1 shape, the ALTER path is the source
+// of truth and runs even on a freshly-created DB. CREATE INDEX must come
+// AFTER these helpers, never inline above.
+// ---------------------------------------------------------------------------
+function ensureLoadDriverColumn() {
+  const cols = sqlite.prepare("PRAGMA table_info(loads)").all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("driver_id")) {
+    sqlite.exec("ALTER TABLE loads ADD COLUMN driver_id TEXT");
+  }
+}
+ensureLoadDriverColumn();
+
+function ensureUserDriverColumns() {
+  const cols = sqlite.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("phone")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN phone TEXT");
+  }
+  if (!names.has("driver_status")) {
+    // NOT NULL with literal default — existing rows backfill to 'available'.
+    // (Per SQLite ALTER TABLE rules, NOT NULL is allowed when a literal
+    //  DEFAULT is supplied.)
+    sqlite.exec("ALTER TABLE users ADD COLUMN driver_status TEXT NOT NULL DEFAULT 'available'");
+  }
+}
+ensureUserDriverColumns();
+
+// Indexes that depend on the new columns. Must follow ensureLoadDriverColumn
+// so we don't reference a column that doesn't exist yet on migrated DBs.
+sqlite.exec("CREATE INDEX IF NOT EXISTS loads_driver_id_idx ON loads(driver_id, created_at DESC)");
+
 function now() {
   return new Date().toISOString();
 }
@@ -251,6 +302,9 @@ interface UserRow {
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
+  // Phase 4 P0 columns (added via ensureUserDriverColumns()).
+  phone: string | null;
+  driver_status: string | null;
 }
 
 export interface UserInternal {
@@ -266,10 +320,23 @@ export interface UserInternal {
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;
+  // Phase 4 P0 fields. `driverStatus` is stored for all roles (cheap; column
+  // is NOT NULL DEFAULT 'available') but only surfaced for role=driver via
+  // toUserPublic. `phone` is per-user contact, any role.
+  phone?: string;
+  driverStatus?: DriverStatus;
 }
 
 function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
   if (!row) return undefined;
+  // driver_status is parsed defensively — anything not in the enum falls back
+  // to undefined and toUserPublic skips it. New rows always carry a valid
+  // value because storage.createUser writes 'available' explicitly.
+  const rawStatus = row.driver_status;
+  const driverStatus: DriverStatus | undefined =
+    rawStatus === "available" || rawStatus === "on_route" || rawStatus === "off_duty"
+      ? rawStatus
+      : undefined;
   return {
     id: row.id,
     email: row.email,
@@ -283,6 +350,8 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastLoginAt: row.last_login_at ?? undefined,
+    phone: row.phone ?? undefined,
+    driverStatus,
   };
 }
 
@@ -296,6 +365,9 @@ function toUserPublic(user: UserInternal, extras?: { assignedClientIds?: string[
     twoFactorEnabled: Boolean(user.totpSecret),
     linkedClientId: user.role === "driver" ? user.linkedClientId : undefined,
     assignedClientIds: user.role === "dispatcher" ? (extras?.assignedClientIds ?? []) : undefined,
+    // Phase 4 additive: phone for any role, driverStatus only for role=driver.
+    phone: user.phone,
+    driverStatus: user.role === "driver" ? user.driverStatus ?? "available" : undefined,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt,
@@ -454,13 +526,18 @@ export const storage = {
     const id = makeId("user");
     const timestamp = now();
     const email = input.email.toLowerCase();
+    // Phase 4 P0: driver_status column has a DEFAULT, but we set it explicitly
+    // on creation so the value is predictable in tests and audits (Vlad's
+    // request in the Q3 follow-up). For non-driver roles the value is dead
+    // (toUserPublic skips it).
     sqlite
       .prepare(
         `
         INSERT INTO users (
           id, email, full_name, role, password_salt, password_hash,
-          totp_secret, blocked, linked_client_id, created_at, updated_at, last_login_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL)
+          totp_secret, blocked, linked_client_id, created_at, updated_at, last_login_at,
+          phone, driver_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, NULL, 'available')
       `,
       )
       .run(
@@ -1423,28 +1500,32 @@ export const storage = {
     const load = { ...input, id } as Load;
     const timestamp = now();
 
-    // Phase 3 P2: mirror clientId / bookedAt from the payload into dedicated
-    // SQLite columns so billing can run an indexed lookup. Payload JSON
-    // remains the source of truth (Phase 1 contract); columns are a denormal
-    // index. Cast through `any` because Phase 1 Load type doesn't yet declare
-    // these fields — they live in loadWithBookingSchema (additive).
+    // Phase 3 P2 + Phase 4 P0: mirror clientId / bookedAt / driverId from
+    // the payload into dedicated SQLite columns. Billing (P2) uses client_id
+    // + booked_at; driver portal (P4 P0) uses driver_id for tenant-scoped
+    // listings. Payload JSON remains the source of truth (Phase 1 contract);
+    // columns are a denormal index. Cast through `any` because Phase 1 Load
+    // type doesn't yet declare these fields — they live in the additive
+    // loadWithBookingSchema / loadFullSchema.
     const anyLoad = load as any;
     const clientIdCol = typeof anyLoad.clientId === "string" ? anyLoad.clientId : null;
     const bookedAtCol = typeof anyLoad.bookedAt === "string" ? anyLoad.bookedAt : null;
+    const driverIdCol = typeof anyLoad.driverId === "string" ? anyLoad.driverId : null;
 
     sqlite
       .prepare(
         `
-        INSERT INTO loads (id, payload, created_at, updated_at, client_id, booked_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO loads (id, payload, created_at, updated_at, client_id, booked_at, driver_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           payload    = excluded.payload,
           updated_at = excluded.updated_at,
           client_id  = excluded.client_id,
-          booked_at  = excluded.booked_at
+          booked_at  = excluded.booked_at,
+          driver_id  = excluded.driver_id
       `,
       )
-      .run(id, JSON.stringify(load), existing ? timestamp : timestamp, timestamp, clientIdCol, bookedAtCol);
+      .run(id, JSON.stringify(load), existing ? timestamp : timestamp, timestamp, clientIdCol, bookedAtCol, driverIdCol);
 
     this.audit(existing ? "load.updated" : "load.created", "load", id, load);
     return load;
@@ -1473,6 +1554,121 @@ export const storage = {
       )
       .all(clientId, weekStart, weekEnd) as Array<{ payload: string }>;
     return parsePayloads<Load>(rows);
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 4 P0: driver-scoped reads
+  // -------------------------------------------------------------------------
+
+  /**
+   * Phase 4 P0: list loads assigned to a driver, newest first.
+   *
+   * Uses the (driver_id, created_at DESC) index for O(log n + k) lookup.
+   * Cursor is the `created_at` of the last item on the previous page
+   * (matches the listUsersPaginated / listInvitesPaginated convention).
+   *
+   * Driver tenancy is enforced HERE — every row returned has
+   * `driver_id = :driverId`. Callers that pass `req.session.userId` and
+   * `requireRole('driver')` cannot leak loads to another driver.
+   */
+  listLoadsForDriver(
+    driverId: string,
+    opts: { limit?: number; cursor?: string } = {},
+  ): { items: Load[]; nextCursor: string | null; total: number } {
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+
+    const where: string[] = ["driver_id = ?"];
+    const params: any[] = [driverId];
+
+    // total is counted BEFORE applying the cursor, matching Phase 3 spec §0.3.
+    const total = (sqlite
+      .prepare(`SELECT COUNT(*) as c FROM loads WHERE ${where.join(" AND ")}`)
+      .get(...params) as { c: number }).c;
+
+    if (opts.cursor) {
+      where.push("created_at < ?");
+      params.push(opts.cursor);
+    }
+
+    const rows = sqlite
+      .prepare(
+        `SELECT payload, created_at FROM loads
+         WHERE ${where.join(" AND ")}
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(...params, limit + 1) as Array<{ payload: string; created_at: string }>;
+
+    const hasMore = rows.length > limit;
+    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+    const items = pageRows.map((r) => JSON.parse(r.payload) as Load);
+    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].created_at : null;
+    return { items, nextCursor, total };
+  },
+
+  /**
+   * Phase 4 P0: light-touch read of the driver_id column without parsing the
+   * whole payload. Used by /api/me/loads/:id to authorise BEFORE returning
+   * the load to a driver (so we 404 cleanly on cross-driver fetch).
+   *
+   * Returns:
+   *   - undefined if the load doesn't exist
+   *   - null      if the load exists but has no driver_id (e.g. unbooked)
+   *   - the id    of the assigned driver otherwise
+   */
+  getLoadDriverId(loadId: string): string | null | undefined {
+    const row = sqlite
+      .prepare("SELECT driver_id FROM loads WHERE id = ?")
+      .get(loadId) as { driver_id: string | null } | undefined;
+    if (!row) return undefined;
+    return row.driver_id;
+  },
+
+  /**
+   * Phase 4 P0: write a new driver status. Caller-side requireRole('driver')
+   * + the route checks role==='driver' before calling, so non-driver writes
+   * never reach this helper. We still hard-store anyway — column is NOT NULL.
+   */
+  updateUserStatus(userId: string, status: DriverStatus): UserInternal | undefined {
+    const existing = this.getUserById(userId);
+    if (!existing) return undefined;
+    const timestamp = now();
+    sqlite
+      .prepare(`UPDATE users SET driver_status = ?, updated_at = ? WHERE id = ?`)
+      .run(status, timestamp, userId);
+    return this.getUserById(userId);
+  },
+
+  /**
+   * Phase 4 P0: update driver-managed profile fields. Only fullName and phone
+   * are user-editable — role, email, blocked, linkedClientId stay
+   * admin-managed via updateUser. At least one field must be provided
+   * (validated by the route schema).
+   */
+  updateUserProfileFields(
+    userId: string,
+    patch: { fullName?: string; phone?: string },
+  ): UserInternal | undefined {
+    const existing = this.getUserById(userId);
+    if (!existing) return undefined;
+    const sets: string[] = [];
+    const params: any[] = [];
+    if (patch.fullName !== undefined) {
+      sets.push("full_name = ?");
+      params.push(patch.fullName);
+    }
+    if (patch.phone !== undefined) {
+      sets.push("phone = ?");
+      params.push(patch.phone);
+    }
+    if (sets.length === 0) return existing; // no-op; route layer should have rejected
+    sets.push("updated_at = ?");
+    params.push(now());
+    params.push(userId);
+    sqlite
+      .prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`)
+      .run(...params);
+    return this.getUserById(userId);
   },
 
   // -------------------------------------------------------------------------

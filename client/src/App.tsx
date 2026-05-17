@@ -26,32 +26,60 @@ import AuditPage from "@/pages/admin/audit";
 import BackupPage from "@/pages/admin/backup";
 import BillingPage from "@/pages/admin/billing";
 import SettingsPage from "@/pages/admin/settings";
+// Phase 4 P0 — driver portal at /d/*
+import { DriverShell } from "@/pages/driver/_shell";
+import DriverDashboardPage from "@/pages/driver/dashboard";
+import DriverLoadsListPage from "@/pages/driver/loads-list";
+import DriverLoadDetailPage from "@/pages/driver/load-detail";
+import DriverDocumentsPage from "@/pages/driver/documents";
+import DriverProfilePage from "@/pages/driver/profile";
+
+/**
+ * Wrapped hash-location hook that strips any `?query` (and `#fragment`) from
+ * the hash before passing the path to wouter's Switch / Route matcher.
+ *
+ * Why this exists:
+ * - `signupUrl` returned by `/api/admin/invites` looks like
+ *   `http://host/#/signup?code=DOS-XXXX-XXXX-XXXX`. With the stock
+ *   `useHashLocation`, the matcher sees the path as `/signup?code=DOS-...`,
+ *   so `<Route path="/signup">` doesn't match and the user lands on 404.
+ * - The page itself (`signup.tsx`) reads the code via `window.location.hash`
+ *   directly (parseHashSearch helper), so we only need to fix what the
+ *   matcher sees — we don't need to expose the query to wouter at all.
+ *
+ * This is a 5-line wrapper and keeps wouter's navigate/SSR contract intact.
+ */
+function useStrippedHashLocation(): [string, (to: string, opts?: { replace?: boolean; state?: unknown }) => void] {
+  const [raw, navigate] = useHashLocation();
+  const stripped = raw.split(/[?#]/, 1)[0] || "/";
+  return [stripped, navigate];
+}
+// Preserve the static `hrefs` helper wouter uses for `<Link href="...">`.
+(useStrippedHashLocation as unknown as { hrefs: (href: string) => string }).hrefs =
+  (useHashLocation as unknown as { hrefs: (href: string) => string }).hrefs;
 
 /**
  * Single entry-point for the whole web app.
  *
  * - Router uses hash-based location (main.tsx initialises window.location.hash
  *   to "#/"). This keeps the deployable static-host friendly.
- * - Three top-level role spaces: /admin/*, /dispatch/*, /me/*. Each is
+ * - Three top-level role spaces: /admin/*, /dispatch/*, /d/*. Each is
  *   guarded by <RoleGate>. Unauthenticated users get bounced to /login;
  *   wrong-role users get bounced to their portal's home (silent).
  * - "/" is a smart redirect: logged-in → defaultRouteForRole;
  *   not logged-in → /login.
  *
- * Phase 2 deliverable scope:
- *   - All public pages implemented
- *   - Admin shell + RoleGate in place
- *   - All 11 /admin/* screens are placeholders here (filled in part 2 of
- *     Phase 2)
- *   - /admin/legacy-dashboard keeps the v1.2.7 monolith alive until Phase 3
- *   - /dispatch/* and /me/* render a stub for the next AI to replace
+ * Phase 4 P0 scope:
+ *   - Driver portal /d/* реализован (dashboard, loads, load detail,
+ *     documents stub, profile). API: /api/me/* (server/routes/me.ts).
+ *   - /dispatch/* остаётся PortalStub до PR phase4-dispatcher-p0.
  */
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <TooltipProvider delayDuration={150}>
-          <Router hook={useHashLocation}>
+          <Router hook={useStrippedHashLocation}>
             <Switch>
               {/* Public auth pages */}
               <Route path="/login" component={LoginPage} />
@@ -65,23 +93,20 @@ export default function App() {
                 </RoleGate>
               </Route>
 
-              {/* Dispatcher space (stub for Phase 4 AI) */}
+              {/* Dispatcher space (stub for Phase 4 dispatcher PR) */}
               <Route path="/dispatch" nest>
                 <RoleGate allow={["dispatcher"]}>
                   <PortalStub
                     portalName="Dispatcher Portal"
-                    note="Будет реализован в Phase 4 третьим ИИ. Дизайн-система готова и совместима."
+                    note="Будет реализован в следующем PR (phase4-dispatcher-p0)."
                   />
                 </RoleGate>
               </Route>
 
-              {/* Driver space (stub for Phase 4 AI) */}
-              <Route path="/me" nest>
+              {/* Driver space (Phase 4 P0 — реализовано) */}
+              <Route path="/d" nest>
                 <RoleGate allow={["driver"]}>
-                  <PortalStub
-                    portalName="Driver Portal"
-                    note="Будет реализован в Phase 4 третьим ИИ. Дизайн-система готова и совместима."
-                  />
+                  <DriverRouter />
                 </RoleGate>
               </Route>
 
@@ -122,6 +147,26 @@ function AdminRouter() {
         <Route component={NotFound} />
       </Switch>
     </AdminShell>
+  );
+}
+
+/**
+ * DriverRouter — routes inside the /d space. Paths relative to /d.
+ * Phase 4 P0. The shell wraps all driver screens in the orange theme
+ * override and provides the bottom nav.
+ */
+function DriverRouter() {
+  return (
+    <DriverShell>
+      <Switch>
+        <Route path="/" component={DriverDashboardPage} />
+        <Route path="/loads" component={DriverLoadsListPage} />
+        <Route path="/loads/:id" component={DriverLoadDetailPage} />
+        <Route path="/documents" component={DriverDocumentsPage} />
+        <Route path="/profile" component={DriverProfilePage} />
+        <Route component={NotFound} />
+      </Switch>
+    </DriverShell>
   );
 }
 

@@ -251,6 +251,10 @@ export const userPublicSchema = z.object({
   twoFactorEnabled: z.boolean(),
   linkedClientId: z.string().optional(),                  // only for role=driver
   assignedClientIds: z.array(z.string()).optional(),      // only for role=dispatcher
+  // Phase 4: additive optional fields. Phase 1 contract preserved — all
+  // existing fields above are unchanged, these are strict-superset.
+  phone: z.string().optional(),                           // any role; user-managed
+  driverStatus: z.enum(["available", "on_route", "off_duty"]).optional(), // role=driver only
   createdAt: z.string(),
   updatedAt: z.string(),
   lastLoginAt: z.string().optional(),
@@ -652,3 +656,115 @@ export type LoadWithBooking = z.infer<typeof loadWithBookingSchema>;
 /** insertLoadSchema extended likewise. POST /api/loads accepts the same body. */
 export const insertLoadWithBookingSchema = insertLoadSchema.merge(loadBookingFieldsSchema);
 export type InsertLoadWithBooking = z.infer<typeof insertLoadWithBookingSchema>;
+
+// ===========================================================================
+// PHASE 4 ADDITIONS — Driver portal (P0)
+// ===========================================================================
+//
+// All schemas below are additive. Phase 1-3 types/shapes ABOVE are not edited
+// (except userPublicSchema gaining two optional fields — strict superset).
+//
+// Conventions:
+//   - driverStatus: column on users, controls dashboard status card colour and
+//     dispatcher pipeline visibility ("off_duty" hides from auto-suggest).
+//   - loadStatus: derived (not a column) from booking + delivery fields. We do
+//     not store status on loads yet — Phase 1 contract is preserved. Used as
+//     a query filter in /api/me/loads?status=available.
+//   - driverId: optional column on loads, mirrored into loads.driver_id like
+//     clientId/bookedAt did in P2. Set by dispatcher booking (P3) or seed.
+// ---------------------------------------------------------------------------
+
+/** Driver self-reported availability. Drives the dashboard status card. */
+export const driverStatusSchema = z.enum(["available", "on_route", "off_duty"]);
+export type DriverStatus = z.infer<typeof driverStatusSchema>;
+
+/** Lifecycle status of a load. Computed from booking + dates (Phase 4 P0 has
+ *  only "available" and "booked"; later phases add transit / delivery). */
+export const loadStatusSchema = z.enum([
+  "available",
+  "booked",
+  "in_transit",
+  "at_delivery",
+  "delivered",
+  "cancelled",
+]);
+export type LoadStatus = z.infer<typeof loadStatusSchema>;
+
+/** Body for POST /api/me/status. */
+export const updateDriverStatusSchema = z.object({
+  status: driverStatusSchema,
+});
+export type UpdateDriverStatusInput = z.infer<typeof updateDriverStatusSchema>;
+
+/** Body for PATCH /api/me/profile. All fields optional; at least one must be
+ *  provided. The driver cannot change email or role here. */
+export const updateDriverProfileSchema = z
+  .object({
+    fullName: z.string().min(1).optional(),
+    phone: z.string().min(3).max(40).optional(),
+  })
+  .refine((v) => v.fullName !== undefined || v.phone !== undefined, {
+    message: "At least one of fullName, phone must be provided",
+  });
+export type UpdateDriverProfileInput = z.infer<typeof updateDriverProfileSchema>;
+
+/**
+ * Optional driver-link field for loads. Like loadBookingFieldsSchema, this is
+ * additive — POST /api/loads keeps accepting bodies without it.
+ */
+export const loadDriverFieldsSchema = z.object({
+  driverId: z.string().optional(),
+});
+
+/** loadSchema + booking + driver. Full Phase 4 read shape. */
+export const loadFullSchema = loadWithBookingSchema.merge(loadDriverFieldsSchema);
+export type LoadFull = z.infer<typeof loadFullSchema>;
+
+/** insertLoadSchema + booking + driver. POST /api/loads accepts this body. */
+export const insertLoadFullSchema = insertLoadWithBookingSchema.merge(loadDriverFieldsSchema);
+export type InsertLoadFull = z.infer<typeof insertLoadFullSchema>;
+
+/**
+ * Response shape for GET /api/me/dashboard. Aggregates everything the driver
+ * home screen needs in a single round-trip — list / pagination endpoints are
+ * available separately for deeper views.
+ */
+export const dashboardLoadStopSchema = z.object({
+  time: z.string(),       // ISO datetime, copied from pickupAt / deliveryAt
+  address: z.string(),    // "City, ST" — derived from load origin/destination
+  contact: z.string().optional(),
+});
+
+export const driverDashboardSchema = z.object({
+  driver: z.object({
+    id: z.string(),
+    fullName: z.string(),
+    email: z.string().email(),
+    phone: z.string().optional(),
+    status: driverStatusSchema,
+  }),
+  currentLoad: loadFullSchema.nullable(),
+  todayPickup: dashboardLoadStopSchema.nullable(),
+  todayDelivery: dashboardLoadStopSchema.nullable(),
+  /** Up to 3 most recent loads, newest first. P0: same shape as Load. */
+  recentLoads: z.array(loadFullSchema),
+  /** P0 stub — always false. P1 will read from a messages table. */
+  hasUnreadMessages: z.boolean(),
+  /** P0 stub — always []. P1 will read from documents.expires_at. */
+  pendingDocs: z.array(
+    z.object({
+      type: z.string(),
+      expiresAt: z.string().optional(),
+    }),
+  ),
+});
+export type DriverDashboard = z.infer<typeof driverDashboardSchema>;
+
+/** Cursor-paginated response for GET /api/me/loads. */
+export const meLoadsResponseSchema = z.object({
+  items: z.array(loadFullSchema),
+  nextCursor: z.string().nullable(),
+  hasMore: z.boolean(),
+  total: z.number(),
+});
+export type MeLoadsResponse = z.infer<typeof meLoadsResponseSchema>;

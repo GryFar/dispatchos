@@ -12,6 +12,7 @@ import {
   insertClientSchema,
   insertLoadSchema,
   insertLoadWithBookingSchema,
+  insertLoadFullSchema,
   signupSchema,
   telegramCommandSchema,
   updateLocationSchema,
@@ -34,6 +35,7 @@ import {
 } from "./auth";
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
 import { registerAdminRoutes } from "./routes/admin";
+import { registerMeRoutes } from "./routes/me";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -878,7 +880,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     req.session.authenticated = true; // legacy flag, kept for old frontend
     storage.recordUserLogin(user.id);
     storage.audit("auth.login", "user", user.id, { email: user.email, role: user.role });
-    res.json({ ok: true, role: user.role, redirect: `/${user.role === "admin" ? "admin" : user.role === "dispatcher" ? "dispatch" : "me"}` });
+    res.json({ ok: true, role: user.role, redirect: `/${user.role === "admin" ? "admin" : user.role === "dispatcher" ? "dispatch" : "d"}` });
   });
 
   app.post("/api/auth/logout", (req, res) => {
@@ -960,7 +962,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     storage.audit("auth.signup_login", "user", created.id, { role: created.role });
 
     const redirect =
-      created.role === "admin" ? "/admin" : created.role === "dispatcher" ? "/dispatch" : "/me";
+      created.role === "admin" ? "/admin" : created.role === "dispatcher" ? "/dispatch" : "/d";
 
     return res.status(201).json({
       id: created.id,
@@ -988,6 +990,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // of double-gating through `requireRole.any()`. See server/routes/admin.ts.
   // -------------------------------------------------------------------------
   registerAdminRoutes(app);
+
+  // -------------------------------------------------------------------------
+  // Phase 4 driver portal routes (P0). Same registration pattern as admin —
+  // each handler carries its own `requireRole('driver')` so we register here
+  // before the catch-all `requireRole.any()` gate. See server/routes/me.ts.
+  // -------------------------------------------------------------------------
+  registerMeRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The
@@ -1036,10 +1045,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/loads", (req, res) => {
     try {
-      // Phase 3 P2: accept optional clientId/bookedAt for billing linkage.
-      // Pre-Phase-3 callers (v1.2.7 frontend, Phase 1 smoke) keep working —
-      // those fields are optional, validation is strict-superset.
-      const load = storage.upsertLoad(insertLoadWithBookingSchema.parse(req.body));
+      // Phase 3 P2 + Phase 4 P0: accept optional clientId/bookedAt for billing
+      // linkage AND optional driverId for driver-portal scoping. Pre-Phase-3
+      // callers (v1.2.7 frontend, Phase 1 smoke) keep working — those fields
+      // are all optional, validation is strict-superset of Phase 1.
+      const load = storage.upsertLoad(insertLoadFullSchema.parse(req.body));
       res.status(201).json(load);
     } catch (error) {
       handleZodError(error, res);

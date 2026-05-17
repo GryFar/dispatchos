@@ -1445,6 +1445,336 @@ try {
   }
   if (badLimit !== 400) throw new Error(`audit limit=9999 returned ${badLimit}, expected 400`);
   console.log("[OK] /api/audit limit validation");
+
+  // ===========================================================================
+  // Phase 4 — driver portal P0
+  // ===========================================================================
+  //
+  // Covers:
+  //   - driver invite (linkedClientId), signup → redirect "/d"
+  //   - GET /api/me/dashboard shape under driver session
+  //   - GET /api/me/loads pagination + driver scoping
+  //   - load assignment by setting driverId on POST /api/loads (additive)
+  //   - cross-driver leakage check (driver B cannot see driver A's loads, 404 on detail)
+  //   - POST /api/me/status (audit lookup)
+  //   - PATCH /api/me/profile (fullName + phone)
+  //   - GET /api/auth/login redirect=/d (already verified above in P0 signup,
+  //     re-verified after explicit re-login below)
+  //
+  // At this point cookieHeader = adminCookieForP3 (admin session, set at line ~1364).
+  // ---------------------------------------------------------------------------
+
+  // billingClient already references ivan-enclosed-01 (seeded). Reuse for driver linkage.
+  const driverInvite = await request("/api/admin/invites", {
+    method: "POST",
+    body: {
+      role: "driver",
+      ttlHours: 24,
+      linkedClientId: billingClient.id,
+    },
+  });
+  if (driverInvite.role !== "driver") {
+    throw new Error(`P4 driver invite did not return role=driver: ${JSON.stringify(driverInvite)}`);
+  }
+  if (driverInvite.linkedClientId !== billingClient.id) {
+    throw new Error(`P4 driver invite linkedClientId mismatch: ${driverInvite.linkedClientId}`);
+  }
+  if (!/#\/signup\?code=/.test(driverInvite.signupUrl || "")) {
+    throw new Error(`P4 driver invite signupUrl missing hash route: ${driverInvite.signupUrl}`);
+  }
+  console.log("[OK] P4 driver invite (linkedClientId + hash signupUrl)");
+
+  // Second driver invite for the cross-driver leak test (no linkedClientId needed
+  // — driver tenancy is by user id, not client id).
+  const driverInvite2 = await request("/api/admin/invites", {
+    method: "POST",
+    body: { role: "driver", ttlHours: 24 },
+  });
+
+  // Save admin cookie and signup driver A in a fresh jar.
+  const p4AdminCookie = cookieHeader;
+  cookieHeader = "";
+  const driverA = await request("/api/auth/signup", {
+    method: "POST",
+    body: {
+      inviteCode: driverInvite.code,
+      email: "smoke.driver.a@example.com",
+      fullName: "Smoke Driver A",
+      password: "SmokeDriverA1!",
+    },
+  });
+  if (driverA.role !== "driver") {
+    throw new Error(`P4 driverA signup wrong role: ${JSON.stringify(driverA)}`);
+  }
+  if (driverA.redirect !== "/d") {
+    throw new Error(`P4 driverA signup redirect expected "/d", got ${driverA.redirect}`);
+  }
+  console.log("[OK] P4 driver signup auto-login (redirect=/d)");
+
+  const driverACookie = cookieHeader;
+
+  // GET /api/me — driverStatus + linkedClientId surfaced via toUserPublic
+  const meDriverA = await request("/api/me");
+  if (meDriverA.driverStatus !== "available") {
+    throw new Error(`P4 /api/me driverStatus expected 'available', got ${meDriverA.driverStatus}`);
+  }
+  if (meDriverA.linkedClientId !== billingClient.id) {
+    throw new Error(`P4 /api/me linkedClientId mismatch: ${meDriverA.linkedClientId}`);
+  }
+  console.log("[OK] P4 /api/me surfaces driverStatus + linkedClientId");
+
+  // GET /api/me/dashboard — initial state (no loads yet)
+  const dashEmpty = await request("/api/me/dashboard");
+  if (!dashEmpty.driver || dashEmpty.driver.id !== driverA.id) {
+    throw new Error(`P4 dashboard.driver.id mismatch: ${JSON.stringify(dashEmpty.driver)}`);
+  }
+  if (dashEmpty.driver.status !== "available") {
+    throw new Error(`P4 dashboard.driver.status expected 'available', got ${dashEmpty.driver.status}`);
+  }
+  if (dashEmpty.currentLoad !== null) {
+    throw new Error("P4 dashboard.currentLoad must be null when driver has no booked loads");
+  }
+  if (!Array.isArray(dashEmpty.recentLoads) || dashEmpty.recentLoads.length !== 0) {
+    throw new Error(`P4 dashboard.recentLoads must be [] initially, got ${JSON.stringify(dashEmpty.recentLoads)}`);
+  }
+  if (dashEmpty.hasUnreadMessages !== false) {
+    throw new Error("P4 dashboard.hasUnreadMessages must be false in P0");
+  }
+  if (!Array.isArray(dashEmpty.pendingDocs)) {
+    throw new Error("P4 dashboard.pendingDocs must be an array");
+  }
+  console.log("[OK] P4 GET /api/me/dashboard initial shape (driver / null current / [] recent)");
+
+  // GET /api/me/loads — initial empty paginated shape
+  const loadsEmpty = await request("/api/me/loads");
+  if (!Array.isArray(loadsEmpty.items) || loadsEmpty.items.length !== 0) {
+    throw new Error("P4 /api/me/loads initial state must have items: []");
+  }
+  if (loadsEmpty.hasMore !== false || loadsEmpty.nextCursor !== null || loadsEmpty.total !== 0) {
+    throw new Error(`P4 /api/me/loads initial pagination shape wrong: ${JSON.stringify(loadsEmpty)}`);
+  }
+  console.log("[OK] P4 GET /api/me/loads (cursor pagination, empty)");
+
+  // Switch back to admin to create a load assigned to driver A.
+  cookieHeader = p4AdminCookie;
+  const driverALoad = await request("/api/loads", {
+    method: "POST",
+    body: {
+      ...makeBookableLoad({
+        rate: 1200,
+        bookedAt: "2026-05-15",
+        clientId: billingClient.id,
+        originCity: "Orlando",
+        destinationCity: "Charlotte",
+      }),
+      driverId: driverA.id,
+    },
+  });
+  if (driverALoad.id == null) {
+    throw new Error("P4 POST /api/loads with driverId did not return a load id");
+  }
+  // Re-fetch and confirm driverId is mirrored in the payload.
+  const driverALoadCheck = await request(`/api/loads`);
+  const foundDriverALoad = driverALoadCheck.find((l) => l.id === driverALoad.id);
+  if (!foundDriverALoad || foundDriverALoad.driverId !== driverA.id) {
+    throw new Error("P4 POST /api/loads did not persist driverId in payload");
+  }
+  console.log("[OK] P4 POST /api/loads accepts driverId additively");
+
+  // Also create one available (no driverId) load and one for driver B to make
+  // the leak test meaningful.
+  const unassignedLoad = await request("/api/loads", {
+    method: "POST",
+    body: makeBookableLoad({
+      rate: 999,
+      bookedAt: "2026-05-15",
+      clientId: billingClient.id,
+      originCity: "Tampa",
+      destinationCity: "Savannah",
+    }),
+  });
+  if (!unassignedLoad.id) throw new Error("P4 unassigned load create failed");
+
+  // Sign up driver B (different jar).
+  cookieHeader = "";
+  const driverB = await request("/api/auth/signup", {
+    method: "POST",
+    body: {
+      inviteCode: driverInvite2.code,
+      email: "smoke.driver.b@example.com",
+      fullName: "Smoke Driver B",
+      password: "SmokeDriverB1!",
+    },
+  });
+  if (driverB.redirect !== "/d") {
+    throw new Error(`P4 driverB signup redirect expected "/d", got ${driverB.redirect}`);
+  }
+  const driverBCookie = cookieHeader;
+
+  // Create one load for driver B (admin again).
+  cookieHeader = p4AdminCookie;
+  const driverBLoad = await request("/api/loads", {
+    method: "POST",
+    body: {
+      ...makeBookableLoad({
+        rate: 750,
+        bookedAt: "2026-05-15",
+        clientId: billingClient.id,
+        originCity: "Miami",
+        destinationCity: "Jacksonville",
+      }),
+      driverId: driverB.id,
+    },
+  });
+
+  // Now switch to driver A — should see exactly one load, theirs.
+  cookieHeader = driverACookie;
+  const aLoads = await request("/api/me/loads");
+  if (aLoads.total !== 1) {
+    throw new Error(`P4 driver A should have total=1, got ${aLoads.total}`);
+  }
+  if (!aLoads.items.some((l) => l.id === driverALoad.id)) {
+    throw new Error("P4 driver A did not see their assigned load in /api/me/loads");
+  }
+  if (aLoads.items.some((l) => l.id === driverBLoad.id)) {
+    throw new Error("P4 LEAK: driver A sees driver B's load in /api/me/loads");
+  }
+  if (aLoads.items.some((l) => l.id === unassignedLoad.id)) {
+    throw new Error("P4 LEAK: driver A sees an unassigned load in /api/me/loads");
+  }
+  console.log("[OK] P4 /api/me/loads scoping (driver A sees only own load, 0 leakage)");
+
+  // Driver A dashboard now has currentLoad = driverALoad, recentLoads has 1 entry.
+  const aDash = await request("/api/me/dashboard");
+  if (!aDash.currentLoad || aDash.currentLoad.id !== driverALoad.id) {
+    throw new Error("P4 driver A dashboard.currentLoad mismatch");
+  }
+  if (aDash.recentLoads.length !== 1 || aDash.recentLoads[0].id !== driverALoad.id) {
+    throw new Error("P4 driver A dashboard.recentLoads mismatch");
+  }
+  console.log("[OK] P4 /api/me/dashboard reflects newly assigned load");
+
+  // Detail endpoint: driver A → 200; driver A asking for driver B's load → 404.
+  const aDetail = await request(`/api/me/loads/${driverALoad.id}`);
+  if (aDetail.id !== driverALoad.id) throw new Error("P4 /api/me/loads/:id own load mismatch");
+
+  let leakStatus = 0;
+  try {
+    await request(`/api/me/loads/${driverBLoad.id}`);
+  } catch (err) {
+    leakStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (leakStatus !== 404) {
+    throw new Error(`P4 driver A reading driver B's load returned ${leakStatus}, expected 404`);
+  }
+  console.log("[OK] P4 GET /api/me/loads/:id returns 404 for cross-driver fetch (no leak)");
+
+  // Same 404 for the unassigned load (driver_id IS NULL → not yours).
+  let unassignedStatus = 0;
+  try {
+    await request(`/api/me/loads/${unassignedLoad.id}`);
+  } catch (err) {
+    unassignedStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (unassignedStatus !== 404) {
+    throw new Error(`P4 driver reading unassigned load returned ${unassignedStatus}, expected 404`);
+  }
+  console.log("[OK] P4 GET /api/me/loads/:id returns 404 for unassigned load (driver_id IS NULL)");
+
+  // POST /api/me/status — change available → on_route → off_duty.
+  const statusOnRoute = await request("/api/me/status", {
+    method: "POST",
+    body: { status: "on_route" },
+  });
+  if (statusOnRoute.driverStatus !== "on_route") {
+    throw new Error(`P4 /api/me/status response did not reflect new status: ${JSON.stringify(statusOnRoute)}`);
+  }
+  const meAfterStatus = await request("/api/me");
+  if (meAfterStatus.driverStatus !== "on_route") {
+    throw new Error("P4 /api/me did not reflect updated driverStatus");
+  }
+
+  // Idempotent no-op — POST same status returns 200 with same shape, no audit.
+  const statusNoop = await request("/api/me/status", {
+    method: "POST",
+    body: { status: "on_route" },
+  });
+  if (statusNoop.driverStatus !== "on_route") {
+    throw new Error("P4 /api/me/status idempotent no-op did not return same status");
+  }
+  console.log("[OK] P4 POST /api/me/status changes + idempotent no-op");
+
+  // Bad status enum → 400
+  let badStatus = 0;
+  try {
+    await request("/api/me/status", { method: "POST", body: { status: "vacationing" } });
+  } catch (err) {
+    badStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (badStatus !== 400) {
+    throw new Error(`P4 /api/me/status with invalid enum returned ${badStatus}, expected 400`);
+  }
+  console.log("[OK] P4 POST /api/me/status validates enum (400 on garbage)");
+
+  // PATCH /api/me/profile — update fullName + phone.
+  const patched = await request("/api/me/profile", {
+    method: "PATCH",
+    body: { fullName: "Smoke Driver A (renamed)", phone: "+1 555 0100" },
+  });
+  if (patched.fullName !== "Smoke Driver A (renamed)" || patched.phone !== "+1 555 0100") {
+    throw new Error(`P4 /api/me/profile did not apply patch: ${JSON.stringify(patched)}`);
+  }
+  console.log("[OK] P4 PATCH /api/me/profile (fullName + phone)");
+
+  // Empty patch → 400 via refine
+  let emptyPatchStatus = 0;
+  try {
+    await request("/api/me/profile", { method: "PATCH", body: {} });
+  } catch (err) {
+    emptyPatchStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (emptyPatchStatus !== 400) {
+    throw new Error(`P4 /api/me/profile empty body returned ${emptyPatchStatus}, expected 400`);
+  }
+  console.log("[OK] P4 PATCH /api/me/profile rejects empty body (400)");
+
+  // Cross-role probe: admin trying /api/me/dashboard → 403 (requireRole('driver'))
+  cookieHeader = p4AdminCookie;
+  let adminDashStatus = 0;
+  try {
+    await request("/api/me/dashboard");
+  } catch (err) {
+    adminDashStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (adminDashStatus !== 403) {
+    throw new Error(`P4 admin hitting /api/me/dashboard returned ${adminDashStatus}, expected 403`);
+  }
+  console.log("[OK] P4 /api/me/dashboard blocks non-driver (403)");
+
+  // Login redirect re-check: explicit POST /api/auth/login as driver A.
+  // (signup already verified redirect=/d; this confirms the login path too.)
+  cookieHeader = "";
+  const loginA = await request("/api/auth/login", {
+    method: "POST",
+    body: {
+      email: "smoke.driver.a@example.com",
+      password: "SmokeDriverA1!",
+      token: totp(driverA.totpSecret),
+    },
+  });
+  if (loginA.redirect !== "/d") {
+    throw new Error(`P4 /api/auth/login redirect for driver expected "/d", got ${loginA.redirect}`);
+  }
+  console.log("[OK] P4 POST /api/auth/login redirect=/d for role=driver");
+
+  // Audit event sanity: driver.status_changed should be visible to admin via filter.
+  cookieHeader = p4AdminCookie;
+  const statusAudit = await request("/api/audit?eventType=driver.status_changed&limit=10");
+  if (!statusAudit.items.some((ev) => ev.entityId === driverA.id)) {
+    throw new Error("P4 driver.status_changed audit event not found for driver A");
+  }
+  console.log("[OK] P4 audit: driver.status_changed recorded");
+
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);
