@@ -1,19 +1,14 @@
 // AI engine for DispatchOS — central export point.
 //
-// All AI-driven decision logic lives under `server/lib/ai/`. The route layer
-// imports from this module (not individual files) so we can refactor internals
-// without breaking consumers.
-
-// Load scoring — the core ranking engine
-export {
-  scoreLoadForClient,
-  rankLoadsForClient,
-  computeEconomics,
-  computeFeasibility,
-  computeDispatchScore,
-  haversineMiles,
-} from "./scoring";
-export type { ScoreLoadInput, RankOptions } from "./scoring";
+// Pure-function decision support for the existing dispatch-board / suggestions
+// flow. The core scoreLoadForClient lives in server/routes.ts and is owned by
+// the Phase 1 codebase. The modules here ENRICH that scorer's inputs:
+//   • fuel.ts   → real diesel prices by state (replaces static client.fuelPrice)
+//   • fmcsa.ts  → FMCSA verdict on broker (feeds load.brokerScore + .fraudRisk)
+//   • lanes.ts  → lane benchmark PPM + dynamic market quality
+//   • brokers.ts → internal performance history + combined trust score
+//
+// Import from this index, never the individual files.
 
 // Fuel pricing
 export {
@@ -41,6 +36,7 @@ export {
   regionFor,
   quoteLane,
   classifyOffer,
+  marketQualityFor,
 } from "./lanes";
 export type { Region, LaneQuery, LaneQuote, OfferClassification } from "./lanes";
 

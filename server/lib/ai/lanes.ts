@@ -296,5 +296,31 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+// ---------------------------------------------------------------------------
+// Convenience: compute marketQuality for an existing Load record
+// ---------------------------------------------------------------------------
+
+/**
+ * Drop-in replacement for static `load.marketQuality`. Pass a Load and get
+ * a 0-100 score reflecting current lane economics. Used by the existing
+ * scoreLoadForClient in server/routes.ts so we don't have to hand-tune
+ * marketQuality at ingest time.
+ */
+export interface MinimalLoad {
+  originState: string;
+  destinationState: string;
+  equipment: "open_car_hauler" | "enclosed_car_hauler" | "hotshot_flatbed" | "sprinter_van";
+  pickupAt?: string;
+}
+
+export function marketQualityFor(load: MinimalLoad): number {
+  return quoteLane({
+    originState: load.originState,
+    destState: load.destinationState,
+    equipment: load.equipment,
+    asOfDate: load.pickupAt,
+  }).marketQuality;
+}
+
 // Re-export for tests
 export const __test_only = { STATE_REGION, VAN_BASELINE_PPM, EQUIPMENT_MULTIPLIER, SEASONAL_FACTOR };

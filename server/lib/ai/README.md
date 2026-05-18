@@ -1,84 +1,96 @@
-# `server/lib/ai/` — DispatchOS AI Engine
+# `server/lib/ai/` — AI Enrichment Modules
 
-Pure-function decision engine for ranking loads, evaluating brokers, and
-pricing lanes. **No LLM calls** — everything here is deterministic math + rules
-so it's fast (sub-15ms per load) and testable with fixtures.
+Pure-function decision support for the **existing** `scoreLoadForClient` in
+`server/routes.ts`. The core scorer is owned by Phase 1 — these modules
+**enrich its inputs** so it makes better decisions.
 
-## Modules
+## What's inside
 
-| File | Purpose | Tests |
+| File | Replaces / enriches | Tests |
 |---|---|---|
-| `scoring.ts` | Score and rank loads against drivers (PPM, deadhead, feasibility) | 25 |
-| `fuel.ts` | Diesel pricing by state (PADD baseline + EIA refresh hook) | — |
-| `fmcsa.ts` | FMCSA broker verification + risk verdict | 31 |
-| `lanes.ts` | Region-pair PPM benchmarks + seasonal + equipment multipliers | 29 |
-| `brokers.ts` | Internal broker performance tracking + combined trust score | 22 |
+| `fuel.ts` | Static `client.fuelPrice` → live diesel price by state with PADD fallback + EIA refresh hook | — |
+| `fmcsa.ts` | Manual broker entry → automated FMCSA Mobile API verdict (OOS / new MC / no BMC-84 / unsatisfactory) | 31 |
+| `lanes.ts` | Manual `load.marketQuality` → dynamic lane benchmark with regional + seasonal + equipment factors | 29 |
+| `brokers.ts` | Single-shot FMCSA → combined verdict using FMCSA + our internal performance history | 22 |
 
-**Total: 107 unit tests** — run with `npx tsx server/lib/ai/<file>.test.ts`.
+**Total: 82 unit tests** — `npx tsx server/lib/ai/<file>.test.ts`.
 
-## How to use from route layer
+## Why these and not a new scorer
+
+The existing `scoreLoadForClient(client, load)` in `server/routes.ts:332`
+already handles ranking math (PPM weights, deadhead penalty, feasibility).
+We don't replace it. We feed it better data.
+
+Today the scorer trusts these load fields blindly:
+- `load.brokerScore` — set manually at ingest, often default 70
+- `load.fraudRisk` — set manually, often 0
+- `load.marketQuality` — set manually, often 70
+- `client.fuelPrice` — single static value per client, ignores state
+
+These modules compute those fields dynamically from real signals.
+
+## Wiring guide
+
+### Pattern A — enrich at ingest time (recommended)
+
+When a new load is added (`POST /api/loads`, CSV import, email ingest), call
+the AI modules **once** and store the enriched values on the row:
 
 ```ts
-import {
-  rankLoadsForClient,
-  evaluateBroker,
-  quoteLane,
-  combineVerdicts,
-  buildHistory,
-  fetchByMc,
-} from "@/server/lib/ai";
+import { evaluateBroker, fetchByMc, marketQualityFor } from "@/server/lib/ai";
+
+async function enrichLoad(raw: InsertLoad): Promise<Load> {
+  const fmcsa = process.env.FMCSA_WEB_KEY
+    ? await fetchByMc(raw.brokerMc, { webKey: process.env.FMCSA_WEB_KEY })
+    : null;
+  const brokerVerdict = fmcsa ? evaluateBroker(fmcsa) : null;
+
+  return {
+    ...raw,
+    brokerScore: brokerVerdict?.score ?? raw.brokerScore ?? 70,
+    fraudRisk: brokerVerdict ? Math.max(0, 100 - brokerVerdict.score) : raw.fraudRisk ?? 0,
+    marketQuality: marketQualityFor({
+      originState: raw.originState,
+      destinationState: raw.destinationState,
+      equipment: raw.equipment,
+      pickupAt: raw.pickupAt,
+    }),
+  };
+}
 ```
 
-### Example: dispatcher suggestions endpoint
+### Pattern B — enrich at score time (safer, no DB churn)
+
+If you don't want to mutate `load` rows, override fields just before scoring:
 
 ```ts
-// GET /api/dispatch/suggestions?clientId=...
-const client = await storage.getClient(clientId);
-const location = client.lastLocation;
-const allLoads = await storage.listLoads({ status: "available" });
-const suggestions = rankLoadsForClient(allLoads, client, location, { topN: 5 });
-return suggestions;
+import { marketQualityFor, getDieselPrice } from "@/server/lib/ai";
+
+const enrichedLoad = { ...load, marketQuality: marketQualityFor(load) };
+const enrichedClient = {
+  ...client,
+  fuelPrice: getDieselPrice(client.currentLocation.state).price,
+};
+const scored = scoreLoadForClient(enrichedClient, enrichedLoad);
 ```
 
-### Example: book a load with broker check
+### Pattern C — book-time gate
+
+Block bookings against bad brokers. New endpoint `POST /api/dispatch/loads/:id/book`:
 
 ```ts
-// POST /api/dispatch/loads/:id/book
-const load = await storage.getLoad(id);
+import { fetchByMc, evaluateBroker, buildHistory, combineVerdicts } from "@/server/lib/ai";
+
 const fmcsa = await fetchByMc(load.brokerMc, { webKey: process.env.FMCSA_WEB_KEY! });
-const fmcsaVerdict = fmcsa ? evaluateBroker(fmcsa) : { verdict: "yellow", score: 50, reasons: ["FMCSA unreachable"], redFlags: [] };
-const events = await storage.listBrokerEvents(load.brokerMc);
+const fmcsaVerdict = fmcsa ? evaluateBroker(fmcsa) : { verdict: "yellow" as const, score: 50, reasons: ["FMCSA unreachable"], redFlags: [] };
+const events = await storage.listBrokerEvents(load.brokerMc);  // future storage method
 const history = buildHistory(events);
 const combined = combineVerdicts(fmcsaVerdict, history);
+
 if (combined.verdict === "red") {
-  return res.status(409).json({ error: "broker_blocked", reasons: combined.reasons });
-}
-// proceed with booking...
-```
-
-### Example: classify a counter-offer
-
-```ts
-const quote = quoteLane({ originState, destState, equipment, asOfDate });
-const classification = classifyOffer(rate, loadedMiles, quote);
-if (classification.recommendedAction === "counter") {
-  await sendCounterEmail(brokerEmail, classification.suggestedCounter);
+  return res.status(409).json({ error: "broker_blocked", reasons: combined.reasons, redFlags: combined.redFlags });
 }
 ```
-
-## Design rules
-
-1. **No I/O in pure modules.** `scoring.ts`, `lanes.ts`, `brokers.ts` never
-   hit the network or database. Caller passes data in, gets result out.
-   `fmcsa.ts` and `fuel.ts` have optional network functions explicitly named
-   (`fetchByMc`, `refreshFromEia`).
-2. **Deterministic.** Same inputs always produce same output. No randomness,
-   no `new Date()` inside scoring logic (caller passes timestamps).
-3. **Conservative defaults.** When uncertain, return the safer verdict
-   (yellow over green, skip over book). Trucking margins are too thin for
-   optimism.
-4. **Explainable.** Every score comes with `reasons` and `warnings` arrays so
-   the dispatcher can audit and override.
 
 ## Calibration sources
 
@@ -86,10 +98,9 @@ if (classification.recommendedAction === "counter") {
 |---|---|
 | Fuel baselines | EIA Weekly Retail On-Highway Diesel (May 2026) |
 | Lane PPM | DAT One Trendlines + Trucker Path Spot Market (May 2026) |
-| Seasonal factors | DAT 5-year seasonality analysis |
-| Equipment multipliers | Car-hauler dispatcher community survey (May 2026) |
-| FMCSA logic | 49 CFR §371 (broker authority) + §387 (insurance) |
-| Broker performance weights | Hand-tuned, will replace with learned model after ~500 booked loads |
+| Seasonal factors | DAT 5-year seasonality |
+| Equipment multipliers | Car-hauler community survey (May 2026) |
+| FMCSA logic | 49 CFR §371 + §387 |
+| Broker history weights | Hand-tuned, replace with learned model after ~500 loads |
 
-Re-calibrate quarterly. When you do, bump the constants at the top of each
-file and re-run tests — they're tuned to the current calibration.
+Re-calibrate quarterly. Bump constants at top of each file → re-run tests.
