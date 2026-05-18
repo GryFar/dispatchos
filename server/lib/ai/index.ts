@@ -40,6 +40,13 @@ export {
 } from "./lanes";
 export type { Region, LaneQuery, LaneQuote, OfferClassification } from "./lanes";
 
+// Load enrichment (drop-in for ingest path)
+export {
+  enrichLoadSync,
+  enrichLoadAsync,
+} from "./enrich";
+export type { EnrichOptions, EnrichResult } from "./enrich";
+
 // Broker history & combined trust
 export {
   buildHistory,
