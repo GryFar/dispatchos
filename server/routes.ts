@@ -36,6 +36,7 @@ import {
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerMeRoutes } from "./routes/me";
+import { registerLeadRoutes } from "./routes/leads";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -997,6 +998,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // before the catch-all `requireRole.any()` gate. See server/routes/me.ts.
   // -------------------------------------------------------------------------
   registerMeRoutes(app);
+
+  // -------------------------------------------------------------------------
+  // Phase 4 lead routes: public /api/public/subscribe (no auth) +
+  // dispatcher /api/dispatch/leads/* (own role gate). Registered here so
+  // the public endpoint sits BEFORE the catch-all auth middleware.
+  // -------------------------------------------------------------------------
+  registerLeadRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The
