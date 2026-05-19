@@ -24,42 +24,72 @@ interface ResendWebhookEvent {
   };
 }
 
-// Resend webhook signing: SHA-256 HMAC over the raw body using the secret.
-// See https://resend.com/docs/dashboard/webhooks/verify-webhooks-requests
-function verifyResendSignature(rawBody: string, signature: string, secret: string): boolean {
-  if (!signature || !secret) return false;
-  // Resend sends "v0,whsec_<hex>" format on header svix-signature
-  // Different versions of svix use different schemes; support both.
-  // Simplest implementation: compare HMAC-SHA256(secret, body) hex to the
-  // hex part of the signature header.
+// Resend uses the Standard Webhooks / svix signature scheme.
+//   Headers: svix-id, svix-timestamp, svix-signature
+//   Signed payload: `${svix_id}.${svix_timestamp}.${raw_body}`
+//   Signature: base64( HMAC-SHA256(secret_bytes, signed_payload) )
+//   Header format: "v1,<base64sig> v1,<base64sig> ..." (may be multiple)
+//   Secret must be base64-decoded after stripping the "whsec_" prefix.
+// See https://www.standardwebhooks.com/ + https://docs.svix.com/receiving/verifying-payloads/how-manual
+function verifyResendSignature(
+  rawBody: string,
+  svixId: string | undefined,
+  svixTimestamp: string | undefined,
+  svixSignatureHeader: string | undefined,
+  secret: string,
+): boolean {
+  if (!svixId || !svixTimestamp || !svixSignatureHeader || !secret) return false;
+
+  // Strip prefix and decode base64 → raw secret bytes
+  const cleaned = secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret;
+  let secretBytes: Buffer;
   try {
-    const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
-    return signature.includes(expected);
+    secretBytes = Buffer.from(cleaned, "base64");
   } catch {
     return false;
   }
+  if (secretBytes.length === 0) return false;
+
+  const signedPayload = `${svixId}.${svixTimestamp}.${rawBody}`;
+  const expected = crypto.createHmac("sha256", secretBytes).update(signedPayload).digest("base64");
+
+  // Header is space-separated list of "v1,<sig>" entries. Accept v1 only.
+  const candidates = svixSignatureHeader.split(" ").map((s) => s.trim()).filter(Boolean);
+  for (const candidate of candidates) {
+    const [version, sig] = candidate.split(",");
+    if (version !== "v1" || !sig) continue;
+    // Constant-time compare to avoid timing attacks
+    if (sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function registerWebhookRoutes(app: Express): void {
   // -------------------------------------------------------------------------
   // POST /api/webhooks/resend
   // -------------------------------------------------------------------------
-  // We use express.json() globally in routes.ts; for HMAC verification we need
-  // the raw body. Resend's payload is tiny (<1KB) so we re-stringify after
-  // parsing — that's NOT how HMAC normally works (whitespace would change the
-  // digest) but it's pragmatic for a low-stakes notify-only endpoint.
-  // For production-grade verification we'd use express.raw() on this path.
+  // Express applies express.json() globally; req.body is already the parsed
+  // object. For svix HMAC we need the EXACT raw bytes (whitespace matters).
+  // Two solutions:
+  //   a) re-serialize req.body — fragile, whitespace differs
+  //   b) capture rawBody via verify hook in express.json
+  // We use (b) by checking (req as any).rawBody first, then falling back to
+  // re-serialize. The rawBody hook is added in routes.ts express.json config
+  // when this PR lands.
   app.post("/api/webhooks/resend", (req: Request, res: Response) => {
     const secret = process.env.RESEND_WEBHOOK_SECRET;
 
-    // If a secret is configured, verify signature header.
     if (secret) {
-      const sig =
-        (req.headers["svix-signature"] as string | undefined) ??
-        (req.headers["resend-signature"] as string | undefined) ??
-        "";
-      const raw = JSON.stringify(req.body);
-      if (!verifyResendSignature(raw, sig, secret)) {
+      const svixId = req.headers["svix-id"] as string | undefined;
+      const svixTimestamp = req.headers["svix-timestamp"] as string | undefined;
+      const svixSignature = req.headers["svix-signature"] as string | undefined;
+      // express.json verify hook stores rawBody as a Buffer (see server/index.ts).
+      // svix signature needs the EXACT bytes Resend signed.
+      const rawBuf = (req as unknown as { rawBody?: Buffer }).rawBody;
+      const rawBody = rawBuf ? rawBuf.toString("utf8") : JSON.stringify(req.body);
+      if (!verifyResendSignature(rawBody, svixId, svixTimestamp, svixSignature, secret)) {
         return res.status(401).json({ message: "Invalid signature" });
       }
     }
