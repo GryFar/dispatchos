@@ -1,75 +1,63 @@
 # DispatchOS — production Docker image
 #
 # Multi-stage build:
-#   1. deps stage installs node_modules
-#   2. build stage runs `npm run build` (esbuild + vite)
-#   3. runtime stage is a minimal Alpine image with the bundle + native deps
+#   1. build stage: install all deps + npm run build (esbuild + vite)
+#   2. runtime stage: copy bundle + prune dev deps from node_modules
 #
-# better-sqlite3 needs node-gyp / python3 / build tooling at install time on
-# Alpine, so we keep that in the deps stage and copy only the compiled .node
-# into the runtime image.
+# Key fix: esbuild externalises most server deps (except an allowlist),
+# so the production node_modules must contain dotenv, express, better-sqlite3,
+# bcryptjs, drizzle-orm, etc. We achieve that by copying the full
+# node_modules from build stage, then running `npm prune --omit=dev` to
+# strip devDependencies.
 
 # =============================================================================
-# Stage 1: deps
+# Stage 1: build
 # =============================================================================
-FROM node:20-alpine AS deps
+FROM node:20-alpine AS build
 
 RUN apk add --no-cache python3 make g++ libc6-compat
 
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-
-# Use --omit=dev to skip devDependencies — but we need them for the build step,
-# so install everything here, then prune in the build stage.
 RUN npm install --no-audit --no-fund
 
-# =============================================================================
-# Stage 2: build
-# =============================================================================
-FROM node:20-alpine AS build
-
-WORKDIR /app
-
-COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-
-# Build server bundle (dist/index.cjs) + client bundle (dist/public/)
 RUN npm run build
 
+# Strip devDependencies — leaves only runtime deps in node_modules
+RUN npm prune --omit=dev
+
 # =============================================================================
-# Stage 3: runtime
+# Stage 2: runtime
 # =============================================================================
 FROM node:20-alpine AS runtime
 
-# Native libs needed at runtime by better-sqlite3
 RUN apk add --no-cache libc6-compat tini
 
-# Non-root user
+# Non-root user matching the volume uid/gid
 RUN addgroup -g 1001 -S app && adduser -u 1001 -S app -G app
 
 WORKDIR /app
 
-# Copy bundle + static assets from build stage
+# Bundle + static assets
 COPY --from=build /app/dist ./dist
-# Compiled native dependency (better-sqlite3) lives in node_modules
-COPY --from=build /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
-# Hoisted runtime helpers used by better-sqlite3 / express boot
-COPY --from=build /app/node_modules/bindings ./node_modules/bindings
-COPY --from=build /app/node_modules/file-uri-to-path ./node_modules/file-uri-to-path
+# Pruned production node_modules (contains dotenv, express, better-sqlite3, etc.)
+COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 
-# Mountpoint for the persistent volume (Fly mounts this)
+# Mountpoint for the persistent volume (Fly mounts this at runtime)
 RUN mkdir -p /data /data/uploads /data/drive && chown -R app:app /data /app
 
 USER app
 
 ENV NODE_ENV=production \
     PORT=8080 \
+    DISPATCHOS_HOST=0.0.0.0 \
     DISPATCHOS_DB_PATH=/data/dispatchos-unified.db \
     DISPATCHOS_DATA_ROOT=/data \
     DISPATCHOS_DEPLOYMENT_MODE=vds \
-    DISPATCHOS_TRUST_PROXY=1
+    DISPATCHOS_TRUST_PROXY=2
 
 EXPOSE 8080
 
