@@ -21,17 +21,25 @@
 // ---------------------------------------------------------------------------
 
 import type { Express, Request, Response, NextFunction } from "express";
+import fs from "node:fs";
+import path from "node:path";
 import { ZodError } from "zod";
 import {
+  createCheckinSchema,
+  createExpenseSchema,
+  createIssueSchema,
+  driverDocumentTypeSchema,
   driverStatusSchema,
   loadFullSchema,
+  uploadDriverDocumentSchema,
   updateDriverProfileSchema,
   updateDriverStatusSchema,
   type DriverDashboard,
   type LoadFull,
 } from "@shared/schema";
 import { getCurrentUser, requireRole } from "../auth";
-import { storage } from "../storage";
+import { storage, uploadsRoot } from "../storage";
+import { upload } from "../upload";
 
 // ---------------------------------------------------------------------------
 // Helpers (mirror server/routes/admin.ts conventions)
@@ -170,9 +178,12 @@ export function registerMeRoutes(app: Express): void {
         todayPickup,
         todayDelivery,
         recentLoads,
-        // P0 stubs — wired up properly in P1 (messages thread, documents).
+        // P0 stub — message threads land in a future phase.
         hasUnreadMessages: false,
-        pendingDocs: [],
+        // P1: compute from driver_documents.expires_at. PendingDoc has more
+        // fields than the P0 stub shape (id, daysUntilExpiry, status) but
+        // this is a strict superset — P0 clients keep parsing without change.
+        pendingDocs: storage.computePendingDocsForUser(user.id, 30),
       };
       return res.json(body);
     }),
@@ -322,6 +333,303 @@ export function registerMeRoutes(app: Express): void {
         fields: Object.keys(patch),
       });
       return res.json(storage.toUserPublic(updated));
+    }),
+  );
+
+  // ===========================================================================
+  // Phase 4 P1 — Documents (driver-owned compliance docs)
+  // ===========================================================================
+  //
+  // GET    /api/me/documents              — list own docs (cursor pagination)
+  // POST   /api/me/documents              — multipart upload (file + metadata)
+  // DELETE /api/me/documents/:id          — delete own doc + unlink file
+  //
+  // Tenant scoping: every read/write filtered by session userId. /:id endpoints
+  // return 404 (not 403) if doc belongs to someone else — same anti-enumeration
+  // pattern as P0 /api/me/loads/:id.
+
+  app.get(
+    "/api/me/documents",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+      const out = storage.listDriverDocumentsForUser(user.id, { limit, cursor });
+      return res.json(out);
+    }),
+  );
+
+  app.post(
+    "/api/me/documents",
+    driver,
+    upload.single("file"),
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "file is required (multipart field 'file')" });
+
+      // Parse + validate metadata before we commit to a DB row. If parsing
+      // fails, drop the uploaded temp file so we don't accumulate orphans.
+      let meta: ReturnType<typeof uploadDriverDocumentSchema.parse>;
+      try {
+        meta = uploadDriverDocumentSchema.parse(req.body);
+      } catch (err) {
+        try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+        throw err;
+      }
+
+      // Move the temp file from multer's `uploadsRoot` flat dir into a typed
+      // subfolder (driver-docs/<userId>/<filename>) for sanity in backups.
+      const subdir = path.join(uploadsRoot, "driver-docs", user.id);
+      fs.mkdirSync(subdir, { recursive: true });
+      const safeBase = `${Date.now()}-${path.basename(file.originalname).replace(/[^\w.\-]/g, "_")}`;
+      const finalPath = path.join(subdir, safeBase);
+      fs.renameSync(file.path, finalPath);
+      // storage_path is server-relative; resolution to absolute happens at read.
+      const storagePath = path.relative(uploadsRoot, finalPath);
+
+      const doc = storage.insertDriverDocument({
+        ownerUserId: user.id,
+        type: meta.type,
+        fileName: file.originalname,
+        storagePath,
+        expiresAt: meta.expiresAt ?? null,
+        notes: meta.notes ?? null,
+      });
+
+      storage.audit("driver.document_uploaded", "driver_document", doc.id, {
+        userId: user.id,
+        actorUserId: user.id,
+        type: doc.type,
+        expiresAt: doc.expiresAt,
+        sizeBytes: file.size,
+      });
+
+      return res.status(201).json(doc);
+    }),
+  );
+
+  app.delete(
+    "/api/me/documents/:id",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const id = String(req.params.id);
+      const doc = storage.getDriverDocument(id);
+      // 404 (not 403) when foreign — anti-enumeration, matches P0 loads/:id.
+      if (!doc || doc.ownerUserId !== user.id) {
+        return res.status(404).json({ message: "Document not found" });
+      }
+      const ok = storage.deleteDriverDocument(id, user.id);
+      if (!ok) return res.status(404).json({ message: "Document not found" });
+      // Best-effort unlink the file. Don't fail the request on FS errors —
+      // the DB row is already gone, an orphan blob is recoverable.
+      try {
+        const abs = path.join(uploadsRoot, doc.storagePath);
+        if (fs.existsSync(abs)) fs.unlinkSync(abs);
+      } catch { /* ignore */ }
+
+      storage.audit("driver.document_deleted", "driver_document", id, {
+        userId: user.id,
+        actorUserId: user.id,
+        type: doc.type,
+      });
+      return res.status(204).end();
+    }),
+  );
+
+  // ===========================================================================
+  // Phase 4 P1 — Check-ins
+  // ===========================================================================
+  //
+  // GET  /api/me/loads/:id/checkins  — timeline for one load (driver-scoped)
+  // POST /api/me/loads/:id/checkin   — record arrival/loaded/delivered + geo
+  //
+  // Load ownership is verified before any read/write — same 404 rule as P0.
+
+  app.get(
+    "/api/me/loads/:id/checkins",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const loadDriverId = storage.getLoadDriverId(String(req.params.id));
+      if (!loadDriverId || loadDriverId !== user.id) {
+        return res.status(404).json({ message: "Load not found" });
+      }
+      return res.json({ items: storage.listCheckinsForLoad(String(req.params.id)) });
+    }),
+  );
+
+  app.post(
+    "/api/me/loads/:id/checkin",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const loadDriverId = storage.getLoadDriverId(String(req.params.id));
+      if (!loadDriverId || loadDriverId !== user.id) {
+        return res.status(404).json({ message: "Load not found" });
+      }
+      const body = createCheckinSchema.parse(req.body);
+      const checkin = storage.insertLoadCheckin({
+        loadId: String(req.params.id),
+        driverUserId: user.id,
+        kind: body.kind,
+        lat: body.lat ?? null,
+        lng: body.lng ?? null,
+        notes: body.notes ?? null,
+      });
+      storage.audit("driver.checkin", "load", String(req.params.id), {
+        userId: user.id,
+        actorUserId: user.id,
+        kind: body.kind,
+        hasGeo: typeof body.lat === "number",
+      });
+      return res.status(201).json(checkin);
+    }),
+  );
+
+  // ===========================================================================
+  // Phase 4 P1 — Expenses
+  // ===========================================================================
+  //
+  // GET  /api/me/expenses             — list own expenses (cursor + ?loadId=)
+  // POST /api/me/expenses             — log new expense (optional photo file)
+  //
+  // P1 scope: driver-side log only. No billing integration, no admin approval
+  // queue (will arrive in Phase 5). Amount taken as dollars in body, stored
+  // in cents (integer) to avoid floating-point drift in any future totals.
+
+  app.get(
+    "/api/me/expenses",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+      const loadId = typeof req.query.loadId === "string" ? req.query.loadId : undefined;
+      const out = storage.listExpensesForUser(user.id, { limit, cursor, loadId });
+      return res.json(out);
+    }),
+  );
+
+  app.post(
+    "/api/me/expenses",
+    driver,
+    upload.single("photo"),
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+
+      let body: ReturnType<typeof createExpenseSchema.parse>;
+      try {
+        body = createExpenseSchema.parse(req.body);
+      } catch (err) {
+        if (req.file) { try { fs.unlinkSync(req.file.path); } catch { /* ignore */ } }
+        throw err;
+      }
+
+      // If the expense references a load, verify it belongs to this driver
+      // (same anti-enumeration: a foreign loadId acts as if not found).
+      if (body.loadId) {
+        const owner = storage.getLoadDriverId(body.loadId);
+        if (!owner || owner !== user.id) {
+          if (req.file) { try { fs.unlinkSync(req.file.path); } catch { /* ignore */ } }
+          return res.status(404).json({ message: "Load not found" });
+        }
+      }
+
+      // Move uploaded photo (if any) into receipts subfolder.
+      let photoStoragePath: string | null = null;
+      if (req.file) {
+        const subdir = path.join(uploadsRoot, "receipts", user.id);
+        fs.mkdirSync(subdir, { recursive: true });
+        const safeBase = `${Date.now()}-${path.basename(req.file.originalname).replace(/[^\w.\-]/g, "_")}`;
+        const finalPath = path.join(subdir, safeBase);
+        fs.renameSync(req.file.path, finalPath);
+        photoStoragePath = path.relative(uploadsRoot, finalPath);
+      }
+
+      const expense = storage.insertDriverExpense({
+        driverUserId: user.id,
+        loadId: body.loadId ?? null,
+        category: body.category,
+        amountCents: Math.round(body.amount * 100),
+        photoStoragePath,
+        notes: body.notes ?? null,
+      });
+
+      storage.audit("driver.expense_filed", "driver_expense", expense.id, {
+        userId: user.id,
+        actorUserId: user.id,
+        category: expense.category,
+        amountCents: expense.amountCents,
+        loadId: expense.loadId,
+        hasPhoto: photoStoragePath !== null,
+      });
+
+      return res.status(201).json(expense);
+    }),
+  );
+
+  // ===========================================================================
+  // Phase 4 P1 — Issues (driver-reported problems)
+  // ===========================================================================
+  //
+  // POST /api/me/issues
+  //
+  // Creates an approval_task for the admin queue (P1 hardcodes assigneeRole=
+  // 'admin'; when dispatcher portal lands the queue will be re-routed via the
+  // driver→client→dispatcher chain in `assignments`).
+  //
+  // For now we don't keep a separate `issues` table — the approval_task
+  // payload carries title/severity/description. If issue volume justifies
+  // a dedicated table later, payload migration is trivial.
+
+  app.post(
+    "/api/me/issues",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const body = createIssueSchema.parse(req.body);
+
+      // If issue references a load, verify ownership (same 404 rule).
+      if (body.loadId) {
+        const owner = storage.getLoadDriverId(body.loadId);
+        if (!owner || owner !== user.id) {
+          return res.status(404).json({ message: "Load not found" });
+        }
+      }
+
+      const task = storage.createApprovalTask({
+        taskType: "driver_issue",
+        assigneeRole: "admin",
+        payload: {
+          severity: body.severity,
+          title: body.title,
+          description: body.description ?? null,
+          loadId: body.loadId ?? null,
+          reporterUserId: user.id,
+        },
+        createdByUserId: user.id,
+      });
+
+      storage.audit("driver.issue_reported", "approval_task", task.id, {
+        userId: user.id,
+        actorUserId: user.id,
+        severity: body.severity,
+        title: body.title,
+        loadId: body.loadId ?? null,
+      });
+
+      return res.status(201).json(task);
     }),
   );
 }

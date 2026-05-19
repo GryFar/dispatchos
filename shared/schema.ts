@@ -750,12 +750,17 @@ export const driverDashboardSchema = z.object({
   recentLoads: z.array(loadFullSchema),
   /** P0 stub — always false. P1 will read from a messages table. */
   hasUnreadMessages: z.boolean(),
-  /** P0 stub — always []. P1 will read from documents.expires_at. */
+  /** P1: filled from driver_documents.expires_at via computePendingDocsForUser.
+   *  P0 stub returned [] — shape was {type, expiresAt?}. P1 returns the
+   *  superset PendingDoc {id, type, expiresAt|null, daysUntilExpiry, status}.
+   *  We keep both shapes compatible by using a passthrough object schema. */
   pendingDocs: z.array(
-    z.object({
-      type: z.string(),
-      expiresAt: z.string().optional(),
-    }),
+    z
+      .object({
+        type: z.string(),
+        expiresAt: z.string().nullable().optional(),
+      })
+      .passthrough(),
   ),
 });
 export type DriverDashboard = z.infer<typeof driverDashboardSchema>;
@@ -860,3 +865,175 @@ export const insertBrokerEventSchema = z.object({
   amountUsd: z.number().optional(),
   notes: z.string().max(1000).optional(),
 });
+
+// ===========================================================================
+// PHASE 4 P1 — Driver operations (documents, check-ins, expenses, issues)
+// ===========================================================================
+//
+// P1 turns the driver portal from "read-only with status switcher" into a
+// working tool: drivers upload their own compliance docs (CDL/medical/COI/
+// W9), check in at pickup/delivery, file expenses, and report problems
+// upstream. All endpoints stay under /api/me/* and follow the same
+// tenant-scoping rule from P0 — every read/write filtered by session userId.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Driver documents
+// ---------------------------------------------------------------------------
+export const driverDocumentTypeSchema = z.enum([
+  "cdl",
+  "medical",
+  "coi",
+  "w9",
+  "ifta",
+  "other",
+]);
+export type DriverDocumentType = z.infer<typeof driverDocumentTypeSchema>;
+
+export const driverDocumentSchema = z.object({
+  id: z.string(),
+  ownerUserId: z.string(),
+  type: driverDocumentTypeSchema,
+  fileName: z.string(),
+  storagePath: z.string(),
+  expiresAt: z.string().nullable(),
+  notes: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type DriverDocument = z.infer<typeof driverDocumentSchema>;
+
+export const uploadDriverDocumentSchema = z.object({
+  type: driverDocumentTypeSchema,
+  expiresAt: dateOnlySchema.optional(),
+  notes: z.string().max(500).optional(),
+});
+export type UploadDriverDocumentInput = z.infer<typeof uploadDriverDocumentSchema>;
+
+export const pendingDocSchema = z.object({
+  id: z.string(),
+  type: driverDocumentTypeSchema,
+  expiresAt: z.string().nullable(),
+  daysUntilExpiry: z.number().nullable(),
+  status: z.enum(["expired", "soon", "ok"]),
+});
+export type PendingDoc = z.infer<typeof pendingDocSchema>;
+
+// ---------------------------------------------------------------------------
+// Load check-ins
+// ---------------------------------------------------------------------------
+export const checkinKindSchema = z.enum([
+  "pickup_arrived",
+  "loaded",
+  "in_transit",
+  "delivery_arrived",
+  "delivered",
+  "note",
+]);
+export type CheckinKind = z.infer<typeof checkinKindSchema>;
+
+export const loadCheckinSchema = z.object({
+  id: z.string(),
+  loadId: z.string(),
+  driverUserId: z.string(),
+  kind: checkinKindSchema,
+  lat: z.number().nullable(),
+  lng: z.number().nullable(),
+  notes: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type LoadCheckin = z.infer<typeof loadCheckinSchema>;
+
+export const createCheckinSchema = z
+  .object({
+    kind: checkinKindSchema,
+    lat: z.number().min(-90).max(90).optional(),
+    lng: z.number().min(-180).max(180).optional(),
+    notes: z.string().max(500).optional(),
+  })
+  .refine(
+    (v) =>
+      v.kind === "note" ||
+      v.kind === "in_transit" ||
+      (typeof v.lat === "number" && typeof v.lng === "number"),
+    {
+      message: "lat and lng are required for arrival/delivery check-ins",
+      path: ["lat"],
+    },
+  );
+export type CreateCheckinInput = z.infer<typeof createCheckinSchema>;
+
+// ---------------------------------------------------------------------------
+// Driver expenses
+// ---------------------------------------------------------------------------
+export const expenseCategorySchema = z.enum([
+  "fuel",
+  "parking",
+  "tolls",
+  "repair",
+  "lumper",
+  "other",
+]);
+export type ExpenseCategory = z.infer<typeof expenseCategorySchema>;
+
+export const driverExpenseSchema = z.object({
+  id: z.string(),
+  driverUserId: z.string(),
+  loadId: z.string().nullable(),
+  category: expenseCategorySchema,
+  amountCents: z.number().int().nonnegative(),
+  photoStoragePath: z.string().nullable(),
+  notes: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type DriverExpense = z.infer<typeof driverExpenseSchema>;
+
+export const createExpenseSchema = z.object({
+  loadId: z.string().optional(),
+  category: expenseCategorySchema,
+  amount: z.coerce.number().positive().max(100_000),
+  notes: z.string().max(500).optional(),
+});
+export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;
+
+// ---------------------------------------------------------------------------
+// Issues + approval tasks
+// ---------------------------------------------------------------------------
+export const issueSeveritySchema = z.enum(["info", "warn", "urgent"]);
+export type IssueSeverity = z.infer<typeof issueSeveritySchema>;
+
+export const createIssueSchema = z.object({
+  loadId: z.string().optional(),
+  severity: issueSeveritySchema,
+  title: z.string().min(3).max(120),
+  description: z.string().max(2000).optional(),
+});
+export type CreateIssueInput = z.infer<typeof createIssueSchema>;
+
+export const approvalTaskTypeSchema = z.enum([
+  "driver_issue",
+  "driver_booking_request",
+  "signup_lead",
+]);
+export type ApprovalTaskType = z.infer<typeof approvalTaskTypeSchema>;
+
+export const approvalTaskStatusSchema = z.enum([
+  "open",
+  "in_progress",
+  "resolved",
+  "dismissed",
+]);
+export type ApprovalTaskStatus = z.infer<typeof approvalTaskStatusSchema>;
+
+export const approvalTaskSchema = z.object({
+  id: z.string(),
+  taskType: approvalTaskTypeSchema,
+  assigneeRole: userRoleSchema,
+  resolvedByUserId: z.string().nullable(),
+  resolvedAt: z.string().nullable(),
+  status: approvalTaskStatusSchema,
+  payload: z.record(z.string(), z.unknown()),
+  createdByUserId: z.string(),
+  createdAt: z.string(),
+});
+export type ApprovalTask = z.infer<typeof approvalTaskSchema>;

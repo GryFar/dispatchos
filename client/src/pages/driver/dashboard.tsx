@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Truck,
@@ -81,9 +81,67 @@ export default function DriverDashboardPage() {
         todayPickup={data.todayPickup}
         todayDelivery={data.todayDelivery}
       />
-      <QuickActions phone={data.driver.phone} />
+      <PendingDocsCard docs={data.pendingDocs ?? []} />
+      <QuickActions
+        phone={data.driver.phone}
+        currentLoadId={data.currentLoad?.id ?? null}
+      />
       <RecentLoadsPanel loads={data.recentLoads} />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pending documents alert — P1. Only renders when driver has expiring or
+// expired docs (within 30 days). Tappable: routes to /d/documents.
+// ---------------------------------------------------------------------------
+function PendingDocsCard({
+  docs,
+}: {
+  docs: DriverDashboard["pendingDocs"];
+}) {
+  const [, setLocation] = useLocation();
+  // P0 always returned []; defensive filter in case some clients still send
+  // the old shape without `status`.
+  const flagged = docs.filter(
+    (d: Record<string, unknown>) => d.status === "expired" || d.status === "soon",
+  );
+  if (flagged.length === 0) return null;
+  const hasExpired = flagged.some((d: Record<string, unknown>) => d.status === "expired");
+
+  return (
+    <button
+      type="button"
+      onClick={() => setLocation("/documents")}
+      className={`flex w-full items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition-colors ${
+        hasExpired
+          ? "border-destructive/40 bg-destructive/10 hover:bg-destructive/15"
+          : "border-yellow-500/40 bg-yellow-500/10 hover:bg-yellow-500/15"
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <AlertTriangle
+          className={`h-5 w-5 shrink-0 ${
+            hasExpired ? "text-destructive" : "text-yellow-500"
+          }`}
+        />
+        <div>
+          <p className="text-sm font-semibold">
+            {hasExpired ? "Документы просрочены" : "Документы скоро истекают"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {flagged.length}{" "}
+            {flagged.length === 1
+              ? "документ"
+              : flagged.length < 5
+              ? "документа"
+              : "документов"}{" "}
+            требуют внимания
+          </p>
+        </div>
+      </div>
+      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+    </button>
   );
 }
 
@@ -244,20 +302,33 @@ function TodayPanel({
 }
 
 // ---------------------------------------------------------------------------
-// Quick actions — 4 buttons. P0: only Phone wired up, rest toast-stubs.
+// Quick actions — 4 buttons. P1: POD/Receipt/Issue route the driver to their
+// active load if one exists (where check-in/expense/issue forms live), or
+// show a friendly hint when there's no load yet. Phone call is native tel:.
 // ---------------------------------------------------------------------------
 
-function QuickActions({ phone }: { phone?: string }) {
+function QuickActions({
+  phone,
+  currentLoadId,
+}: {
+  phone?: string;
+  currentLoadId: string | null;
+}) {
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
 
-  // Soft no-op for P0 features. The buttons exist (so the screen looks
-  // complete) but tapping shows a clear "coming in P1" message rather than
-  // a 404 or a broken upload page.
-  const pending = (feature: string) =>
+  // Tapping POD/Receipt/Issue with no active load -> friendly toast. With a
+  // load -> deep-link to /d/loads/:id where the action dialogs live.
+  const routeOrHint = (action: string) => {
+    if (currentLoadId) {
+      setLocation(`/loads/${currentLoadId}`);
+      return;
+    }
     toast({
-      title: "Доступно в P1",
-      description: `${feature} появится в следующем PR (phase4-driver-p1).`,
+      title: "Нет активного рейса",
+      description: `${action} привязывается к конкретному рейсу. Откройте рейс из списка.`,
     });
+  };
 
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -265,7 +336,7 @@ function QuickActions({ phone }: { phone?: string }) {
         variant="outline"
         size="lg"
         className="h-auto flex-col gap-1.5 py-4"
-        onClick={() => pending("Загрузка POD/BOL")}
+        onClick={() => routeOrHint("POD/BOL")}
       >
         <Camera className="h-5 w-5" />
         <span className="text-xs font-medium">POD/BOL</span>
@@ -274,7 +345,7 @@ function QuickActions({ phone }: { phone?: string }) {
         variant="outline"
         size="lg"
         className="h-auto flex-col gap-1.5 py-4"
-        onClick={() => pending("Receipt (fuel/parking/repair)")}
+        onClick={() => routeOrHint("Receipt")}
       >
         <DollarSign className="h-5 w-5" />
         <span className="text-xs font-medium">Receipt</span>
@@ -283,7 +354,7 @@ function QuickActions({ phone }: { phone?: string }) {
         variant="outline"
         size="lg"
         className="h-auto flex-col gap-1.5 py-4"
-        onClick={() => pending("Сообщить о проблеме")}
+        onClick={() => routeOrHint("Проблема")}
       >
         <AlertTriangle className="h-5 w-5" />
         <span className="text-xs font-medium">Проблема</span>
