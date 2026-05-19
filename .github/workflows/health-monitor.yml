@@ -1,23 +1,17 @@
 name: Health Monitor
 
 # Pings demo.dispatchos.co + dispatchos.co every 10 minutes from GitHub's
-# infra. On failure, sends a Telegram alert to the team chat. Includes
-# auto-recovery message when the service comes back.
+# infra. On failure, sends a Telegram alert to the team chat. Lives next
+# to the code, free, version-controlled. Replaces UptimeRobot.
 #
-# Why GitHub Actions and not UptimeRobot:
-#   - Zero external accounts / dashboards
-#   - Free (well under the 2000 min/month limit; this uses ~150 min/month)
-#   - Lives next to the code, version-controlled
-#   - One source of truth for which Telegram chat gets alerts
-#
-# Required GitHub secrets:
-#   TELEGRAM_ALERT_BOT_TOKEN   — bot token (we reuse @DispatchOS_Bot)
-#   TELEGRAM_ALERT_CHAT_ID     — chat to alert (e.g. -1003992711551)
+# Required GitHub secrets (already set):
+#   TELEGRAM_ALERT_BOT_TOKEN   — @DispatchOS_Bot token
+#   TELEGRAM_ALERT_CHAT_ID     — -1003992711551 (DispatchOSDev)
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # every 10 minutes UTC
-  workflow_dispatch:           # manual run for testing
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
 
 concurrency:
   group: health-monitor
@@ -29,86 +23,51 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Ping all endpoints
-        id: ping
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_ALERT_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
         run: |
           set +e
+          FAILURES_FILE=/tmp/failures.txt
+          : > "$FAILURES_FILE"
 
-          # Each target: name|url|expected_substring
-          # expected_substring is checked in the response body to catch the
-          # case where CF cache or some other layer returns 200 with junk.
-          TARGETS=(
-            "demo-health|https://demo.dispatchos.co/api/health|ok"
-            "demo-subscribe-cors|https://demo.dispatchos.co/api/public/subscribe|"
-            "landing|https://dispatchos.co/|DispatchOS"
-          )
-
-          FAILURES=()
-
-          for TARGET in "${TARGETS[@]}"; do
-            NAME="${TARGET%%|*}"
-            REST="${TARGET#*|}"
-            URL="${REST%%|*}"
-            NEEDLE="${REST#*|}"
-
-            # CORS preflight check uses OPTIONS, everything else GET
-            if [ "$NAME" = "demo-subscribe-cors" ]; then
-              CODE=$(curl -s -o /tmp/body -w "%{http_code}" -X OPTIONS "$URL" \
-                -H "Origin: https://dispatchos.co" \
-                -H "Access-Control-Request-Method: POST" \
-                --max-time 15)
-              EXPECTED=204
+          check_url() {
+            local name="$1" url="$2" expected="$3" needle="$4" method="${5:-GET}"
+            local code body
+            if [ "$method" = "OPTIONS" ]; then
+              code=$(curl -s -o /tmp/body -w "%{http_code}" -X OPTIONS "$url" -H "Origin: https://dispatchos.co" -H "Access-Control-Request-Method: POST" --max-time 15)
             else
-              CODE=$(curl -s -o /tmp/body -w "%{http_code}" "$URL?cb=$(date +%s)" \
-                --max-time 15)
-              EXPECTED=200
+              code=$(curl -s -o /tmp/body -w "%{http_code}" "$url?cb=$(date +%s)" --max-time 15)
             fi
-
-            BODY=$(cat /tmp/body 2>/dev/null | head -c 500)
-
-            if [ "$CODE" != "$EXPECTED" ]; then
-              FAILURES+=("❌ <b>${NAME}</b> — HTTP ${CODE} (expected ${EXPECTED})
-<code>${URL}</code>")
-              echo "FAIL $NAME: HTTP $CODE"
-              continue
+            body=$(head -c 500 /tmp/body 2>/dev/null)
+            if [ "$code" != "$expected" ]; then
+              printf -- '- <b>%s</b> HTTP %s (expected %s) — %s\n' "$name" "$code" "$expected" "$url" >> "$FAILURES_FILE"
+              echo "FAIL $name: HTTP $code"
+              return
             fi
-
-            if [ -n "$NEEDLE" ] && ! echo "$BODY" | grep -q "$NEEDLE"; then
-              FAILURES+=("❌ <b>${NAME}</b> — HTTP ${CODE} but response missing '${NEEDLE}'
-<code>${URL}</code>")
-              echo "FAIL $NAME: body mismatch"
-              continue
+            if [ -n "$needle" ] && ! echo "$body" | grep -q "$needle"; then
+              printf -- '- <b>%s</b> HTTP %s but body missing %q — %s\n' "$name" "$code" "$needle" "$url" >> "$FAILURES_FILE"
+              echo "FAIL $name: body mismatch"
+              return
             fi
+            echo "OK $name (HTTP $code)"
+          }
 
-            echo "OK $NAME"
-          done
+          check_url "demo-health"          "https://demo.dispatchos.co/api/health"           "200" "ok"         "GET"
+          check_url "demo-subscribe-cors"  "https://demo.dispatchos.co/api/public/subscribe" "204" ""           "OPTIONS"
+          check_url "landing"              "https://dispatchos.co/"                          "200" "DispatchOS" "GET"
 
-          if [ ${#FAILURES[@]} -eq 0 ]; then
-            echo "all_ok=true" >> "$GITHUB_OUTPUT"
+          if [ ! -s "$FAILURES_FILE" ]; then
+            echo "all OK"
             exit 0
           fi
 
-          # Build alert message
-          MSG="🚨 <b>DispatchOS health check failed</b>
-$(printf '%s\n' "${FAILURES[@]}")
+          FAILURES=$(cat "$FAILURES_FILE")
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          TIME_UTC=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
 
-<i>Source: GitHub Actions health-monitor</i>
-<i>Time: $(date -u +'%Y-%m-%d %H:%M:%S UTC')</i>
-<i>Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}</i>"
+          MSG=$(printf '🚨 <b>DispatchOS health check failed</b>\n\n%s\n\n<i>Run:</i> %s\n<i>Time:</i> %s' "$FAILURES" "$RUN_URL" "$TIME_UTC")
 
-          # Send to Telegram (HTML mode)
-          HTTP_STATUS=$(curl -s -o /tmp/tg_resp -w "%{http_code}" \
-            -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -nc \
-                  --arg chat "$CHAT_ID" \
-                  --arg text "$MSG" \
-                  '{chat_id: $chat, text: $text, parse_mode: "HTML", disable_web_page_preview: true}')")
-          echo "Telegram API: $HTTP_STATUS"
-          cat /tmp/tg_resp
-
-          echo "all_ok=false" >> "$GITHUB_OUTPUT"
-          # Fail the job so GitHub shows red ❌ in the Actions tab
+          curl -s -o /tmp/tg_resp -w 'TG=%{http_code}\n' -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" -H "Content-Type: application/json" -d "$(jq -nc --arg c "$CHAT_ID" --arg t "$MSG" '{chat_id:$c,text:$t,parse_mode:"HTML",disable_web_page_preview:true}')"
+          cat /tmp/tg_resp || true
           exit 1
