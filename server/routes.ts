@@ -37,6 +37,7 @@ import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerMeRoutes } from "./routes/me";
 import { registerLeadRoutes } from "./routes/leads";
+import { registerWebhookRoutes } from "./routes/webhooks";
 import { enrichLoadSync } from "./lib/ai";
 
 const HOUR = 60 * 60 * 1000;
@@ -982,6 +983,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Public lead capture from landing page (no auth) + dispatcher review queue.
   // Must register BEFORE any catch-all auth gate so /api/public/* is open.
   registerLeadRoutes(app);
+
+  // Public webhook receivers (Resend, future: Stripe, Twilio).
+  // No auth gate; each route verifies its own service-specific signature.
+  registerWebhookRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The
