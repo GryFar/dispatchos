@@ -1,0 +1,58 @@
+# Fly.io app config — DispatchOS demo deployment
+#
+# Region: iad (US East, Ashburn VA) — closest to Florida + good UA latency
+# (Lviv→IAD ~120ms vs LAX ~180ms).
+#
+# Persistent volume: /data holds SQLite DB + uploads + drive folder.
+# Created once with:  flyctl volumes create dispatchos_data --region iad --size 3
+#
+# Public URL: https://dispatchos-demo.fly.dev
+# Custom domain: demo.dispatchos.co  (set via CNAME — see scripts/setup-fly.sh)
+
+app = "dispatchos-demo"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  DISPATCHOS_DEPLOYMENT_MODE = "vds"
+  DISPATCHOS_TRUST_PROXY = "2"
+  DISPATCHOS_RATE_LIMIT_PER_MINUTE = "240"
+
+# Persistent SQLite + uploads on a Fly volume mounted at /data
+[[mounts]]
+  source = "dispatchos_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"      # save credits when idle
+  auto_start_machines = true       # auto-wake on first request
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 200
+    soft_limit = 100
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+# Restart policy — restart on crash, exponential backoff
+[deploy]
+  strategy = "rolling"

@@ -817,3 +817,46 @@ export const listLeadsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
   cursor: z.string().optional(),
 });
+
+// ===========================================================================
+// PHASE 4 ADDITIONS — Broker performance events (feeds AI brokers.ts)
+// ===========================================================================
+
+export const brokerEventTypeSchema = z.enum([
+  "load_booked",
+  "load_completed",
+  "load_cancelled",
+  "rate_honored",
+  "rate_disputed",
+  "paid_on_time",
+  "paid_late",
+  "non_payment",
+  "ghosted",
+  "double_broker_attempt",
+  "fraud_report",
+  "responsive",
+  "rude_unprofessional",
+  "positive_note",
+  "negative_note",
+]);
+export type BrokerEventType = z.infer<typeof brokerEventTypeSchema>;
+
+export const brokerEventSchema = z.object({
+  id: z.string(),
+  brokerMc: z.string(),
+  eventType: brokerEventTypeSchema,
+  loadId: z.string().nullable(),
+  amountUsd: z.number().nullable(),
+  notes: z.string().nullable(),
+  loggedByUserId: z.string(),
+  loggedAt: z.string(),
+});
+export type BrokerEvent = z.infer<typeof brokerEventSchema>;
+
+export const insertBrokerEventSchema = z.object({
+  brokerMc: z.string().min(1),
+  eventType: brokerEventTypeSchema,
+  loadId: z.string().optional(),
+  amountUsd: z.number().optional(),
+  notes: z.string().max(1000).optional(),
+});

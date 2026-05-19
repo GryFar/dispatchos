@@ -1,0 +1,185 @@
+// Unit tests for FMCSA verification logic.
+// Run: npx tsx server/lib/ai/fmcsa.test.ts
+
+import { evaluateBroker, normalizeMcNumber, mcNumberDigits, parseMobileApiResponse } from "./fmcsa";
+import type { FmcsaCarrier } from "./fmcsa";
+
+let pass = 0;
+let fail = 0;
+function assert(name: string, cond: boolean, detail?: string) {
+  if (cond) {
+    pass++;
+    console.log(`✓ ${name}`);
+  } else {
+    fail++;
+    console.error(`✗ ${name}${detail ? ` — ${detail}` : ""}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MC normalization
+// ---------------------------------------------------------------------------
+{
+  assert("mc: bare digits → MC-470488", normalizeMcNumber("470488") === "MC-470488");
+  assert("mc: MC470488 → MC-470488", normalizeMcNumber("MC470488") === "MC-470488");
+  assert("mc: MC 470488 → MC-470488", normalizeMcNumber("MC 470488") === "MC-470488");
+  assert("mc: MC-470488 → MC-470488", normalizeMcNumber("MC-470488") === "MC-470488");
+  assert("mc: lowercase mc → MC-470488", normalizeMcNumber("mc-470488") === "MC-470488");
+  assert("mc: junk → null", normalizeMcNumber("ABC123XYZ") === null);
+  assert("mc: empty → null", normalizeMcNumber("") === null);
+  assert("mc: digits extract", mcNumberDigits("MC-470488") === "470488");
+}
+
+// ---------------------------------------------------------------------------
+// Broker evaluation — strong fits
+// ---------------------------------------------------------------------------
+{
+  const cleanBroker: FmcsaCarrier = {
+    mcNumber: "MC-470488",
+    legalName: "Total Quality Logistics LLC",
+    address: { city: "Cincinnati", state: "OH" },
+    phone: "513-831-2600",
+    operatingStatus: "AUTHORIZED",
+    authority: { carrier: false, broker: true, freightForwarder: false },
+    authorityAgeYears: 25,
+    insurance: { bmc84OnFile: true, bmc91OnFile: false, cargoInsuranceFiled: true },
+    safetyRating: "SATISFACTORY",
+    fetchedAt: new Date().toISOString(),
+  };
+  const v1 = evaluateBroker(cleanBroker);
+  assert("eval: clean broker → green", v1.verdict === "green", `got ${v1.verdict} score ${v1.score}`);
+  assert("eval: clean broker score ≥ 95", v1.score >= 95, `got ${v1.score}`);
+  assert("eval: clean broker no red flags", v1.redFlags.length === 0);
+}
+
+// ---------------------------------------------------------------------------
+// OOS = hard red
+// ---------------------------------------------------------------------------
+{
+  const oos: FmcsaCarrier = {
+    mcNumber: "MC-9999999",
+    legalName: "Sketchy Brokers Inc",
+    address: {},
+    operatingStatus: "OUT_OF_SERVICE",
+    authority: { carrier: false, broker: true, freightForwarder: false },
+    authorityAgeYears: 1,
+    fetchedAt: new Date().toISOString(),
+  };
+  const v = evaluateBroker(oos);
+  assert("eval: OOS → red", v.verdict === "red");
+  assert("eval: OOS score 0", v.score === 0);
+  assert("eval: OOS has redFlag", v.redFlags.length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// New broker (under 6 months) → red flag
+// ---------------------------------------------------------------------------
+{
+  const newBroker: FmcsaCarrier = {
+    mcNumber: "MC-1234567",
+    legalName: "Brand New Brokers LLC",
+    address: { state: "FL" },
+    phone: "555-1234567",
+    operatingStatus: "AUTHORIZED",
+    authority: { carrier: false, broker: true, freightForwarder: false },
+    authorityAgeYears: 0.3, // ~3.5 months
+    insurance: { bmc84OnFile: true, bmc91OnFile: false, cargoInsuranceFiled: false },
+    fetchedAt: new Date().toISOString(),
+  };
+  const v = evaluateBroker(newBroker);
+  assert("eval: new broker has 'verify by phone' flag",
+    v.redFlags.some((f) => f.toLowerCase().includes("verify")) ||
+    v.redFlags.some((f) => f.includes("<6 months")));
+  assert("eval: new broker score < 80", v.score < 80, `got ${v.score}`);
+}
+
+// ---------------------------------------------------------------------------
+// Broker without BMC-84 surety → red
+// ---------------------------------------------------------------------------
+{
+  const noBond: FmcsaCarrier = {
+    mcNumber: "MC-2222222",
+    legalName: "No Bond Brokers LLC",
+    address: {},
+    operatingStatus: "AUTHORIZED",
+    authority: { carrier: false, broker: true, freightForwarder: false },
+    authorityAgeYears: 3,
+    insurance: { bmc84OnFile: false, bmc91OnFile: false, cargoInsuranceFiled: true },
+    fetchedAt: new Date().toISOString(),
+  };
+  const v = evaluateBroker(noBond);
+  assert("eval: no BMC-84 has redFlag", v.redFlags.some((f) => f.includes("BMC-84")));
+  assert("eval: no BMC-84 score < 70", v.score < 70, `got ${v.score}`);
+}
+
+// ---------------------------------------------------------------------------
+// UNSATISFACTORY safety rating
+// ---------------------------------------------------------------------------
+{
+  const unsafe: FmcsaCarrier = {
+    mcNumber: "MC-3333333",
+    legalName: "Risky Carriers Inc",
+    address: {},
+    phone: "555-0000",
+    operatingStatus: "AUTHORIZED",
+    authority: { carrier: true, broker: false, freightForwarder: false },
+    authorityAgeYears: 5,
+    safetyRating: "UNSATISFACTORY",
+    fetchedAt: new Date().toISOString(),
+  };
+  const v = evaluateBroker(unsafe);
+  assert("eval: UNSATISFACTORY → red", v.verdict === "red");
+  assert("eval: UNSATISFACTORY in flags",
+    v.redFlags.some((f) => f.includes("UNSATISFACTORY")));
+}
+
+// ---------------------------------------------------------------------------
+// Mobile API parsing — content array shape
+// ---------------------------------------------------------------------------
+{
+  const apiPayload = {
+    content: [{
+      carrier: {
+        legalName: "TQL LLC",
+        dbaName: "Total Quality Logistics",
+        dotNumber: "1638340",
+        phyStreet: "4289 Ivy Pointe Blvd",
+        phyCity: "Cincinnati",
+        phyState: "OH",
+        phyZipcode: "45245",
+        telephone: "513-831-2600",
+        allowedToOperate: "Y",
+        carrierOperation: "Interstate Carrier",
+        brokerAuthority: "ACTIVE",
+        safetyRating: "S",
+        totalPowerUnits: 0,
+        totalDrivers: 0,
+      },
+    }],
+  };
+  const parsed = parseMobileApiResponse("MC-470488", apiPayload);
+  assert("parse: returns object", parsed !== null);
+  assert("parse: legalName", parsed?.legalName === "TQL LLC");
+  assert("parse: city", parsed?.address.city === "Cincinnati");
+  assert("parse: phone", parsed?.phone === "513-831-2600");
+  assert("parse: AUTHORIZED", parsed?.operatingStatus === "AUTHORIZED");
+  assert("parse: broker authority", parsed?.authority.broker === true);
+  assert("parse: safetyRating", parsed?.safetyRating === "SATISFACTORY");
+  assert("parse: mcNumber normalized", parsed?.mcNumber === "MC-470488");
+}
+
+// ---------------------------------------------------------------------------
+// Mobile API parsing — empty response
+// ---------------------------------------------------------------------------
+{
+  assert("parse: null input", parseMobileApiResponse("MC-1", null) === null);
+  assert("parse: empty content", parseMobileApiResponse("MC-1", { content: [] }) === null);
+  assert("parse: missing legalName", parseMobileApiResponse("MC-1", { content: [{ carrier: { dotNumber: "1" } }] }) === null);
+}
+
+// ---------------------------------------------------------------------------
+// Done
+// ---------------------------------------------------------------------------
+
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail > 0 ? 1 : 0);

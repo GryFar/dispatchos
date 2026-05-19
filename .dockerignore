@@ -1,0 +1,41 @@
+# Dev / IDE artifacts
+.git
+.github
+.vscode
+.idea
+.DS_Store
+*.log
+
+# Node
+node_modules
+npm-debug.log
+.npm
+
+# Build outputs (rebuilt in container)
+dist
+.cache
+
+# Local SQLite + uploaded data (NEVER ship to image — Fly volume mounts /data)
+*.db
+*.db-shm
+*.db-wal
+dispatchos_data/
+uploads/
+drive/
+
+# Coming-soon worker (separate deployment to Cloudflare Workers)
+apps/
+
+# Tests / docs / dev assets
+docs
+phase*-changes.md
+phase*-handoff.md
+*.bat
+START_HERE_RU.md
+TECHNICAL_STATUS_RU.md
+WINDOWS_VDS_DEPLOY_RU.md
+
+# Skill workspace artifacts
+skills
+past_session_contexts
+current_session_context
