@@ -63,11 +63,36 @@ function generateInviteCode(): string {
   return `DOS-${segments.join("-")}`;
 }
 
+// Whitelist of origins allowed to POST to /api/public/* from the browser.
+// Landing on dispatchos.co posts cross-origin to demo.dispatchos.co.
+const PUBLIC_CORS_ALLOWED = new Set([
+  "https://dispatchos.co",
+  "https://www.dispatchos.co",
+  "https://demo.dispatchos.co",
+]);
+
+function applyPublicCors(req: Request, res: Response): void {
+  const origin = req.headers.origin;
+  if (typeof origin === "string" && PUBLIC_CORS_ALLOWED.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Max-Age", "86400");
+  }
+}
+
 export function registerLeadRoutes(app: Express): void {
   // -------------------------------------------------------------------------
-  // PUBLIC — POST /api/public/subscribe
+  // PUBLIC — POST /api/public/subscribe (CORS preflight + POST)
   // -------------------------------------------------------------------------
+  app.options("/api/public/subscribe", (req: Request, res: Response) => {
+    applyPublicCors(req, res);
+    return res.status(204).end();
+  });
+
   app.post("/api/public/subscribe", (req: Request, res: Response) => {
+    applyPublicCors(req, res);
     const ip = clientIp(req);
     if (!rateLimitOk(ip)) {
       return res.status(429).json({ message: "Too many requests" });
