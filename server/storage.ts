@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type {
   Assignment,
+  BrokerEvent,
+  BrokerEventType,
   BrokerRecord,
   Client,
   DocumentRecord,
@@ -18,6 +20,23 @@ import type {
   UserPublic,
   UserRole,
 } from "@shared/schema";
+
+function cryptoRandomId(): string {
+  return crypto.randomBytes(12).toString("hex");
+}
+
+function rowToBrokerEvent(row: Record<string, unknown>): BrokerEvent {
+  return {
+    id: row.id as string,
+    brokerMc: row.broker_mc as string,
+    eventType: row.event_type as BrokerEventType,
+    loadId: (row.load_id as string | null) ?? null,
+    amountUsd: (row.amount_usd as number | null) ?? null,
+    notes: (row.notes as string | null) ?? null,
+    loggedByUserId: row.logged_by_user_id as string,
+    loggedAt: row.logged_at as string,
+  };
+}
 
 const sqlite = new Database(process.env.DISPATCHOS_DB_PATH || "dispatchos-unified.db");
 sqlite.pragma("journal_mode = WAL");
@@ -155,6 +174,21 @@ CREATE INDEX IF NOT EXISTS invites_created_at_idx ON invites(created_at DESC);
 CREATE INDEX IF NOT EXISTS assignments_created_at_idx ON assignments(created_at DESC);
 CREATE INDEX IF NOT EXISTS invoices_generated_at_idx ON invoices(generated_at DESC);
 CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS broker_events (
+  id TEXT PRIMARY KEY,
+  broker_mc TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  load_id TEXT,
+  amount_usd REAL,
+  notes TEXT,
+  logged_by_user_id TEXT NOT NULL,
+  logged_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS broker_events_mc_logged_idx
+  ON broker_events(broker_mc, logged_at DESC);
+CREATE INDEX IF NOT EXISTS broker_events_load_idx
+  ON broker_events(load_id) WHERE load_id IS NOT NULL;
 `);
 
 // ---------------------------------------------------------------------------
@@ -2019,6 +2053,81 @@ export const storage = {
       .run(record.id, record.brokerMc, JSON.stringify(record), existing ? timestamp : timestamp, timestamp);
     this.audit("broker.checked", "broker", record.brokerMc, record);
     return record;
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 4: Broker performance events (feeds AI brokers.ts)
+  // -------------------------------------------------------------------------
+
+  insertBrokerEvent(input: {
+    brokerMc: string;
+    eventType: BrokerEventType;
+    loadId?: string | null;
+    amountUsd?: number | null;
+    notes?: string | null;
+    loggedByUserId: string;
+  }): BrokerEvent {
+    const id = `bev_${cryptoRandomId()}`;
+    const loggedAt = new Date().toISOString();
+    const brokerMc = input.brokerMc.trim();
+    sqlite
+      .prepare(
+        `INSERT INTO broker_events (id, broker_mc, event_type, load_id, amount_usd, notes, logged_by_user_id, logged_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        brokerMc,
+        input.eventType,
+        input.loadId ?? null,
+        input.amountUsd ?? null,
+        input.notes ?? null,
+        input.loggedByUserId,
+        loggedAt,
+      );
+    this.audit("broker_event.logged", "broker_event", id, {
+      brokerMc,
+      eventType: input.eventType,
+      loadId: input.loadId,
+      amountUsd: input.amountUsd,
+    });
+    return {
+      id,
+      brokerMc,
+      eventType: input.eventType,
+      loadId: input.loadId ?? null,
+      amountUsd: input.amountUsd ?? null,
+      notes: input.notes ?? null,
+      loggedByUserId: input.loggedByUserId,
+      loggedAt,
+    };
+  },
+
+  listBrokerEventsByMc(brokerMc: string, limit = 200): BrokerEvent[] {
+    const rows = sqlite
+      .prepare(
+        `SELECT id, broker_mc, event_type, load_id, amount_usd, notes, logged_by_user_id, logged_at
+         FROM broker_events WHERE broker_mc = ? ORDER BY logged_at DESC LIMIT ?`,
+      )
+      .all(brokerMc.trim(), Math.min(Math.max(limit, 1), 1000)) as Record<string, unknown>[];
+    return rows.map(rowToBrokerEvent);
+  },
+
+  getBrokerEvent(id: string): BrokerEvent | undefined {
+    const row = sqlite
+      .prepare(
+        `SELECT id, broker_mc, event_type, load_id, amount_usd, notes, logged_by_user_id, logged_at
+         FROM broker_events WHERE id = ?`,
+      )
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? rowToBrokerEvent(row) : undefined;
+  },
+
+  countBrokerEvents(brokerMc: string): number {
+    const row = sqlite
+      .prepare("SELECT COUNT(*) AS c FROM broker_events WHERE broker_mc = ?")
+      .get(brokerMc.trim()) as { c: number };
+    return row.c;
   },
 
   saveEmailIngest(payload: unknown) {
