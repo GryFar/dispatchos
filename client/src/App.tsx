@@ -22,6 +22,7 @@ import ClientsPage from "@/pages/admin/clients";
 import LoadsPage from "@/pages/admin/loads";
 import BrokersPage from "@/pages/admin/brokers";
 import DocumentsPage from "@/pages/admin/documents";
+import QueuePage from "@/pages/admin/queue";
 import AuditPage from "@/pages/admin/audit";
 import BackupPage from "@/pages/admin/backup";
 import BillingPage from "@/pages/admin/billing";
@@ -139,6 +140,7 @@ function AdminRouter() {
         <Route path="/loads" component={LoadsPage} />
         <Route path="/brokers" component={BrokersPage} />
         <Route path="/documents" component={DocumentsPage} />
+        <Route path="/queue" component={QueuePage} />
         <Route path="/audit" component={AuditPage} />
         <Route path="/backup" component={BackupPage} />
         <Route path="/billing" component={BillingPage} />

@@ -25,12 +25,14 @@ import crypto from "node:crypto";
 import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import {
+  approvalTaskListFiltersSchema,
   createAssignmentSchema,
   createInviteSchema,
   createUserSchema,
   dateOnlySchema,
   generateInvoiceSchema,
   invoiceStatusSchema,
+  resolveApprovalTaskSchema,
   updateUserSchema,
   userRoleSchema,
   type UserPublic,
@@ -1167,6 +1169,83 @@ export function registerAdminRoutes(app: Express): void {
         },
       };
       return res.json(body);
+    }),
+  );
+
+  // ===========================================================================
+  // Phase 4 P1.1 — Admin approval queue
+  // ===========================================================================
+  //
+  // GET    /api/admin/approval-tasks         — paginated list with filters
+  // GET    /api/admin/approval-tasks/:id     — single task (full payload)
+  // PATCH  /api/admin/approval-tasks/:id     — resolve or dismiss
+  //
+  // Drivers create tasks via POST /api/me/issues (taskType='driver_issue',
+  // assigneeRole='admin'). The admin queue page consumes these endpoints.
+  // Dispatcher portal (when it lands) will reuse this same shape with its
+  // own /api/dispatch/approval-tasks endpoints, filtering by assigneeRole.
+
+  app.get(
+    "/api/admin/approval-tasks",
+    requireRole("admin"),
+    ah((req, res) => {
+      const filters = approvalTaskListFiltersSchema.parse({
+        status: req.query.status,
+        taskType: req.query.taskType,
+        assigneeRole: req.query.assigneeRole,
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+        cursor: typeof req.query.cursor === "string" ? req.query.cursor : undefined,
+      });
+      return res.json(storage.listApprovalTasksPaginated(filters));
+    }),
+  );
+
+  app.get(
+    "/api/admin/approval-tasks/:id",
+    requireRole("admin"),
+    ah((req, res) => {
+      const task = storage.getApprovalTask(String(req.params.id));
+      if (!task) return res.status(404).json({ message: "Task not found" });
+      return res.json(task);
+    }),
+  );
+
+  app.patch(
+    "/api/admin/approval-tasks/:id",
+    requireRole("admin"),
+    ah((req, res) => {
+      const me = getCurrentUser(req);
+      if (!me) return res.status(401).json({ message: "Authentication required" });
+      const id = String(req.params.id);
+      const body = resolveApprovalTaskSchema.parse(req.body);
+      const existing = storage.getApprovalTask(id);
+      if (!existing) return res.status(404).json({ message: "Task not found" });
+      // Already-terminated tasks cannot be re-resolved — return 409 with a
+      // hint so the UI can refresh.
+      if (existing.status === "resolved" || existing.status === "dismissed") {
+        return res.status(409).json({
+          message: "Task is already terminated",
+          currentStatus: existing.status,
+        });
+      }
+      const updated = storage.resolveApprovalTask(id, body.action, me.id, body.resolution);
+      if (!updated) {
+        // Race: someone else terminated between the GET and the UPDATE. Same
+        // user-visible behaviour as the 409 above.
+        return res.status(409).json({ message: "Task is already terminated" });
+      }
+      const eventType =
+        body.action === "resolve"
+          ? "admin.approval_task_resolved"
+          : "admin.approval_task_dismissed";
+      storage.audit(eventType, "approval_task", id, {
+        actorUserId: me.id,
+        taskType: updated.taskType,
+        previousStatus: existing.status,
+        newStatus: updated.status,
+        resolution: body.resolution ?? null,
+      });
+      return res.json(updated);
     }),
   );
 }
