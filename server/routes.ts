@@ -36,6 +36,7 @@ import { localDriveRoot, storage, uploadsRoot } from "./storage";
 import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerMeRoutes } from "./routes/me";
+import { registerLeadRoutes } from "./routes/leads";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -972,6 +973,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // before the catch-all `requireRole.any()` gate. See server/routes/me.ts.
   // -------------------------------------------------------------------------
   registerMeRoutes(app);
+
+  // Public lead capture from landing page (no auth) + dispatcher review queue.
+  // Must register BEFORE any catch-all auth gate so /api/public/* is open.
+  registerLeadRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The
