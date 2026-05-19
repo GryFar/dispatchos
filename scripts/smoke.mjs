@@ -1775,6 +1775,350 @@ try {
   }
   console.log("[OK] P4 audit: driver.status_changed recorded");
 
+  // ===========================================================================
+  // PHASE 4 P1 — Driver operations (documents, check-ins, expenses, issues)
+  // ===========================================================================
+
+  cookieHeader = driverACookie;
+
+  // -- P1 documents: empty list ---------------------------------------------
+  const docsEmpty = await request("/api/me/documents");
+  if (!Array.isArray(docsEmpty.items) || docsEmpty.items.length !== 0) {
+    throw new Error(`P1 docs: empty list shape unexpected: ${JSON.stringify(docsEmpty)}`);
+  }
+  if (typeof docsEmpty.hasMore !== "boolean" || typeof docsEmpty.total !== "number") {
+    throw new Error("P1 docs: empty list missing hasMore/total");
+  }
+  console.log("[OK] P1 GET /api/me/documents (empty list shape)");
+
+  // -- P1 documents: upload a CDL with expires_at ---------------------------
+  const today = new Date();
+  const in60Days = new Date(today.getTime() + 60 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  const in10Days = new Date(today.getTime() + 10 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  const yesterday = new Date(today.getTime() - 1 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+
+  const cdlDoc = await upload(
+    "/api/me/documents",
+    { type: "cdl", expiresAt: in60Days, notes: "Class A" },
+    {
+      name: "file",
+      value: Buffer.from("%PDF-1.4 fake cdl content\n", "utf-8"),
+      options: { filename: "cdl.pdf", contentType: "application/pdf" },
+    },
+  );
+  if (cdlDoc.type !== "cdl" || cdlDoc.expiresAt !== in60Days) {
+    throw new Error(`P1 docs: upload returned wrong shape: ${JSON.stringify(cdlDoc)}`);
+  }
+  if (cdlDoc.ownerUserId !== driverA.id) {
+    throw new Error("P1 docs: ownerUserId leak — should equal current driver");
+  }
+  console.log("[OK] P1 POST /api/me/documents (CDL upload + persisted shape)");
+
+  // -- P1 documents: a soon-expiring + an expired one ------------------------
+  const medicalDoc = await upload(
+    "/api/me/documents",
+    { type: "medical", expiresAt: in10Days },
+    {
+      name: "file",
+      value: Buffer.from("medical card", "utf-8"),
+      options: { filename: "medical.png", contentType: "image/png" },
+    },
+  );
+  const expiredDoc = await upload(
+    "/api/me/documents",
+    { type: "ifta", expiresAt: yesterday },
+    {
+      name: "file",
+      value: Buffer.from("ifta sticker", "utf-8"),
+      options: { filename: "ifta.jpg", contentType: "image/jpeg" },
+    },
+  );
+  if (!medicalDoc.id || !expiredDoc.id) throw new Error("P1 docs: extra uploads failed");
+  console.log("[OK] P1 POST /api/me/documents (soon-expiring + expired uploads)");
+
+  // -- P1 documents: list now has 3, all owned by driverA -------------------
+  const docsList = await request("/api/me/documents");
+  if (docsList.items.length !== 3) {
+    throw new Error(`P1 docs: expected 3 items, got ${docsList.items.length}`);
+  }
+  if (docsList.items.some((d) => d.ownerUserId !== driverA.id)) {
+    throw new Error("P1 docs: list leaked another driver's document");
+  }
+  console.log("[OK] P1 GET /api/me/documents (3 items, all owned)");
+
+  // -- P1 documents: validation 400 on bad type ------------------------------
+  try {
+    await upload(
+      "/api/me/documents",
+      { type: "NOT_A_TYPE" },
+      {
+        name: "file",
+        value: Buffer.from("x", "utf-8"),
+        options: { filename: "x.pdf", contentType: "application/pdf" },
+      },
+    );
+    throw new Error("P1 docs: invalid type should 400");
+  } catch (e) {
+    if (!/400/.test(e.message)) throw e;
+  }
+  console.log("[OK] P1 POST /api/me/documents validates type enum (400)");
+
+  // -- P1 documents: missing file 400 ----------------------------------------
+  try {
+    await request("/api/me/documents", { method: "POST", body: { type: "other" } });
+    throw new Error("P1 docs: missing file should 400");
+  } catch (e) {
+    if (!/400|file is required/i.test(e.message)) throw e;
+  }
+  console.log("[OK] P1 POST /api/me/documents requires file (400)");
+
+  // -- P1 dashboard: pendingDocs now populated -------------------------------
+  const dashWithDocs = await request("/api/me/dashboard");
+  if (!Array.isArray(dashWithDocs.pendingDocs)) {
+    throw new Error("P1 dashboard: pendingDocs must be array");
+  }
+  // Expect medical (soon) + ifta (expired) = 2 flagged. CDL is 60 days out, not flagged.
+  const flaggedCount = dashWithDocs.pendingDocs.length;
+  if (flaggedCount !== 2) {
+    throw new Error(
+      `P1 dashboard: expected 2 pending docs (medical+ifta), got ${flaggedCount}: ${JSON.stringify(
+        dashWithDocs.pendingDocs,
+      )}`,
+    );
+  }
+  const hasExpired = dashWithDocs.pendingDocs.some((d) => d.status === "expired");
+  const hasSoon = dashWithDocs.pendingDocs.some((d) => d.status === "soon");
+  if (!hasExpired || !hasSoon) {
+    throw new Error("P1 dashboard: pendingDocs missing expired or soon entries");
+  }
+  console.log("[OK] P1 /api/me/dashboard pendingDocs reflects expires_at (30-day window)");
+
+  // -- P1 documents: delete one ---------------------------------------------
+  await request(`/api/me/documents/${expiredDoc.id}`, { method: "DELETE" });
+  const docsAfterDelete = await request("/api/me/documents");
+  if (docsAfterDelete.items.length !== 2) {
+    throw new Error("P1 docs: delete should leave 2 items");
+  }
+  console.log("[OK] P1 DELETE /api/me/documents/:id");
+
+  // -- P1 documents: cross-driver 404 ----------------------------------------
+  // Create driverB, try to delete cdlDoc as B → 404 (not 403, anti-enumeration).
+  cookieHeader = p4AdminCookie;
+  const inviteB2 = await request("/api/admin/invites", {
+    method: "POST",
+    body: { role: "driver", ttlHours: 1, linkedClientId: "oleg-hotshot-02" },
+  });
+  cookieHeader = "";
+  const driverB2 = await request("/api/auth/signup", {
+    method: "POST",
+    body: {
+      inviteCode: inviteB2.code,
+      email: "smoke.driver.b2@example.com",
+      fullName: "Smoke Driver B2",
+      password: "SmokeDriverB2!",
+    },
+  });
+  const driverB2Cookie = cookieHeader;
+  cookieHeader = driverB2Cookie;
+  try {
+    await request(`/api/me/documents/${cdlDoc.id}`, { method: "DELETE" });
+    throw new Error("P1 docs: cross-driver delete should 404");
+  } catch (e) {
+    if (!/404/.test(e.message)) throw e;
+  }
+  console.log("[OK] P1 DELETE /api/me/documents/:id 404 on cross-driver");
+
+  // -- P1 check-ins: empty timeline -----------------------------------------
+  cookieHeader = driverACookie;
+  const ckEmpty = await request(`/api/me/loads/${driverALoad.id}/checkins`);
+  if (!Array.isArray(ckEmpty.items) || ckEmpty.items.length !== 0) {
+    throw new Error("P1 checkins: empty timeline shape unexpected");
+  }
+  console.log("[OK] P1 GET /api/me/loads/:id/checkins (empty)");
+
+  // -- P1 check-ins: pickup_arrived with geo --------------------------------
+  const pickupChk = await request(`/api/me/loads/${driverALoad.id}/checkin`, {
+    method: "POST",
+    body: { kind: "pickup_arrived", lat: 27.95, lng: -82.46 },
+  });
+  if (pickupChk.kind !== "pickup_arrived" || pickupChk.lat !== 27.95) {
+    throw new Error("P1 checkin: shape mismatch");
+  }
+  if (pickupChk.driverUserId !== driverA.id) {
+    throw new Error("P1 checkin: driverUserId leak");
+  }
+  console.log("[OK] P1 POST /api/me/loads/:id/checkin (pickup_arrived + geo)");
+
+  // -- P1 check-ins: kind=note works without lat/lng ------------------------
+  const noteChk = await request(`/api/me/loads/${driverALoad.id}/checkin`, {
+    method: "POST",
+    body: { kind: "note", notes: "Stopped for fuel" },
+  });
+  if (noteChk.lat !== null) throw new Error("P1 checkin: note kind should have null lat");
+  console.log("[OK] P1 POST /api/me/loads/:id/checkin (note kind, no geo required)");
+
+  // -- P1 check-ins: arrival kinds REQUIRE lat/lng (400) --------------------
+  try {
+    await request(`/api/me/loads/${driverALoad.id}/checkin`, {
+      method: "POST",
+      body: { kind: "delivered" },
+    });
+    throw new Error("P1 checkin: arrival without geo should 400");
+  } catch (e) {
+    if (!/400/.test(e.message) || !/lat/i.test(e.message)) throw e;
+  }
+  console.log("[OK] P1 POST /api/me/loads/:id/checkin validates geo for arrival (400)");
+
+  // -- P1 check-ins: cross-driver 404 ---------------------------------------
+  cookieHeader = driverB2Cookie;
+  try {
+    await request(`/api/me/loads/${driverALoad.id}/checkin`, {
+      method: "POST",
+      body: { kind: "pickup_arrived", lat: 1, lng: 1 },
+    });
+    throw new Error("P1 checkin: cross-driver should 404");
+  } catch (e) {
+    if (!/404/.test(e.message)) throw e;
+  }
+  console.log("[OK] P1 POST /api/me/loads/:id/checkin 404 on cross-driver");
+
+  // -- P1 check-ins: timeline now has 2 ordered ascending -------------------
+  cookieHeader = driverACookie;
+  const ckList = await request(`/api/me/loads/${driverALoad.id}/checkins`);
+  if (ckList.items.length !== 2) {
+    throw new Error(`P1 checkins: expected 2, got ${ckList.items.length}`);
+  }
+  if (ckList.items[0].kind !== "pickup_arrived" || ckList.items[1].kind !== "note") {
+    throw new Error("P1 checkins: timeline not in ascending order");
+  }
+  console.log("[OK] P1 GET /api/me/loads/:id/checkins (2 ordered)");
+
+  // -- P1 expenses: empty list ----------------------------------------------
+  const expEmpty = await request("/api/me/expenses");
+  if (!Array.isArray(expEmpty.items) || expEmpty.items.length !== 0) {
+    throw new Error("P1 expenses: empty shape unexpected");
+  }
+  console.log("[OK] P1 GET /api/me/expenses (empty)");
+
+  // -- P1 expenses: create one with placeholder photo -----------------------
+  // (smoke's `upload` helper always wants a file field; we send a 1-byte
+  //  placeholder. Server will still create a row, photo_storage_path set.)
+  const fuelExp = await upload(
+    "/api/me/expenses",
+    { loadId: driverALoad.id, category: "fuel", amount: "78.55", notes: "Pilot Tampa" },
+    {
+      name: "photo",
+      value: Buffer.from("x", "utf-8"),
+      options: { filename: "smoke-receipt.txt", contentType: "text/plain" },
+    },
+  );
+  if (fuelExp.category !== "fuel" || fuelExp.amountCents !== 7855) {
+    throw new Error(`P1 expense: shape wrong: ${JSON.stringify(fuelExp)}`);
+  }
+  if (fuelExp.driverUserId !== driverA.id) {
+    throw new Error("P1 expense: driverUserId leak");
+  }
+  console.log("[OK] P1 POST /api/me/expenses (fuel + amount→cents conversion)");
+
+  // -- P1 expenses: cross-driver loadId → 404 -------------------------------
+  cookieHeader = driverB2Cookie;
+  const crossExp = await upload(
+    "/api/me/expenses",
+    { loadId: driverALoad.id, category: "fuel", amount: "10" },
+    {
+      name: "photo",
+      value: Buffer.from("x", "utf-8"),
+      options: { filename: "y.txt", contentType: "text/plain" },
+    },
+  ).catch((err) => ({ __err: err.message }));
+  if (!crossExp.__err || !/404/.test(crossExp.__err)) {
+    throw new Error(`P1 expense: cross-driver loadId should 404, got ${JSON.stringify(crossExp)}`);
+  }
+  console.log("[OK] P1 POST /api/me/expenses 404 on cross-driver loadId");
+
+  // -- P1 expenses: filter by loadId ---------------------------------------
+  cookieHeader = driverACookie;
+  const expByLoad = await request(`/api/me/expenses?loadId=${driverALoad.id}`);
+  if (expByLoad.items.length !== 1 || expByLoad.items[0].id !== fuelExp.id) {
+    throw new Error("P1 expense: filter by loadId returned wrong items");
+  }
+  console.log("[OK] P1 GET /api/me/expenses?loadId= filter");
+
+  // -- P1 issues: create driver_issue task ----------------------------------
+  const issueTask = await request("/api/me/issues", {
+    method: "POST",
+    body: {
+      loadId: driverALoad.id,
+      severity: "urgent",
+      title: "Broker no-show at pickup",
+      description: "Waited 90 min, gate locked.",
+    },
+  });
+  if (issueTask.taskType !== "driver_issue" || issueTask.assigneeRole !== "admin") {
+    throw new Error(`P1 issue: wrong task shape: ${JSON.stringify(issueTask)}`);
+  }
+  if (issueTask.payload.severity !== "urgent" || issueTask.payload.reporterUserId !== driverA.id) {
+    throw new Error("P1 issue: payload missing severity or reporterUserId");
+  }
+  console.log("[OK] P1 POST /api/me/issues (creates approval_task, assigneeRole=admin)");
+
+  // -- P1 issues: title validation ------------------------------------------
+  try {
+    await request("/api/me/issues", {
+      method: "POST",
+      body: { severity: "info", title: "ab" },
+    });
+    throw new Error("P1 issue: short title should 400");
+  } catch (e) {
+    if (!/400/.test(e.message)) throw e;
+  }
+  console.log("[OK] P1 POST /api/me/issues validates title length (400)");
+
+  // -- P1 issues: cross-driver loadId → 404 ---------------------------------
+  cookieHeader = driverB2Cookie;
+  try {
+    await request("/api/me/issues", {
+      method: "POST",
+      body: { loadId: driverALoad.id, severity: "info", title: "test foreign load" },
+    });
+    throw new Error("P1 issue: cross-driver loadId should 404");
+  } catch (e) {
+    if (!/404/.test(e.message)) throw e;
+  }
+  console.log("[OK] P1 POST /api/me/issues 404 on cross-driver loadId");
+
+  // -- P1 audit: all new event types recorded -------------------------------
+  cookieHeader = p4AdminCookie;
+  for (const eventType of [
+    "driver.document_uploaded",
+    "driver.document_deleted",
+    "driver.checkin",
+    "driver.expense_filed",
+    "driver.issue_reported",
+  ]) {
+    const auditRes = await request(`/api/audit?eventType=${eventType}&limit=10`);
+    if (!auditRes.items.length) {
+      throw new Error(`P1 audit: expected at least 1 ${eventType} event`);
+    }
+  }
+  console.log("[OK] P1 audit: all 5 new event types recorded");
+
+  // -- P1 admin (non-driver) blocked from /api/me/documents -----------------
+  cookieHeader = p4AdminCookie;
+  try {
+    await request("/api/me/documents");
+    throw new Error("P1 docs: admin should be blocked with 403");
+  } catch (e) {
+    if (!/403/.test(e.message)) throw e;
+  }
+  console.log("[OK] P1 /api/me/documents blocks non-driver (403)");
+
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);

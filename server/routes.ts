@@ -2,7 +2,6 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import fs from "node:fs";
 import path from "node:path";
-import multer from "multer";
 import {
   brokerCheckSchema,
   csvImportSchema,
@@ -34,37 +33,12 @@ import {
   verifyTotp,
 } from "./auth";
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
+import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerMeRoutes } from "./routes/me";
-import { registerLeadRoutes } from "./routes/leads";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
-const allowedUploadExtensions = new Set([".pdf", ".jpg", ".jpeg", ".png", ".txt", ".csv"]);
-const allowedUploadMime = new Set([
-  "application/pdf",
-  "image/jpeg",
-  "image/png",
-  "text/plain",
-  "text/csv",
-  "application/octet-stream",
-]);
-const upload = multer({
-  dest: uploadsRoot,
-  limits: { fileSize: Number(process.env.DISPATCHOS_UPLOAD_MAX_MB || 10) * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const extension = path.extname(file.originalname).toLowerCase();
-    if (!allowedUploadExtensions.has(extension)) {
-      cb(new Error(`File extension ${extension || "(none)"} is not allowed`));
-      return;
-    }
-    if (!allowedUploadMime.has(file.mimetype)) {
-      cb(new Error(`MIME type ${file.mimetype} is not allowed`));
-      return;
-    }
-    cb(null, true);
-  },
-});
 
 const seedClients: Client[] = [
   {
@@ -998,13 +972,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // before the catch-all `requireRole.any()` gate. See server/routes/me.ts.
   // -------------------------------------------------------------------------
   registerMeRoutes(app);
-
-  // -------------------------------------------------------------------------
-  // Phase 4 lead routes: public /api/public/subscribe (no auth) +
-  // dispatcher /api/dispatch/leads/* (own role gate). Registered here so
-  // the public endpoint sits BEFORE the catch-all auth middleware.
-  // -------------------------------------------------------------------------
-  registerLeadRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The

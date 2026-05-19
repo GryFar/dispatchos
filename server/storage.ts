@@ -3,20 +3,30 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type {
+  ApprovalTask,
+  ApprovalTaskStatus,
+  ApprovalTaskType,
   Assignment,
   BrokerEvent,
   BrokerEventType,
   BrokerRecord,
+  CheckinKind,
   Client,
   DocumentRecord,
+  DriverDocument,
+  DriverDocumentType,
+  DriverExpense,
   DriverLocation,
   DriverStatus,
+  ExpenseCategory,
   InsertClient,
   InsertDocument,
   InsertLoad,
   Invite,
   Invoice,
   Load,
+  LoadCheckin,
+  PendingDoc,
   SignupLead,
   SignupLeadStatus,
   UserPublic,
@@ -304,6 +314,92 @@ ensureUserDriverColumns();
 // Indexes that depend on the new columns. Must follow ensureLoadDriverColumn
 // so we don't reference a column that doesn't exist yet on migrated DBs.
 sqlite.exec("CREATE INDEX IF NOT EXISTS loads_driver_id_idx ON loads(driver_id, created_at DESC)");
+
+// ---------------------------------------------------------------------------
+// Phase 4 P1: new tables for driver operations
+// ---------------------------------------------------------------------------
+//
+// Each is a plain CREATE TABLE IF NOT EXISTS — fresh DBs get them on startup,
+// existing DBs gain them additively without losing data. All 4 tables use
+// TEXT primary keys (makeId) to stay consistent with the rest of the schema.
+//
+//   - driver_documents — owner_user_id + type + storage_path + expires_at.
+//                        File bytes live on disk under uploadsRoot/driver-docs/.
+//                        Tenant-scoped via owner_user_id; never expose another
+//                        driver's document.
+//   - load_checkins    — load_id + driver_user_id + kind + lat/lng + notes.
+//                        Append-only, no edits. Drives the load timeline.
+//   - driver_expenses  — driver_user_id + load_id? + category + amount_cents +
+//                        photo_storage_path?. Amount in cents (int) to avoid
+//                        float drift in totals.
+//   - approval_tasks   — generic queue: task_type + assignee_role + status +
+//                        payload (JSON). For P1 only driver_issue is emitted.
+//
+// Indexes cover the hot query paths: list-by-owner with created_at DESC, and
+// list-by-load for checkins/expenses.
+// ---------------------------------------------------------------------------
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS driver_documents (
+    id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    storage_path TEXT NOT NULL,
+    expires_at TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS driver_documents_owner_idx
+    ON driver_documents(owner_user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS driver_documents_expires_idx
+    ON driver_documents(expires_at) WHERE expires_at IS NOT NULL;
+
+  CREATE TABLE IF NOT EXISTS load_checkins (
+    id TEXT PRIMARY KEY,
+    load_id TEXT NOT NULL,
+    driver_user_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    lat REAL,
+    lng REAL,
+    notes TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS load_checkins_load_idx
+    ON load_checkins(load_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS load_checkins_driver_idx
+    ON load_checkins(driver_user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS driver_expenses (
+    id TEXT PRIMARY KEY,
+    driver_user_id TEXT NOT NULL,
+    load_id TEXT,
+    category TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    photo_storage_path TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS driver_expenses_driver_idx
+    ON driver_expenses(driver_user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS driver_expenses_load_idx
+    ON driver_expenses(load_id) WHERE load_id IS NOT NULL;
+
+  CREATE TABLE IF NOT EXISTS approval_tasks (
+    id TEXT PRIMARY KEY,
+    task_type TEXT NOT NULL,
+    assignee_role TEXT NOT NULL,
+    resolved_by_user_id TEXT,
+    resolved_at TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    payload TEXT NOT NULL,
+    created_by_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS approval_tasks_queue_idx
+    ON approval_tasks(assignee_role, status, created_at DESC);
+`);
+
 
 function now() {
   return new Date().toISOString();
@@ -2344,5 +2440,365 @@ export const storage = {
         note: "Secrets, password hashes, and TOTP secrets are intentionally excluded from backup export.",
       },
     };
+  },
+
+  // =========================================================================
+  // Phase 4 P1 — Driver documents
+  // =========================================================================
+
+  insertDriverDocument(input: {
+    ownerUserId: string;
+    type: DriverDocumentType;
+    fileName: string;
+    storagePath: string;
+    expiresAt: string | null;
+    notes: string | null;
+  }): DriverDocument {
+    const id = makeId("ddoc");
+    const ts = now();
+    sqlite
+      .prepare(
+        `INSERT INTO driver_documents
+         (id, owner_user_id, type, file_name, storage_path, expires_at, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.ownerUserId,
+        input.type,
+        input.fileName,
+        input.storagePath,
+        input.expiresAt,
+        input.notes,
+        ts,
+        ts,
+      );
+    return {
+      id,
+      ownerUserId: input.ownerUserId,
+      type: input.type,
+      fileName: input.fileName,
+      storagePath: input.storagePath,
+      expiresAt: input.expiresAt,
+      notes: input.notes,
+      createdAt: ts,
+      updatedAt: ts,
+    };
+  },
+
+  listDriverDocumentsForUser(
+    userId: string,
+    opts: { limit?: number; cursor?: string } = {},
+  ): { items: DriverDocument[]; nextCursor: string | null; hasMore: boolean; total: number } {
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+    const sql = opts.cursor
+      ? `SELECT * FROM driver_documents
+         WHERE owner_user_id = ? AND created_at < ?
+         ORDER BY created_at DESC LIMIT ?`
+      : `SELECT * FROM driver_documents
+         WHERE owner_user_id = ?
+         ORDER BY created_at DESC LIMIT ?`;
+    const params = opts.cursor ? [userId, opts.cursor, limit + 1] : [userId, limit + 1];
+    const rows = sqlite.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const items: DriverDocument[] = sliced.map((r) => ({
+      id: r.id as string,
+      ownerUserId: r.owner_user_id as string,
+      type: r.type as DriverDocumentType,
+      fileName: r.file_name as string,
+      storagePath: r.storage_path as string,
+      expiresAt: (r.expires_at as string | null) ?? null,
+      notes: (r.notes as string | null) ?? null,
+      createdAt: r.created_at as string,
+      updatedAt: r.updated_at as string,
+    }));
+    const total = (
+      sqlite
+        .prepare("SELECT COUNT(*) AS c FROM driver_documents WHERE owner_user_id = ?")
+        .get(userId) as { c: number }
+    ).c;
+    return {
+      items,
+      nextCursor: hasMore ? (items[items.length - 1]?.createdAt ?? null) : null,
+      hasMore,
+      total,
+    };
+  },
+
+  getDriverDocument(id: string): DriverDocument | null {
+    const row = sqlite
+      .prepare("SELECT * FROM driver_documents WHERE id = ?")
+      .get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      id: row.id as string,
+      ownerUserId: row.owner_user_id as string,
+      type: row.type as DriverDocumentType,
+      fileName: row.file_name as string,
+      storagePath: row.storage_path as string,
+      expiresAt: (row.expires_at as string | null) ?? null,
+      notes: (row.notes as string | null) ?? null,
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
+    };
+  },
+
+  deleteDriverDocument(id: string, ownerUserId: string): boolean {
+    const r = sqlite
+      .prepare("DELETE FROM driver_documents WHERE id = ? AND owner_user_id = ?")
+      .run(id, ownerUserId);
+    return r.changes > 0;
+  },
+
+  computePendingDocsForUser(userId: string, withinDays = 30): PendingDoc[] {
+    const rows = sqlite
+      .prepare(
+        `SELECT id, type, expires_at FROM driver_documents
+         WHERE owner_user_id = ? AND expires_at IS NOT NULL
+         ORDER BY expires_at ASC`,
+      )
+      .all(userId) as Array<{ id: string; type: string; expires_at: string }>;
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const todayMs = today.getTime();
+    const result: PendingDoc[] = [];
+    for (const r of rows) {
+      const exp = new Date(`${r.expires_at}T00:00:00Z`);
+      if (Number.isNaN(exp.getTime())) continue;
+      const days = Math.round((exp.getTime() - todayMs) / (1000 * 60 * 60 * 24));
+      let status: PendingDoc["status"];
+      if (days <= 0) status = "expired";
+      else if (days <= withinDays) status = "soon";
+      else continue;
+      result.push({
+        id: r.id,
+        type: r.type as DriverDocumentType,
+        expiresAt: r.expires_at,
+        daysUntilExpiry: days,
+        status,
+      });
+    }
+    return result;
+  },
+
+  // =========================================================================
+  // Phase 4 P1 — Load check-ins
+  // =========================================================================
+
+  insertLoadCheckin(input: {
+    loadId: string;
+    driverUserId: string;
+    kind: CheckinKind;
+    lat: number | null;
+    lng: number | null;
+    notes: string | null;
+  }): LoadCheckin {
+    const id = makeId("chk");
+    const ts = now();
+    sqlite
+      .prepare(
+        `INSERT INTO load_checkins
+         (id, load_id, driver_user_id, kind, lat, lng, notes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.loadId,
+        input.driverUserId,
+        input.kind,
+        input.lat,
+        input.lng,
+        input.notes,
+        ts,
+      );
+    return {
+      id,
+      loadId: input.loadId,
+      driverUserId: input.driverUserId,
+      kind: input.kind,
+      lat: input.lat,
+      lng: input.lng,
+      notes: input.notes,
+      createdAt: ts,
+    };
+  },
+
+  listCheckinsForLoad(loadId: string): LoadCheckin[] {
+    const rows = sqlite
+      .prepare("SELECT * FROM load_checkins WHERE load_id = ? ORDER BY created_at ASC")
+      .all(loadId) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as string,
+      loadId: r.load_id as string,
+      driverUserId: r.driver_user_id as string,
+      kind: r.kind as CheckinKind,
+      lat: (r.lat as number | null) ?? null,
+      lng: (r.lng as number | null) ?? null,
+      notes: (r.notes as string | null) ?? null,
+      createdAt: r.created_at as string,
+    }));
+  },
+
+  // =========================================================================
+  // Phase 4 P1 — Driver expenses
+  // =========================================================================
+
+  insertDriverExpense(input: {
+    driverUserId: string;
+    loadId: string | null;
+    category: ExpenseCategory;
+    amountCents: number;
+    photoStoragePath: string | null;
+    notes: string | null;
+  }): DriverExpense {
+    const id = makeId("exp");
+    const ts = now();
+    sqlite
+      .prepare(
+        `INSERT INTO driver_expenses
+         (id, driver_user_id, load_id, category, amount_cents, photo_storage_path, notes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.driverUserId,
+        input.loadId,
+        input.category,
+        input.amountCents,
+        input.photoStoragePath,
+        input.notes,
+        ts,
+      );
+    return {
+      id,
+      driverUserId: input.driverUserId,
+      loadId: input.loadId,
+      category: input.category,
+      amountCents: input.amountCents,
+      photoStoragePath: input.photoStoragePath,
+      notes: input.notes,
+      createdAt: ts,
+    };
+  },
+
+  listExpensesForUser(
+    userId: string,
+    opts: { limit?: number; cursor?: string; loadId?: string } = {},
+  ): { items: DriverExpense[]; nextCursor: string | null; hasMore: boolean; total: number } {
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+    const where: string[] = ["driver_user_id = ?"];
+    const params: Array<string | number> = [userId];
+    if (opts.loadId) {
+      where.push("load_id = ?");
+      params.push(opts.loadId);
+    }
+    if (opts.cursor) {
+      where.push("created_at < ?");
+      params.push(opts.cursor);
+    }
+    params.push(limit + 1);
+    const rows = sqlite
+      .prepare(
+        `SELECT * FROM driver_expenses
+         WHERE ${where.join(" AND ")}
+         ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(...params) as Array<Record<string, unknown>>;
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const items: DriverExpense[] = sliced.map((r) => ({
+      id: r.id as string,
+      driverUserId: r.driver_user_id as string,
+      loadId: (r.load_id as string | null) ?? null,
+      category: r.category as ExpenseCategory,
+      amountCents: r.amount_cents as number,
+      photoStoragePath: (r.photo_storage_path as string | null) ?? null,
+      notes: (r.notes as string | null) ?? null,
+      createdAt: r.created_at as string,
+    }));
+    const countSql = opts.loadId
+      ? "SELECT COUNT(*) AS c FROM driver_expenses WHERE driver_user_id = ? AND load_id = ?"
+      : "SELECT COUNT(*) AS c FROM driver_expenses WHERE driver_user_id = ?";
+    const countParams = opts.loadId ? [userId, opts.loadId] : [userId];
+    const total = (sqlite.prepare(countSql).get(...countParams) as { c: number }).c;
+    return {
+      items,
+      nextCursor: hasMore ? (items[items.length - 1]?.createdAt ?? null) : null,
+      hasMore,
+      total,
+    };
+  },
+
+  // =========================================================================
+  // Phase 4 P1 — Approval tasks (issues queue)
+  // =========================================================================
+
+  createApprovalTask(input: {
+    taskType: ApprovalTaskType;
+    assigneeRole: UserRole;
+    payload: Record<string, unknown>;
+    createdByUserId: string;
+  }): ApprovalTask {
+    const id = makeId("task");
+    const ts = now();
+    sqlite
+      .prepare(
+        `INSERT INTO approval_tasks
+         (id, task_type, assignee_role, resolved_by_user_id, resolved_at, status, payload, created_by_user_id, created_at)
+         VALUES (?, ?, ?, NULL, NULL, 'open', ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.taskType,
+        input.assigneeRole,
+        JSON.stringify(input.payload),
+        input.createdByUserId,
+        ts,
+      );
+    return {
+      id,
+      taskType: input.taskType,
+      assigneeRole: input.assigneeRole,
+      resolvedByUserId: null,
+      resolvedAt: null,
+      status: "open",
+      payload: input.payload,
+      createdByUserId: input.createdByUserId,
+      createdAt: ts,
+    };
+  },
+
+  listApprovalTasksForRole(
+    role: UserRole,
+    opts: { status?: ApprovalTaskStatus; limit?: number } = {},
+  ): ApprovalTask[] {
+    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+    const rows = opts.status
+      ? (sqlite
+          .prepare(
+            `SELECT * FROM approval_tasks
+             WHERE assignee_role = ? AND status = ?
+             ORDER BY created_at DESC LIMIT ?`,
+          )
+          .all(role, opts.status, limit) as Array<Record<string, unknown>>)
+      : (sqlite
+          .prepare(
+            `SELECT * FROM approval_tasks
+             WHERE assignee_role = ?
+             ORDER BY created_at DESC LIMIT ?`,
+          )
+          .all(role, limit) as Array<Record<string, unknown>>);
+    return rows.map((r) => ({
+      id: r.id as string,
+      taskType: r.task_type as ApprovalTaskType,
+      assigneeRole: r.assignee_role as UserRole,
+      resolvedByUserId: (r.resolved_by_user_id as string | null) ?? null,
+      resolvedAt: (r.resolved_at as string | null) ?? null,
+      status: r.status as ApprovalTaskStatus,
+      payload: JSON.parse((r.payload as string) ?? "{}") as Record<string, unknown>,
+      createdByUserId: r.created_by_user_id as string,
+      createdAt: r.created_at as string,
+    }));
   },
 };
