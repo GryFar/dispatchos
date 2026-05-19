@@ -37,6 +37,7 @@ import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerMeRoutes } from "./routes/me";
 import { registerLeadRoutes } from "./routes/leads";
+import { enrichLoadSync } from "./lib/ai";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -570,7 +571,11 @@ function importLoadsFromCsv(csv: string) {
         marketQuality: Number(row.marketQuality || 70),
         notes: row.notes,
       };
-      created.push(storage.upsertLoad(insertLoadSchema.parse(load)));
+      // Phase 4: enrich CSV imports too — overrides any marketQuality
+      // value the CSV provided with the lane-benchmark calculation.
+      const parsed = insertLoadSchema.parse(load);
+      const enriched = enrichLoadSync(parsed);
+      created.push(storage.upsertLoad(enriched));
     } catch (error: any) {
       errors.push({ row: rowNumber, message: error.message || "Invalid row" });
     }
@@ -1029,7 +1034,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // linkage AND optional driverId for driver-portal scoping. Pre-Phase-3
       // callers (v1.2.7 frontend, Phase 1 smoke) keep working — those fields
       // are all optional, validation is strict-superset of Phase 1.
-      const load = storage.upsertLoad(insertLoadFullSchema.parse(req.body));
+      //
+      // Phase 4: enrichLoadSync replaces hand-tuned marketQuality with a real
+      // lane-benchmark calculation (origin region × dest region × equipment ×
+      // seasonality). Brokers and fuel pricing are enriched separately at
+      // score time (see scoreLoadForClient).
+      const parsed = insertLoadFullSchema.parse(req.body);
+      const enriched = enrichLoadSync(parsed);
+      const load = storage.upsertLoad(enriched);
       res.status(201).json(load);
     } catch (error) {
       handleZodError(error, res);
