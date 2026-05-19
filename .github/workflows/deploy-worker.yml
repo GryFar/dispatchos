@@ -1,0 +1,68 @@
+name: Deploy Coming-Soon Worker
+
+# Auto-deploys the Cloudflare Worker that serves dispatchos.co landing
+# whenever files under apps/coming-soon/** change on develop or main.
+#
+# Required GitHub secret:
+#   CLOUDFLARE_API_TOKEN  — token with "Edit Cloudflare Workers" perms.
+#     Create at https://dash.cloudflare.com/profile/api-tokens
+#     (template: Edit Cloudflare Workers). Scope it to the dispatchos.co
+#     account only.
+#
+# The Worker name + KV binding live in apps/coming-soon/wrangler.toml.
+# Secret values used by the Worker (e.g. ADMIN_TOKEN) are NOT touched here —
+# they're set once via `wrangler secret put` and persist across deploys.
+
+on:
+  push:
+    branches: [develop, main]
+    paths:
+      - "apps/coming-soon/**"
+      - ".github/workflows/deploy-worker.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: worker-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/coming-soon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Worker deps
+        run: npm install --no-audit --no-fund
+
+      - name: Build Worker bundle
+        run: npm run build
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: apps/coming-soon
+          command: deploy
+
+      - name: Smoke check landing
+        run: |
+          for i in 1 2 3 4 5; do
+            sleep 5
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" https://dispatchos.co/ || echo "000")
+            if [ "$CODE" = "200" ]; then
+              echo "Landing OK after attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $CODE — retrying..."
+          done
+          echo "Landing smoke failed"
+          exit 1
