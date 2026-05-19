@@ -2119,6 +2119,131 @@ try {
   }
   console.log("[OK] P1 /api/me/documents blocks non-driver (403)");
 
+  // ===========================================================================
+  // PHASE 4 P1.1 — Admin approval queue
+  // ===========================================================================
+  //
+  // Reuses the issue created earlier ("Broker no-show at pickup", urgent) by
+  // driver A — that's our test fixture. We also create a second issue for
+  // dismiss path coverage.
+
+  // -- P1.1 admin sees the open task -----------------------------------------
+  cookieHeader = p4AdminCookie;
+  const queueOpen = await request("/api/admin/approval-tasks?status=open&limit=10");
+  if (!Array.isArray(queueOpen.items) || queueOpen.items.length === 0) {
+    throw new Error("P1.1 queue: expected at least 1 open task");
+  }
+  const issueTaskInQueue = queueOpen.items.find((t) => t.id === issueTask.id);
+  if (!issueTaskInQueue) {
+    throw new Error("P1.1 queue: driver-issue task missing from open list");
+  }
+  if (!issueTaskInQueue.createdByEmail || !issueTaskInQueue.createdByEmail.includes("@")) {
+    throw new Error("P1.1 queue: task missing creator email (JOIN broken)");
+  }
+  if (issueTaskInQueue.createdByEmail !== "smoke.driver.a@example.com") {
+    throw new Error(
+      `P1.1 queue: wrong creator email: ${issueTaskInQueue.createdByEmail}`,
+    );
+  }
+  if (typeof queueOpen.total !== "number" || queueOpen.total < 1) {
+    throw new Error("P1.1 queue: total field missing or zero");
+  }
+  console.log("[OK] P1.1 GET /api/admin/approval-tasks?status=open (with creator JOIN)");
+
+  // -- P1.1 GET single task --------------------------------------------------
+  const oneTask = await request(`/api/admin/approval-tasks/${issueTask.id}`);
+  if (oneTask.id !== issueTask.id) throw new Error("P1.1 queue: GET :id mismatch");
+  if (oneTask.payload.severity !== "urgent") {
+    throw new Error("P1.1 queue: payload not preserved on GET :id");
+  }
+  console.log("[OK] P1.1 GET /api/admin/approval-tasks/:id");
+
+  // -- P1.1 GET unknown id → 404 ---------------------------------------------
+  try {
+    await request("/api/admin/approval-tasks/task-nonexistent-99999");
+    throw new Error("P1.1 queue: unknown id should 404");
+  } catch (e) {
+    if (!/404/.test(e.message)) throw e;
+  }
+  console.log("[OK] P1.1 GET /api/admin/approval-tasks/:id 404 on unknown");
+
+  // -- P1.1 PATCH resolve ----------------------------------------------------
+  const resolved = await request(`/api/admin/approval-tasks/${issueTask.id}`, {
+    method: "PATCH",
+    body: { action: "resolve", resolution: "Called broker, rescheduled to 9am." },
+  });
+  if (resolved.status !== "resolved") {
+    throw new Error(`P1.1 queue: resolve expected status=resolved, got ${resolved.status}`);
+  }
+  if (resolved.resolvedAt == null || resolved.resolvedByUserId == null) {
+    throw new Error("P1.1 queue: resolvedAt / resolvedByUserId not stamped");
+  }
+  if (resolved.payload.resolution !== "Called broker, rescheduled to 9am.") {
+    throw new Error("P1.1 queue: resolution note not merged into payload");
+  }
+  console.log("[OK] P1.1 PATCH /api/admin/approval-tasks/:id action=resolve");
+
+  // -- P1.1 PATCH already-resolved → 409 ------------------------------------
+  try {
+    await request(`/api/admin/approval-tasks/${issueTask.id}`, {
+      method: "PATCH",
+      body: { action: "resolve" },
+    });
+    throw new Error("P1.1 queue: re-resolve should 409");
+  } catch (e) {
+    if (!/409/.test(e.message)) throw e;
+  }
+  console.log("[OK] P1.1 PATCH /api/admin/approval-tasks/:id 409 on terminated");
+
+  // -- P1.1 dismiss path: create another issue, dismiss it ------------------
+  cookieHeader = driverACookie;
+  const issue2 = await request("/api/me/issues", {
+    method: "POST",
+    body: { severity: "info", title: "Duplicate of prior issue" },
+  });
+  cookieHeader = p4AdminCookie;
+  const dismissed = await request(`/api/admin/approval-tasks/${issue2.id}`, {
+    method: "PATCH",
+    body: { action: "dismiss", resolution: "Duplicate of task " + issueTask.id },
+  });
+  if (dismissed.status !== "dismissed") {
+    throw new Error(`P1.1 queue: dismiss expected status=dismissed, got ${dismissed.status}`);
+  }
+  console.log("[OK] P1.1 PATCH /api/admin/approval-tasks/:id action=dismiss");
+
+  // -- P1.1 status filters work ---------------------------------------------
+  const resolvedList = await request("/api/admin/approval-tasks?status=resolved&limit=50");
+  if (!resolvedList.items.some((t) => t.id === issueTask.id)) {
+    throw new Error("P1.1 queue: ?status=resolved missing resolved task");
+  }
+  const dismissedList = await request("/api/admin/approval-tasks?status=dismissed&limit=50");
+  if (!dismissedList.items.some((t) => t.id === issue2.id)) {
+    throw new Error("P1.1 queue: ?status=dismissed missing dismissed task");
+  }
+  console.log("[OK] P1.1 GET /api/admin/approval-tasks status filter");
+
+  // -- P1.1 role gating: driver hitting admin queue → 403 -------------------
+  cookieHeader = driverACookie;
+  try {
+    await request("/api/admin/approval-tasks?status=open");
+    throw new Error("P1.1 queue: driver should be blocked with 403");
+  } catch (e) {
+    if (!/403/.test(e.message)) throw e;
+  }
+  console.log("[OK] P1.1 /api/admin/approval-tasks blocks non-admin (403)");
+
+  // -- P1.1 audit events recorded -------------------------------------------
+  cookieHeader = p4AdminCookie;
+  const resolvedAudit = await request("/api/audit?eventType=admin.approval_task_resolved&limit=10");
+  if (!resolvedAudit.items.some((ev) => ev.entityId === issueTask.id)) {
+    throw new Error("P1.1 audit: admin.approval_task_resolved not recorded for issueTask");
+  }
+  const dismissedAudit = await request("/api/audit?eventType=admin.approval_task_dismissed&limit=10");
+  if (!dismissedAudit.items.some((ev) => ev.entityId === issue2.id)) {
+    throw new Error("P1.1 audit: admin.approval_task_dismissed not recorded for issue2");
+  }
+  console.log("[OK] P1.1 audit: resolved + dismissed events recorded");
+
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);

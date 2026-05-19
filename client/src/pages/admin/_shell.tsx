@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import {
   Archive,
   Briefcase,
@@ -8,6 +9,7 @@ import {
   FileText,
   Headset,
   History,
+  Inbox,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -45,6 +47,7 @@ interface NavItem {
   href: string;
   label: string;
   icon: typeof LayoutDashboard;
+  badgeKey?: "approvalQueueCount";
 }
 
 const NAV: NavItem[] = [
@@ -55,6 +58,7 @@ const NAV: NavItem[] = [
   { href: "/loads", label: "Грузы", icon: Truck },
   { href: "/brokers", label: "Брокеры", icon: Headset },
   { href: "/documents", label: "Документы", icon: FileText },
+  { href: "/queue", label: "Очередь", icon: Inbox, badgeKey: "approvalQueueCount" },
   { href: "/audit", label: "Audit log", icon: History },
   { href: "/backup", label: "Backup", icon: Database },
   { href: "/billing", label: "Биллинг", icon: CreditCard },
@@ -99,6 +103,17 @@ export function AdminShell({ children }: { children: ReactNode }) {
 }
 
 function SidebarContent({ currentPath, onNavigate }: { currentPath: string; onNavigate?: () => void }) {
+  // Poll open approval-task count for the sidebar badge. 30 s is plenty —
+  // drivers report issues at low volume and we don't need realtime here.
+  const { data: queueData } = useQuery<{ total: number }>({
+    queryKey: ["/api/admin/approval-tasks", "open-count"],
+    queryFn: () => apiJson("GET", "/api/admin/approval-tasks?status=open&limit=1"),
+    refetchInterval: 30_000,
+  });
+  const badges = {
+    approvalQueueCount: queueData?.total ?? 0,
+  };
+
   return (
     <div className="flex h-full flex-col">
       {/* Brand */}
@@ -121,6 +136,7 @@ function SidebarContent({ currentPath, onNavigate }: { currentPath: string; onNa
               item.href === "/"
                 ? currentPath === "/" || currentPath === ""
                 : currentPath === item.href || currentPath.startsWith(item.href + "/");
+            const badgeCount = item.badgeKey ? badges[item.badgeKey] : 0;
             return (
               <li key={item.href}>
                 <Link
@@ -139,7 +155,19 @@ function SidebarContent({ currentPath, onNavigate }: { currentPath: string; onNa
                       active ? "text-primary" : "group-hover:scale-110",
                     )}
                   />
-                  {item.label}
+                  <span className="flex-1">{item.label}</span>
+                  {badgeCount > 0 && (
+                    <span
+                      className={cn(
+                        "ml-auto inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold tabular-nums",
+                        active
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-primary/15 text-primary",
+                      )}
+                    >
+                      {badgeCount > 99 ? "99+" : badgeCount}
+                    </span>
+                  )}
                 </Link>
               </li>
             );

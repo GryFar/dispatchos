@@ -1037,3 +1037,30 @@ export const approvalTaskSchema = z.object({
   createdAt: z.string(),
 });
 export type ApprovalTask = z.infer<typeof approvalTaskSchema>;
+
+// ===========================================================================
+// PHASE 4 P1.1 — Admin approval queue
+// ===========================================================================
+
+/** Filters for GET /api/admin/approval-tasks. */
+export const approvalTaskListFiltersSchema = paginationParamsSchema.extend({
+  status: approvalTaskStatusSchema.optional(),
+  taskType: approvalTaskTypeSchema.optional(),
+  assigneeRole: userRoleSchema.optional(),
+});
+export type ApprovalTaskListFilters = z.infer<typeof approvalTaskListFiltersSchema>;
+
+/** Body for PATCH /api/admin/approval-tasks/:id. */
+export const resolveApprovalTaskSchema = z.object({
+  action: z.enum(["resolve", "dismiss"]),
+  resolution: z.string().max(1000).optional(),
+});
+export type ResolveApprovalTaskInput = z.infer<typeof resolveApprovalTaskSchema>;
+
+/** Approval task with optional creator info (admin queue list). */
+export const approvalTaskEnrichedSchema = approvalTaskSchema.extend({
+  createdByEmail: z.string().nullable(),
+  createdByFullName: z.string().nullable(),
+  resolvedByEmail: z.string().nullable(),
+});
+export type ApprovalTaskEnriched = z.infer<typeof approvalTaskEnrichedSchema>;

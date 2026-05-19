@@ -2801,4 +2801,161 @@ export const storage = {
       createdAt: r.created_at as string,
     }));
   },
+  // =========================================================================
+  // Phase 4 P1.1 — Admin approval queue (read/update for the admin portal)
+  // =========================================================================
+
+  listApprovalTasksPaginated(filters: {
+    status?: ApprovalTaskStatus;
+    taskType?: ApprovalTaskType;
+    assigneeRole?: UserRole;
+    limit?: number;
+    cursor?: string;
+  } = {}): {
+    items: Array<ApprovalTask & {
+      createdByEmail: string | null;
+      createdByFullName: string | null;
+      resolvedByEmail: string | null;
+    }>;
+    nextCursor: string | null;
+    hasMore: boolean;
+    total: number;
+  } {
+    const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (filters.status) {
+      where.push("t.status = ?");
+      params.push(filters.status);
+    }
+    if (filters.taskType) {
+      where.push("t.task_type = ?");
+      params.push(filters.taskType);
+    }
+    if (filters.assigneeRole) {
+      where.push("t.assignee_role = ?");
+      params.push(filters.assigneeRole);
+    }
+    if (filters.cursor) {
+      where.push("t.created_at < ?");
+      params.push(filters.cursor);
+    }
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const sql = `
+      SELECT
+        t.*,
+        creator.email      AS creator_email,
+        creator.full_name  AS creator_full_name,
+        resolver.email     AS resolver_email
+      FROM approval_tasks t
+      LEFT JOIN users creator  ON creator.id  = t.created_by_user_id
+      LEFT JOIN users resolver ON resolver.id = t.resolved_by_user_id
+      ${whereClause}
+      ORDER BY t.created_at DESC
+      LIMIT ?
+    `;
+    params.push(limit + 1);
+    const rows = sqlite.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const items = sliced.map((r) => ({
+      id: r.id as string,
+      taskType: r.task_type as ApprovalTaskType,
+      assigneeRole: r.assignee_role as UserRole,
+      resolvedByUserId: (r.resolved_by_user_id as string | null) ?? null,
+      resolvedAt: (r.resolved_at as string | null) ?? null,
+      status: r.status as ApprovalTaskStatus,
+      payload: JSON.parse((r.payload as string) ?? "{}") as Record<string, unknown>,
+      createdByUserId: r.created_by_user_id as string,
+      createdAt: r.created_at as string,
+      createdByEmail: (r.creator_email as string | null) ?? null,
+      createdByFullName: (r.creator_full_name as string | null) ?? null,
+      resolvedByEmail: (r.resolver_email as string | null) ?? null,
+    }));
+    const totalWhere: string[] = [];
+    const totalParams: Array<string | number> = [];
+    if (filters.status) {
+      totalWhere.push("status = ?");
+      totalParams.push(filters.status);
+    }
+    if (filters.taskType) {
+      totalWhere.push("task_type = ?");
+      totalParams.push(filters.taskType);
+    }
+    if (filters.assigneeRole) {
+      totalWhere.push("assignee_role = ?");
+      totalParams.push(filters.assigneeRole);
+    }
+    const totalSql = `SELECT COUNT(*) AS c FROM approval_tasks ${
+      totalWhere.length ? `WHERE ${totalWhere.join(" AND ")}` : ""
+    }`;
+    const total = (sqlite.prepare(totalSql).get(...totalParams) as { c: number }).c;
+    return {
+      items,
+      nextCursor: hasMore ? (items[items.length - 1]?.createdAt ?? null) : null,
+      hasMore,
+      total,
+    };
+  },
+
+  getApprovalTask(id: string): ApprovalTask | null {
+    const row = sqlite
+      .prepare("SELECT * FROM approval_tasks WHERE id = ?")
+      .get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      id: row.id as string,
+      taskType: row.task_type as ApprovalTaskType,
+      assigneeRole: row.assignee_role as UserRole,
+      resolvedByUserId: (row.resolved_by_user_id as string | null) ?? null,
+      resolvedAt: (row.resolved_at as string | null) ?? null,
+      status: row.status as ApprovalTaskStatus,
+      payload: JSON.parse((row.payload as string) ?? "{}") as Record<string, unknown>,
+      createdByUserId: row.created_by_user_id as string,
+      createdAt: row.created_at as string,
+    };
+  },
+
+  resolveApprovalTask(
+    id: string,
+    action: "resolve" | "dismiss",
+    resolverUserId: string,
+    resolution?: string,
+  ): ApprovalTask | null {
+    const current = this.getApprovalTask(id);
+    if (!current) return null;
+    if (current.status === "resolved" || current.status === "dismissed") {
+      return null;
+    }
+    const newStatus: ApprovalTaskStatus =
+      action === "resolve" ? "resolved" : "dismissed";
+    const ts = now();
+    const newPayload = resolution
+      ? { ...current.payload, resolution }
+      : current.payload;
+    sqlite
+      .prepare(
+        `UPDATE approval_tasks
+         SET status = ?, resolved_by_user_id = ?, resolved_at = ?, payload = ?
+         WHERE id = ?`,
+      )
+      .run(newStatus, resolverUserId, ts, JSON.stringify(newPayload), id);
+    return {
+      ...current,
+      status: newStatus,
+      resolvedByUserId: resolverUserId,
+      resolvedAt: ts,
+      payload: newPayload,
+    };
+  },
+
+  countOpenApprovalTasksForRole(role: UserRole): number {
+    return (
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS c FROM approval_tasks WHERE assignee_role = ? AND status = 'open'",
+        )
+        .get(role) as { c: number }
+    ).c;
+  },
 };
