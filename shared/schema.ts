@@ -770,6 +770,55 @@ export const meLoadsResponseSchema = z.object({
 export type MeLoadsResponse = z.infer<typeof meLoadsResponseSchema>;
 
 // ===========================================================================
+// PHASE 4 ADDITIONS — Signup leads (hybrid signup flow)
+// ===========================================================================
+
+export const signupLeadStatusSchema = z.enum([
+  "pending",
+  "approved",
+  "rejected",
+  "spam",
+]);
+export type SignupLeadStatus = z.infer<typeof signupLeadStatusSchema>;
+
+export const signupLeadSchema = z.object({
+  id: z.string(),
+  email: z.string().email(),
+  lang: z.string().nullable(),
+  country: z.string().nullable(),
+  userAgent: z.string().nullable(),
+  referer: z.string().nullable(),
+  status: signupLeadStatusSchema,
+  approvedInviteCode: z.string().nullable(),
+  reviewedByUserId: z.string().nullable(),
+  reviewedAt: z.string().nullable(),
+  rejectReason: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type SignupLead = z.infer<typeof signupLeadSchema>;
+
+export const subscribePublicSchema = z.object({
+  email: z.string().email().max(254),
+  lang: z.string().max(8).optional(),
+  referer: z.string().max(500).optional(),
+});
+
+export const approveLeadSchema = z.object({
+  role: z.enum(["driver", "dispatcher"]),
+  linkedClientId: z.string().optional(),
+});
+
+export const rejectLeadSchema = z.object({
+  reason: z.string().max(500).optional(),
+});
+
+export const listLeadsQuerySchema = z.object({
+  status: signupLeadStatusSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  cursor: z.string().optional(),
+});
+
+// ===========================================================================
 // PHASE 4 ADDITIONS — Broker performance events (feeds AI brokers.ts)
 // ===========================================================================
 

@@ -17,12 +17,31 @@ import type {
   Invite,
   Invoice,
   Load,
+  SignupLead,
+  SignupLeadStatus,
   UserPublic,
   UserRole,
 } from "@shared/schema";
 
 function cryptoRandomId(): string {
   return crypto.randomBytes(12).toString("hex");
+}
+
+function rowToSignupLead(row: Record<string, unknown>): SignupLead {
+  return {
+    id: row.id as string,
+    email: row.email as string,
+    lang: (row.lang as string | null) ?? null,
+    country: (row.country as string | null) ?? null,
+    userAgent: (row.user_agent as string | null) ?? null,
+    referer: (row.referer as string | null) ?? null,
+    status: row.status as SignupLeadStatus,
+    approvedInviteCode: (row.approved_invite_code as string | null) ?? null,
+    reviewedByUserId: (row.reviewed_by_user_id as string | null) ?? null,
+    reviewedAt: (row.reviewed_at as string | null) ?? null,
+    rejectReason: (row.reject_reason as string | null) ?? null,
+    createdAt: row.created_at as string,
+  };
 }
 
 function rowToBrokerEvent(row: Record<string, unknown>): BrokerEvent {
@@ -175,6 +194,24 @@ CREATE INDEX IF NOT EXISTS assignments_created_at_idx ON assignments(created_at 
 CREATE INDEX IF NOT EXISTS invoices_generated_at_idx ON invoices(generated_at DESC);
 CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS signup_leads (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  lang TEXT,
+  country TEXT,
+  user_agent TEXT,
+  referer TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  approved_invite_code TEXT,
+  reviewed_by_user_id TEXT,
+  reviewed_at TEXT,
+  reject_reason TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS signup_leads_status_created_idx
+  ON signup_leads(status, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS signup_leads_email_pending_idx
+  ON signup_leads(email) WHERE status = 'pending';
 CREATE TABLE IF NOT EXISTS broker_events (
   id TEXT PRIMARY KEY,
   broker_mc TEXT NOT NULL,
@@ -954,6 +991,134 @@ export const storage = {
     };
     this.audit("invite.revoked", "invite", code, { code, revokedByUserId });
     return { invite, revokedAt };
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 4: Signup leads (hybrid signup flow)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Public-facing endpoint inserts here. Idempotent on email when status is
+   * pending (we have a partial unique index). If a non-pending row exists for
+   * the same email, we still allow a new pending row.
+   */
+  insertSignupLead(input: {
+    email: string;
+    lang?: string | null;
+    country?: string | null;
+    userAgent?: string | null;
+    referer?: string | null;
+  }): { lead: SignupLead; isNew: boolean } {
+    const email = input.email.trim().toLowerCase();
+    const existing = sqlite
+      .prepare("SELECT * FROM signup_leads WHERE email = ? AND status = 'pending' LIMIT 1")
+      .get(email) as Record<string, unknown> | undefined;
+    if (existing) {
+      return { lead: rowToSignupLead(existing), isNew: false };
+    }
+    const id = `lead_${cryptoRandomId()}`;
+    const createdAt = new Date().toISOString();
+    sqlite.prepare(
+      `INSERT INTO signup_leads (id, email, lang, country, user_agent, referer, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+    ).run(
+      id,
+      email,
+      input.lang ?? null,
+      input.country ?? null,
+      input.userAgent ?? null,
+      input.referer ?? null,
+      createdAt,
+    );
+    this.audit("lead.subscribed", "signup_lead", id, { email, lang: input.lang });
+    const lead = this.getSignupLead(id)!;
+    return { lead, isNew: true };
+  },
+
+  getSignupLead(id: string): SignupLead | undefined {
+    const row = sqlite
+      .prepare("SELECT * FROM signup_leads WHERE id = ?")
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? rowToSignupLead(row) : undefined;
+  },
+
+  listSignupLeadsPaginated(filter: {
+    status?: SignupLeadStatus;
+    limit?: number;
+    cursor?: string;
+  }): { items: SignupLead[]; nextCursor: string | null; hasMore: boolean; total: number } {
+    const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filter.status) {
+      where.push("status = ?");
+      params.push(filter.status);
+    }
+    if (filter.cursor) {
+      where.push("created_at < ?");
+      params.push(filter.cursor);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const rows = sqlite
+      .prepare(
+        `SELECT * FROM signup_leads ${whereSql} ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(...params, limit + 1) as Record<string, unknown>[];
+    const totalRow = filter.status
+      ? (sqlite
+          .prepare("SELECT COUNT(*) AS c FROM signup_leads WHERE status = ?")
+          .get(filter.status) as { c: number })
+      : (sqlite.prepare("SELECT COUNT(*) AS c FROM signup_leads").get() as { c: number });
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit).map(rowToSignupLead);
+    const nextCursor = hasMore ? items[items.length - 1]!.createdAt : null;
+    return { items, nextCursor, hasMore, total: totalRow.c };
+  },
+
+  approveSignupLead(
+    id: string,
+    inviteCode: string,
+    reviewerUserId: string,
+  ): SignupLead | { notFound: true } | { alreadyReviewed: SignupLeadStatus } {
+    const existing = this.getSignupLead(id);
+    if (!existing) return { notFound: true };
+    if (existing.status !== "pending") return { alreadyReviewed: existing.status };
+    const reviewedAt = new Date().toISOString();
+    sqlite.prepare(
+      `UPDATE signup_leads
+       SET status = 'approved', approved_invite_code = ?, reviewed_by_user_id = ?, reviewed_at = ?
+       WHERE id = ?`,
+    ).run(inviteCode, reviewerUserId, reviewedAt, id);
+    this.audit("lead.approved", "signup_lead", id, {
+      email: existing.email,
+      inviteCode,
+      reviewerUserId,
+    });
+    return this.getSignupLead(id)!;
+  },
+
+  rejectSignupLead(
+    id: string,
+    reviewerUserId: string,
+    reason: string | null,
+    spam = false,
+  ): SignupLead | { notFound: true } | { alreadyReviewed: SignupLeadStatus } {
+    const existing = this.getSignupLead(id);
+    if (!existing) return { notFound: true };
+    if (existing.status !== "pending") return { alreadyReviewed: existing.status };
+    const reviewedAt = new Date().toISOString();
+    const newStatus: SignupLeadStatus = spam ? "spam" : "rejected";
+    sqlite.prepare(
+      `UPDATE signup_leads
+       SET status = ?, reviewed_by_user_id = ?, reviewed_at = ?, reject_reason = ?
+       WHERE id = ?`,
+    ).run(newStatus, reviewerUserId, reviewedAt, reason, id);
+    this.audit(spam ? "lead.spam" : "lead.rejected", "signup_lead", id, {
+      email: existing.email,
+      reviewerUserId,
+      reason,
+    });
+    return this.getSignupLead(id)!;
   },
 
   // -------------------------------------------------------------------------
