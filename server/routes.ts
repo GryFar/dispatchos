@@ -38,6 +38,7 @@ import { registerAdminRoutes } from "./routes/admin";
 import { registerMeRoutes } from "./routes/me";
 import { registerLeadRoutes } from "./routes/leads";
 import { registerWebhookRoutes } from "./routes/webhooks";
+import { registerCronRoutes } from "./routes/cron";
 import { enrichLoadSync } from "./lib/ai";
 
 const HOUR = 60 * 60 * 1000;
@@ -987,6 +988,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Public webhook receivers (Resend, future: Stripe, Twilio).
   // No auth gate; each route verifies its own service-specific signature.
   registerWebhookRoutes(app);
+
+  // Scheduled-task endpoints (EIA fuel refresh, future cron jobs).
+  // No session auth; protected by X-Cron-Secret shared header.
+  registerCronRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The
