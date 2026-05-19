@@ -14,6 +14,7 @@
 import type { Express, Request, Response } from "express";
 import { storage } from "../storage";
 import { requireRole, getCurrentUser } from "../auth";
+import { sendInviteEmail } from "../lib/email";
 import {
   subscribePublicSchema,
   approveLeadSchema,
@@ -124,7 +125,7 @@ export function registerLeadRoutes(app: Express): void {
   app.post(
     "/api/dispatch/leads/:id/approve",
     requireRole("dispatcher", "admin"),
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const reviewer = getCurrentUser(req);
       if (!reviewer) return res.status(401).json({ message: "Unauthorized" });
 
@@ -169,9 +170,25 @@ export function registerLeadRoutes(app: Express): void {
       }
 
       const signupUrl = `${hostFromReq(req)}/#/signup?code=${code}`;
+
+      // Auto-send invite email via Resend. Failure is non-fatal: dispatcher
+      // still gets the URL in the response and can resend manually if needed.
+      const lang = (lead.lang === "ru" || lead.lang === "uk" ? lead.lang : "en") as "en" | "ru" | "uk";
+      const emailResult = await sendInviteEmail({
+        to: lead.email,
+        signupUrl,
+        role: parsed.data.role,
+        inviterName: reviewer.fullName ?? reviewer.email,
+        lang,
+        expiresAt: invite.expiresAt,
+      });
+
       return res.json({
         leadId: result.id,
         invite: { code: invite.code, signupUrl, expiresAt: invite.expiresAt },
+        email: emailResult.ok
+          ? { sent: true, id: emailResult.id }
+          : { sent: false, error: emailResult.error },
       });
     },
   );
