@@ -41,6 +41,7 @@ import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerCronRoutes } from "./routes/cron";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { enrichLoadSync } from "./lib/ai";
+import { parseSylectusEmail } from "./lib/parsers/sylectus";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -753,12 +754,41 @@ function buildWeeklyReport(clientId: string) {
 }
 
 function parseEmailToLoad(input: { from: string; subject: string; body: string }) {
+  // Try Sylectus parser first — it's the only board we have a real format
+  // for. Falls through to the generic regex grab-bag when not a Sylectus
+  // posting, so existing test fixtures keep passing.
+  const sylectus = parseSylectusEmail(input);
+  if (sylectus.matched && sylectus.origin && sylectus.destination) {
+    return {
+      possibleLoad: true,
+      source: "sylectus" as const,
+      extracted: {
+        rate: sylectus.rate ?? 0,
+        loadedMiles: sylectus.miles ?? 0,
+        originCity: sylectus.origin.city,
+        originState: sylectus.origin.state,
+        destinationCity: sylectus.destination.city,
+        destinationState: sylectus.destination.state,
+        weightLbs: sylectus.weightLbs,
+        pieces: sylectus.pieces,
+        equipment: sylectus.equipment,
+        pickupAt: sylectus.pickupAt,
+        postedAt: sylectus.postedAt,
+        broker: sylectus.broker,
+        reference: sylectus.reference,
+      },
+      rawFields: sylectus.rawFields,
+    };
+  }
+
+  // Generic fallback (v1.2.7 legacy) — unchanged from the original.
   const text = `${input.subject}\n${input.body}`;
   const rate = Number(text.match(/\$?\s?(\d{3,5})(?:\s|$)/)?.[1] || 0);
   const miles = Number(text.match(/(\d{2,5})\s?(?:mi|miles)/i)?.[1] || 0);
   const lane = text.match(/([A-Za-z .]+),?\s([A-Z]{2})\s*(?:-|→|to)\s*([A-Za-z .]+),?\s([A-Z]{2})/i);
   return {
     possibleLoad: Boolean(rate && miles && lane),
+    source: "generic" as const,
     extracted: {
       rate,
       loadedMiles: miles,
