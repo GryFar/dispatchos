@@ -1,4 +1,8 @@
 import "dotenv/config";
+// Sentry must be initialized BEFORE express is imported so its
+// auto-instrumentation can wrap http/express modules. See server/instrument.ts.
+import "./instrument";
+import * as Sentry from "@sentry/node";
 import express, { Response, NextFunction } from "express";
 import type { Request } from "express";
 import rateLimit from "express-rate-limit";
@@ -149,6 +153,11 @@ app.use((req, res, next) => {
   }
 
   const httpServer = await registerRoutes(app);
+
+  // Sentry error handler installs only when DSN is configured; otherwise the
+  // call is a cheap no-op. Must come BEFORE the user-facing handler so the
+  // error reaches Sentry before we mask it for the API response.
+  Sentry.setupExpressErrorHandler(app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
