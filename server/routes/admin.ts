@@ -24,6 +24,7 @@
 import crypto from "node:crypto";
 import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
+import { getEnrichedIntegrationStatus } from "../lib/integrations";
 import {
   approvalTaskListFiltersSchema,
   createAssignmentSchema,
@@ -1248,6 +1249,36 @@ export function registerAdminRoutes(app: Express): void {
       return res.json(updated);
     }),
   );
+  // -------------------------------------------------------------------------
+  // GET /api/admin/integrations
+  //
+  // Enriched view of every connector DispatchOS knows about: env config
+  // status + 24h activity counters (event counts from audit_events).
+  //
+  // Drives the /admin/integrations page. Pure read endpoint, no side effects.
+  // Source of truth lives in server/lib/integrations.ts — to add a new
+  // integration, just edit INTEGRATIONS[] there.
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/integrations", admin, (_req, res) => {
+    res.json(getEnrichedIntegrationStatus());
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/email-ingest?limit=20
+  //
+  // Recent inbound emails (loads@dispatchos.co → CF Worker → us). Drives the
+  // /admin/email-inbox page. Each item carries the raw `from`/`subject` plus
+  // the structured `parsed` result so the admin can see at a glance which
+  // emails were successfully extracted as loads and which need parser fixes.
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/email-ingest", admin, (req, res) => {
+    const rawLimit = Number(req.query.limit ?? 20);
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(Math.max(Math.trunc(rawLimit), 1), 200)
+      : 20;
+    const items = storage.listEmailIngest(limit);
+    res.json({ items, limit });
+  });
 }
 
 // ===========================================================================

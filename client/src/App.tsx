@@ -27,6 +27,9 @@ import AuditPage from "@/pages/admin/audit";
 import BackupPage from "@/pages/admin/backup";
 import BillingPage from "@/pages/admin/billing";
 import SettingsPage from "@/pages/admin/settings";
+import IntegrationsPage from "@/pages/admin/integrations";
+import EmailInboxPage from "@/pages/admin/email-inbox";
+
 // Phase 4 P0 — driver portal at /d/*
 import { DriverShell } from "@/pages/driver/_shell";
 import DriverDashboardPage from "@/pages/driver/dashboard";
@@ -150,6 +153,8 @@ function AdminRouter() {
         <Route path="/billing" component={BillingPage} />
         <Route path="/settings" component={SettingsPage} />
         <Route path="/legacy-dashboard" component={LegacyDashboardPage} />
+        <Route path="/integrations" component={IntegrationsPage} />
+        <Route path="/email-inbox" component={EmailInboxPage} />
         <Route component={NotFound} />
       </Switch>
     </AdminShell>
