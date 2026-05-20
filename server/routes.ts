@@ -36,6 +36,7 @@ import { localDriveRoot, storage, uploadsRoot } from "./storage";
 import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerMeRoutes } from "./routes/me";
+import { registerDispatchRoutes } from "./routes/dispatch";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -972,6 +973,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // before the catch-all `requireRole.any()` gate. See server/routes/me.ts.
   // -------------------------------------------------------------------------
   registerMeRoutes(app);
+
+  // -------------------------------------------------------------------------
+  // Phase 4 dispatcher portal routes (P0). Same per-handler `requireRole`
+  // pattern. See server/routes/dispatch.ts.
+  // -------------------------------------------------------------------------
+  registerDispatchRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The

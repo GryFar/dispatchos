@@ -34,6 +34,13 @@ import DriverLoadsListPage from "@/pages/driver/loads-list";
 import DriverLoadDetailPage from "@/pages/driver/load-detail";
 import DriverDocumentsPage from "@/pages/driver/documents";
 import DriverProfilePage from "@/pages/driver/profile";
+// Phase 4 P0 — dispatcher portal at /dispatch/*
+import { DispatchShell } from "@/pages/dispatch/_shell";
+import DispatchDashboardPage from "@/pages/dispatch/dashboard";
+import DispatchClientsPage from "@/pages/dispatch/clients";
+import DispatchLoadsPage from "@/pages/dispatch/loads";
+import DispatchLoadDetailPage from "@/pages/dispatch/load-detail";
+import DispatchQueuePage from "@/pages/dispatch/queue";
 
 /**
  * Wrapped hash-location hook that strips any `?query` (and `#fragment`) from
@@ -94,13 +101,10 @@ export default function App() {
                 </RoleGate>
               </Route>
 
-              {/* Dispatcher space (stub for Phase 4 dispatcher PR) */}
+              {/* Dispatcher space (Phase 4 P0) */}
               <Route path="/dispatch" nest>
                 <RoleGate allow={["dispatcher"]}>
-                  <PortalStub
-                    portalName="Dispatcher Portal"
-                    note="Будет реализован в следующем PR (phase4-dispatcher-p0)."
-                  />
+                  <DispatchRouter />
                 </RoleGate>
               </Route>
 
@@ -169,6 +173,26 @@ function DriverRouter() {
         <Route component={NotFound} />
       </Switch>
     </DriverShell>
+  );
+}
+
+/**
+ * DispatchRouter — routes inside the /dispatch space. Paths relative to
+ * /dispatch. Phase 4 P0 dispatcher portal. The shell wraps all dispatch
+ * screens in the emerald (.theme-jade) override.
+ */
+function DispatchRouter() {
+  return (
+    <DispatchShell>
+      <Switch>
+        <Route path="/" component={DispatchDashboardPage} />
+        <Route path="/clients" component={DispatchClientsPage} />
+        <Route path="/loads" component={DispatchLoadsPage} />
+        <Route path="/loads/:id" component={DispatchLoadDetailPage} />
+        <Route path="/queue" component={DispatchQueuePage} />
+        <Route component={NotFound} />
+      </Switch>
+    </DispatchShell>
   );
 }
 

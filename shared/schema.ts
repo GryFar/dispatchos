@@ -1064,3 +1064,42 @@ export const approvalTaskEnrichedSchema = approvalTaskSchema.extend({
   resolvedByEmail: z.string().nullable(),
 });
 export type ApprovalTaskEnriched = z.infer<typeof approvalTaskEnrichedSchema>;
+
+// ===========================================================================
+// PHASE 4 P0 — Dispatcher portal
+// ===========================================================================
+
+/** Response shape for GET /api/dispatch/me/dashboard. */
+export const dispatchDashboardSchema = z.object({
+  dispatcher: z.object({
+    id: z.string(),
+    fullName: z.string(),
+    email: z.string().email(),
+  }),
+  stats: z.object({
+    assignedClientsCount: z.number(),
+    activeLoadsCount: z.number(),
+    openTasksCount: z.number(),
+  }),
+  /** Up to 5 most-recent open tasks routed to this dispatcher. */
+  recentOpenTasks: z.array(approvalTaskSchema),
+  /** Up to 5 most-recent loads across all my clients, newest first. */
+  recentLoads: z.array(loadFullSchema),
+  /** My assigned clients (light shape). */
+  assignedClients: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      activeDriversCount: z.number(),
+      activeLoadsCount: z.number(),
+    }),
+  ),
+});
+export type DispatchDashboard = z.infer<typeof dispatchDashboardSchema>;
+
+/** Filters for GET /api/dispatch/loads. */
+export const dispatchLoadsListFiltersSchema = paginationParamsSchema.extend({
+  clientId: z.string().optional(),
+  status: z.enum(["available", "booked", "all"]).optional(),
+});
+export type DispatchLoadsListFilters = z.infer<typeof dispatchLoadsListFiltersSchema>;
