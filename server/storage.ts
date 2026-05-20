@@ -774,6 +774,9 @@ export const storage = {
       passwordSalt?: string;
       passwordHash?: string;
       totpSecret?: string | null;
+      // Phase 4 P2: settable by driver via TG bot (/status) or dispatcher.
+      driverStatus?: DriverStatus;
+      phone?: string | null;
     },
     actorUserId?: string,
   ): UserInternal | undefined {
@@ -806,6 +809,14 @@ export const storage = {
     if (patch.totpSecret !== undefined) {
       sets.push("totp_secret = ?");
       params.push(patch.totpSecret);
+    }
+    if (patch.driverStatus !== undefined) {
+      sets.push("driver_status = ?");
+      params.push(patch.driverStatus);
+    }
+    if (patch.phone !== undefined) {
+      sets.push("phone = ?");
+      params.push(patch.phone);
     }
     if (sets.length === 0) return existing;
     sets.push("updated_at = ?");
