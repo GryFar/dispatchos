@@ -2060,13 +2060,19 @@ try {
       description: "Waited 90 min, gate locked.",
     },
   });
-  if (issueTask.taskType !== "driver_issue" || issueTask.assigneeRole !== "admin") {
+  // P4 P0 changed routing: drivers whose linkedClientId has an active dispatcher
+  // assignment now route to that dispatcher; admin is the fallback. driverA's
+  // billingClient is assigned to dispUser, so this issue routes to dispatcher.
+  if (issueTask.taskType !== "driver_issue" || issueTask.assigneeRole !== "dispatcher") {
     throw new Error(`P1 issue: wrong task shape: ${JSON.stringify(issueTask)}`);
   }
   if (issueTask.payload.severity !== "urgent" || issueTask.payload.reporterUserId !== driverA.id) {
     throw new Error("P1 issue: payload missing severity or reporterUserId");
   }
-  console.log("[OK] P1 POST /api/me/issues (creates approval_task, assigneeRole=admin)");
+  if (issueTask.payload.dispatcherUserId !== dispUser.id || issueTask.payload.routedTo !== "dispatcher") {
+    throw new Error(`P1 issue: P0 routing not applied: ${JSON.stringify(issueTask.payload)}`);
+  }
+  console.log("[OK] P1 POST /api/me/issues (creates approval_task, routes to dispatcher when client has one)");
 
   // -- P1 issues: title validation ------------------------------------------
   try {
@@ -2243,6 +2249,303 @@ try {
     throw new Error("P1.1 audit: admin.approval_task_dismissed not recorded for issue2");
   }
   console.log("[OK] P1.1 audit: resolved + dismissed events recorded");
+
+  // ===========================================================================
+  // PHASE 4 P0 — Dispatcher portal
+  // ===========================================================================
+  //
+  // We re-use earlier fixtures:
+  //   - dispUser  (smoke.dispatcher@example.com) with a known totpSecret
+  //   - someClient assignment with dispUser was DELETE'd then re-created earlier
+  //   - driverA   has linkedClientId === billingClient.id (no dispatcher!)
+  //
+  // For the dispatcher routing tests we need a driver whose linkedClientId
+  // points to a client that IS assigned to dispUser. We'll create that pair
+  // here, alongside the dispatcher login.
+
+  // -- P0 Login as dispatcher -----------------------------------------------
+  // NOTE: by this point the dispatcher's password has been rotated twice by
+  // P1 reset-password tests, and TOTP has been disabled by P1 reset-totp.
+  // So we log in with reset2.temporaryPassword and NO token.
+  cookieHeader = "";
+  const dispLogin = await request("/api/auth/login", {
+    method: "POST",
+    body: {
+      email: "smoke.dispatcher@example.com",
+      password: reset2.temporaryPassword,
+      // P1 disabled TOTP for this user — login without token is allowed.
+    },
+  });
+  if (dispLogin.redirect !== "/dispatch") {
+    throw new Error(`P0 dispatcher login redirect should be /dispatch, got ${dispLogin.redirect}`);
+  }
+  const dispCookie = cookieHeader;
+  console.log("[OK] P4 P0 POST /api/auth/login redirect=/dispatch for role=dispatcher");
+
+  // -- P0 dispatcher /api/me reflects role + assignedClientIds --------------
+  const dispMe = await request("/api/me");
+  if (dispMe.role !== "dispatcher" || !Array.isArray(dispMe.assignedClientIds)) {
+    throw new Error("P0 dispatcher /api/me missing assignedClientIds");
+  }
+  console.log("[OK] P4 P0 /api/me surfaces assignedClientIds for dispatcher");
+
+  // -- P0 dashboard (empty-ish — no driver issues yet for this dispatcher) --
+  const dispDash = await request("/api/dispatch/me/dashboard");
+  if (dispDash.dispatcher.id !== dispUser.id) {
+    throw new Error("P0 dashboard wrong dispatcher.id");
+  }
+  if (!Array.isArray(dispDash.assignedClients) || !Array.isArray(dispDash.recentLoads)) {
+    throw new Error("P0 dashboard missing arrays");
+  }
+  if (typeof dispDash.stats.assignedClientsCount !== "number") {
+    throw new Error("P0 dashboard stats missing");
+  }
+  console.log("[OK] P4 P0 GET /api/dispatch/me/dashboard (shape + counts)");
+
+  // -- P0 /api/dispatch/clients lists this dispatcher's clients -------------
+  const dispClients = await request("/api/dispatch/clients");
+  if (!Array.isArray(dispClients.items)) {
+    throw new Error("P0 /api/dispatch/clients missing items[]");
+  }
+  // dispUser has someClient assigned (recreated earlier in smoke).
+  const hasSomeClient = dispClients.items.some((c) => c.id === someClient.id);
+  if (!hasSomeClient) {
+    throw new Error(`P0 /api/dispatch/clients missing someClient ${someClient.id}`);
+  }
+  console.log("[OK] P4 P0 GET /api/dispatch/clients (assigned clients only)");
+
+// -- P0 /api/dispatch/loads scoping --------------------------------------
+  // dispUser is assigned to someClient (= ivan-enclosed-01). driverALoad lives on
+  // that same client → MUST be visible. Create a "leak load" on a different client
+  // (oleg-hotshot-02, NOT assigned to dispUser) → MUST NOT be visible.
+  cookieHeader = p4AdminCookie;
+  const leakClient = allClients.find((c) => c.id === "oleg-hotshot-02") || allClients[1];
+  const leakLoad = await request("/api/loads", {
+    method: "POST",
+    body: makeBookableLoad({
+      rate: 1111,
+      bookedAt: "2026-05-15",
+      clientId: leakClient.id,
+    }),
+  });
+  if (!leakLoad.id) {
+    throw new Error("P0 leakLoad setup: load not created");
+  }
+  cookieHeader = dispCookie;
+
+  const dispLoads = await request("/api/dispatch/loads?limit=50");
+  if (!Array.isArray(dispLoads.items)) {
+    throw new Error("P0 /api/dispatch/loads missing items[]");
+  }
+  if (!dispLoads.items.some((l) => l.id === driverALoad.id)) {
+    throw new Error("P0 /api/dispatch/loads should INCLUDE driverALoad (own-client load)");
+  }
+  if (dispLoads.items.some((l) => l.id === leakLoad.id)) {
+    throw new Error("P0 /api/dispatch/loads LEAKED a load from an unassigned client!");
+  }
+  console.log("[OK] P4 P0 /api/dispatch/loads scoping (own-client included, cross-client excluded)");
+
+// -- P0 own-client load detail → 200 -------------------------------------
+  const dispOwnLoadDetail = await request(`/api/dispatch/loads/${driverALoad.id}`);
+  if (dispOwnLoadDetail.id !== driverALoad.id) {
+    throw new Error("P0 dispatcher own-client load detail mismatch");
+  }
+  console.log("[OK] P4 P0 GET /api/dispatch/loads/:id 200 on own-client load");
+
+  // -- P0 cross-tenant load detail → 404 -----------------------------------
+  try {
+    await request(`/api/dispatch/loads/${leakLoad.id}`);
+    throw new Error("P0 dispatcher should NOT see leakLoad (404 expected)");
+  } catch (e) {
+    if (!/404/.test(e.message)) throw e;
+  }
+  console.log("[OK] P4 P0 GET /api/dispatch/loads/:id 404 on cross-tenant");
+
+  // -- P0 unknown load id → 404 --------------------------------------------
+  try {
+    await request("/api/dispatch/loads/load-nonexistent-12345");
+    throw new Error("P0 unknown load id should 404");
+  } catch (e) {
+    if (!/404/.test(e.message)) throw e;
+  }
+  console.log("[OK] P4 P0 GET /api/dispatch/loads/:id 404 on unknown");
+
+  // -- P0 setup: create a driver linked to someClient (so issues route to dispUser) --
+  cookieHeader = p4AdminCookie;
+  const dispDriverInvite = await request("/api/admin/invites", {
+    method: "POST",
+    body: { role: "driver", ttlHours: 1, linkedClientId: someClient.id },
+  });
+  cookieHeader = "";
+  const dispDriver = await request("/api/auth/signup", {
+    method: "POST",
+    body: {
+      inviteCode: dispDriverInvite.code,
+      email: "smoke.driver.disp@example.com",
+      fullName: "Smoke Driver For Dispatcher",
+      password: "SmokeDriverDisp1!",
+    },
+  });
+  const dispDriverCookie = cookieHeader;
+  console.log("[OK] P4 P0 setup: driver linked to dispatcher-assigned client");
+
+  // -- P0 issue routing: driver of dispatcher-assigned client routes to disp ----
+  cookieHeader = dispDriverCookie;
+  const dispDriverIssue = await request("/api/me/issues", {
+    method: "POST",
+    body: {
+      severity: "warn",
+      title: "Dispatcher routing test",
+      description: "Should appear in dispatcher queue, not admin.",
+    },
+  });
+  if (dispDriverIssue.assigneeRole !== "dispatcher") {
+    throw new Error(
+      `P0 issue routing: expected assigneeRole=dispatcher, got ${dispDriverIssue.assigneeRole}`,
+    );
+  }
+  if (dispDriverIssue.payload.dispatcherUserId !== dispUser.id) {
+    throw new Error(
+      `P0 issue routing: payload.dispatcherUserId mismatch: ${JSON.stringify(dispDriverIssue.payload)}`,
+    );
+  }
+  if (dispDriverIssue.payload.routedTo !== "dispatcher") {
+    throw new Error("P0 issue routing: payload.routedTo should be 'dispatcher'");
+  }
+  console.log("[OK] P4 P0 POST /api/me/issues routes to dispatcher when client has one");
+
+  // -- P0 issue routing FALLBACK: driverB2 (oleg-hotshot-02 has no dispatcher) → admin --
+  cookieHeader = driverB2Cookie;
+  const fallbackIssue = await request("/api/me/issues", {
+    method: "POST",
+    body: { severity: "info", title: "Routing fallback test" },
+  });
+  if (fallbackIssue.assigneeRole !== "admin") {
+    throw new Error(
+      `P0 issue routing fallback: expected admin, got ${fallbackIssue.assigneeRole}`,
+    );
+  }
+  if (fallbackIssue.payload.routedTo !== "admin_fallback") {
+    throw new Error("P0 issue routing fallback: payload.routedTo should be 'admin_fallback'");
+  }
+  if (fallbackIssue.payload.dispatcherUserId !== null) {
+    throw new Error("P0 issue routing fallback: dispatcherUserId should be null");
+  }
+  console.log("[OK] P4 P0 POST /api/me/issues falls back to admin when no dispatcher");
+
+  // -- P0 dispatcher sees the routed issue in their queue -------------------
+  cookieHeader = dispCookie;
+  const dispQueue = await request("/api/dispatch/approval-tasks?status=open&limit=50");
+  if (!Array.isArray(dispQueue.items)) {
+    throw new Error("P0 dispatcher queue missing items[]");
+  }
+  const dispTaskInQueue = dispQueue.items.find((t) => t.id === dispDriverIssue.id);
+  if (!dispTaskInQueue) {
+    throw new Error("P0 dispatcher queue missing the routed driver-issue");
+  }
+  if (dispTaskInQueue.createdByEmail !== "smoke.driver.disp@example.com") {
+    throw new Error("P0 dispatcher queue: createdByEmail JOIN broken");
+  }
+  // Fallback issue (admin-routed) should NOT appear here.
+  if (dispQueue.items.some((t) => t.id === fallbackIssue.id)) {
+    throw new Error("P0 dispatcher queue LEAKED an admin-routed issue!");
+  }
+  console.log("[OK] P4 P0 GET /api/dispatch/approval-tasks (own tasks only, no leak)");
+
+  // -- P0 dashboard now reflects open task count ----------------------------
+  const dispDash2 = await request("/api/dispatch/me/dashboard");
+  if (dispDash2.stats.openTasksCount < 1) {
+    throw new Error("P0 dashboard openTasksCount should be >= 1 after routed issue");
+  }
+  if (!dispDash2.recentOpenTasks.some((t) => t.id === dispDriverIssue.id)) {
+    throw new Error("P0 dashboard recentOpenTasks missing the routed task");
+  }
+  console.log("[OK] P4 P0 /api/dispatch/me/dashboard reflects new open task");
+
+  // -- P0 GET single task with scope check ----------------------------------
+  const oneDispTask = await request(`/api/dispatch/approval-tasks/${dispDriverIssue.id}`);
+  if (oneDispTask.id !== dispDriverIssue.id) {
+    throw new Error("P0 GET single dispatch task mismatch");
+  }
+  console.log("[OK] P4 P0 GET /api/dispatch/approval-tasks/:id");
+
+  // -- P0 cross-tenant single task (admin-routed task) → 404 ----------------
+  try {
+    await request(`/api/dispatch/approval-tasks/${fallbackIssue.id}`);
+    throw new Error("P0 dispatcher should NOT see admin-routed task");
+  } catch (e) {
+    if (!/404/.test(e.message)) throw e;
+  }
+  console.log("[OK] P4 P0 GET /api/dispatch/approval-tasks/:id 404 on cross-tenant");
+
+  // -- P0 PATCH resolve the routed task -------------------------------------
+  const dispResolved = await request(`/api/dispatch/approval-tasks/${dispDriverIssue.id}`, {
+    method: "PATCH",
+    body: { action: "resolve", resolution: "Called driver, sorted out." },
+  });
+  if (dispResolved.status !== "resolved") {
+    throw new Error(`P0 dispatcher resolve: status=${dispResolved.status}`);
+  }
+  if (dispResolved.resolvedByUserId !== dispUser.id) {
+    throw new Error("P0 dispatcher resolve: resolvedByUserId mismatch");
+  }
+  if (dispResolved.payload.resolution !== "Called driver, sorted out.") {
+    throw new Error("P0 dispatcher resolve: resolution note not merged");
+  }
+  console.log("[OK] P4 P0 PATCH /api/dispatch/approval-tasks/:id action=resolve");
+
+  // -- P0 PATCH already-resolved → 409 --------------------------------------
+  try {
+    await request(`/api/dispatch/approval-tasks/${dispDriverIssue.id}`, {
+      method: "PATCH",
+      body: { action: "resolve" },
+    });
+    throw new Error("P0 re-resolve should 409");
+  } catch (e) {
+    if (!/409/.test(e.message)) throw e;
+  }
+  console.log("[OK] P4 P0 PATCH /api/dispatch/approval-tasks/:id 409 on terminated");
+
+  // -- P0 PATCH cross-tenant (admin-routed task) → 404 ---------------------
+  try {
+    await request(`/api/dispatch/approval-tasks/${fallbackIssue.id}`, {
+      method: "PATCH",
+      body: { action: "resolve" },
+    });
+    throw new Error("P0 dispatcher should NOT be able to PATCH admin-routed task");
+  } catch (e) {
+    if (!/404/.test(e.message)) throw e;
+  }
+  console.log("[OK] P4 P0 PATCH /api/dispatch/approval-tasks/:id 404 on cross-tenant");
+
+  // -- P0 role gating: driver hitting /api/dispatch/* → 403 ----------------
+  cookieHeader = dispDriverCookie;
+  try {
+    await request("/api/dispatch/me/dashboard");
+    throw new Error("P0 driver hitting dispatch should 403");
+  } catch (e) {
+    if (!/403/.test(e.message)) throw e;
+  }
+  console.log("[OK] P4 P0 /api/dispatch/* blocks non-dispatcher driver (403)");
+
+  // -- P0 role gating: admin hitting /api/dispatch/* → 403 (clean separation) --
+  cookieHeader = p4AdminCookie;
+  try {
+    await request("/api/dispatch/me/dashboard");
+    throw new Error("P0 admin hitting dispatch should 403");
+  } catch (e) {
+    if (!/403/.test(e.message)) throw e;
+  }
+  console.log("[OK] P4 P0 /api/dispatch/* blocks admin (403, clean role separation)");
+
+  // -- P0 audit events for dispatcher actions ------------------------------
+  const dispAudit = await request(
+    "/api/audit?eventType=dispatcher.approval_task_resolved&limit=10",
+  );
+  if (!dispAudit.items.some((ev) => ev.entityId === dispDriverIssue.id)) {
+    throw new Error("P0 audit: dispatcher.approval_task_resolved not recorded");
+  }
+  console.log("[OK] P4 P0 audit: dispatcher.approval_task_resolved recorded");
 
 } catch (error) {
   console.error("[FAIL]", error.message);
