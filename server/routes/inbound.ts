@@ -11,7 +11,64 @@
 import type { Express, Request, Response } from "express";
 import crypto from "node:crypto";
 import { storage } from "../storage";
-import { parseSylectusEmail } from "../lib/parsers/sylectus";
+import { parseSylectusEmail, type SylectusParsed } from "../lib/parsers/sylectus";
+
+// Fire-and-forget TG alert when a parsed Sylectus posting lands. No-op
+// unless TELEGRAM_DRIVER_BOT_TOKEN + TELEGRAM_ALERT_CHAT_ID are both set.
+// We deliberately don't await this from the request handler — it must not
+// delay our 201 back to the CF Worker.
+async function notifyInboundLoad(id: string, parsed: SylectusParsed): Promise<void> {
+  const token = process.env.TELEGRAM_DRIVER_BOT_TOKEN;
+  const chat = process.env.TELEGRAM_ALERT_CHAT_ID;
+  if (!token || !chat) return;
+  if (!parsed.matched || !parsed.origin || !parsed.destination) return;
+
+  const lane = `${parsed.origin.city}, ${parsed.origin.state} → ${parsed.destination.city}, ${parsed.destination.state}`;
+  const rate = parsed.rate ? `$${parsed.rate.toLocaleString("en-US")}` : "?";
+  const miles = parsed.miles ? `${parsed.miles} mi` : "? mi";
+  const rpm = parsed.rate && parsed.miles ? `$${(parsed.rate / parsed.miles).toFixed(2)}/mi` : null;
+  const brokerLine = parsed.broker?.name
+    ? `\n<b>Broker:</b> ${escapeHtml(parsed.broker.name)}${parsed.broker.mcNumber ? ` (MC# ${parsed.broker.mcNumber})` : ""}`
+    : "";
+  const refLine = parsed.reference ? `\n<b>Ref:</b> <code>${escapeHtml(parsed.reference)}</code>` : "";
+
+  const text = [
+    `📨 <b>New load posting</b> (Sylectus)`,
+    ``,
+    `<b>${escapeHtml(lane)}</b>`,
+    `<b>Rate:</b> ${rate}  ·  <b>${miles}</b>${rpm ? `  ·  <b>${rpm}</b>` : ""}`,
+    parsed.equipment ? `<b>Equipment:</b> ${escapeHtml(parsed.equipment)}` : "",
+    parsed.weightLbs ? `<b>Weight:</b> ${parsed.weightLbs.toLocaleString("en-US")} lbs` : "",
+    parsed.pickupAt ? `<b>Pickup:</b> ${escapeHtml(parsed.pickupAt)}` : "",
+    brokerLine,
+    refLine,
+    ``,
+    `<i>email_ingest id:</i> <code>${id}</code>`,
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chat,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }),
+    });
+  } catch (err) {
+    console.error("[inbound/email] TG notify failed:", err);
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"]/g, (c) =>
+    c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;",
+  );
+}
 
 function timingSafeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
@@ -80,6 +137,8 @@ export function registerInboundRoutes(app: Express): void {
         receivedAt: typeof body.receivedAt === "string" ? body.receivedAt : new Date().toISOString(),
         parsed,
       });
+      // Fire-and-forget alert — don't block the 201 response.
+      void notifyInboundLoad(record.id, parsed);
       return res.status(201).json({ id: record.id, parsed });
     } catch (err) {
       console.error("[inbound/email] persist failed:", err);
