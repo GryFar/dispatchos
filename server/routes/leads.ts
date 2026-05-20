@@ -14,6 +14,7 @@
 import type { Express, Request, Response } from "express";
 import { storage } from "../storage";
 import { requireRole, getCurrentUser } from "../auth";
+import { sendInviteEmail } from "../lib/email";
 import {
   subscribePublicSchema,
   approveLeadSchema,
@@ -62,11 +63,36 @@ function generateInviteCode(): string {
   return `DOS-${segments.join("-")}`;
 }
 
+// Whitelist of origins allowed to POST to /api/public/* from the browser.
+// Landing on dispatchos.co posts cross-origin to demo.dispatchos.co.
+const PUBLIC_CORS_ALLOWED = new Set([
+  "https://dispatchos.co",
+  "https://www.dispatchos.co",
+  "https://demo.dispatchos.co",
+]);
+
+function applyPublicCors(req: Request, res: Response): void {
+  const origin = req.headers.origin;
+  if (typeof origin === "string" && PUBLIC_CORS_ALLOWED.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Max-Age", "86400");
+  }
+}
+
 export function registerLeadRoutes(app: Express): void {
   // -------------------------------------------------------------------------
-  // PUBLIC — POST /api/public/subscribe
+  // PUBLIC — POST /api/public/subscribe (CORS preflight + POST)
   // -------------------------------------------------------------------------
+  app.options("/api/public/subscribe", (req: Request, res: Response) => {
+    applyPublicCors(req, res);
+    return res.status(204).end();
+  });
+
   app.post("/api/public/subscribe", (req: Request, res: Response) => {
+    applyPublicCors(req, res);
     const ip = clientIp(req);
     if (!rateLimitOk(ip)) {
       return res.status(429).json({ message: "Too many requests" });
@@ -124,7 +150,7 @@ export function registerLeadRoutes(app: Express): void {
   app.post(
     "/api/dispatch/leads/:id/approve",
     requireRole("dispatcher", "admin"),
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const reviewer = getCurrentUser(req);
       if (!reviewer) return res.status(401).json({ message: "Unauthorized" });
 
@@ -169,9 +195,25 @@ export function registerLeadRoutes(app: Express): void {
       }
 
       const signupUrl = `${hostFromReq(req)}/#/signup?code=${code}`;
+
+      // Auto-send invite email via Resend. Failure is non-fatal: dispatcher
+      // still gets the URL in the response and can resend manually if needed.
+      const lang = (lead.lang === "ru" || lead.lang === "uk" ? lead.lang : "en") as "en" | "ru" | "uk";
+      const emailResult = await sendInviteEmail({
+        to: lead.email,
+        signupUrl,
+        role: parsed.data.role,
+        inviterName: reviewer.fullName ?? reviewer.email,
+        lang,
+        expiresAt: invite.expiresAt,
+      });
+
       return res.json({
         leadId: result.id,
         invite: { code: invite.code, signupUrl, expiresAt: invite.expiresAt },
+        email: emailResult.ok
+          ? { sent: true, id: emailResult.id }
+          : { sent: false, error: emailResult.error },
       });
     },
   );

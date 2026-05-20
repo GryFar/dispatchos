@@ -1,4 +1,8 @@
 import "dotenv/config";
+// Sentry must be initialized BEFORE express is imported so its
+// auto-instrumentation can wrap http/express modules. See server/instrument.ts.
+import "./instrument";
+import * as Sentry from "@sentry/node";
 import express, { Response, NextFunction } from "express";
 import type { Request } from "express";
 import rateLimit from "express-rate-limit";
@@ -150,6 +154,11 @@ app.use((req, res, next) => {
 
   const httpServer = await registerRoutes(app);
 
+  // Sentry error handler installs only when DSN is configured; otherwise the
+  // call is a cheap no-op. Must come BEFORE the user-facing handler so the
+  // error reaches Sentry before we mask it for the API response.
+  Sentry.setupExpressErrorHandler(app);
+
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
@@ -181,6 +190,40 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on http://${host}:${port}`);
+      // Best-effort Telegram setWebhook — fires once on boot, doesn't block.
+      // No-op unless both TELEGRAM_DRIVER_BOT_TOKEN and DISPATCHOS_PUBLIC_URL
+      // are set. Failures are logged but never crash the server.
+      void registerTelegramWebhookOnBoot();
     },
   );
 })();
+
+async function registerTelegramWebhookOnBoot(): Promise<void> {
+  const token = process.env.TELEGRAM_DRIVER_BOT_TOKEN;
+  const publicUrl = process.env.DISPATCHOS_PUBLIC_URL;
+  if (!token || !publicUrl) {
+    if (!token) log("telegram bot: TELEGRAM_DRIVER_BOT_TOKEN not set, skipping setWebhook", "telegram");
+    else log("telegram bot: DISPATCHOS_PUBLIC_URL not set, skipping setWebhook", "telegram");
+    return;
+  }
+  const webhookUrl = `${publicUrl.replace(/\/$/, "")}/api/telegram/webhook/${token}`;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        url: webhookUrl,
+        allowed_updates: ["message", "edited_message"],
+        max_connections: 10,
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; description?: string };
+    if (body.ok) {
+      log(`telegram bot: webhook registered → ${publicUrl}/api/telegram/webhook/<token>`, "telegram");
+    } else {
+      log(`telegram bot: setWebhook failed: ${body.description ?? res.status}`, "telegram");
+    }
+  } catch (err) {
+    log(`telegram bot: setWebhook threw: ${err instanceof Error ? err.message : String(err)}`, "telegram");
+  }
+}

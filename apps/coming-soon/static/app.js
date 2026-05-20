@@ -231,15 +231,13 @@ const PROGRESS_TARGET = 25;
     btn.disabled = true;
 
     try {
-      const res = await fetch('/api/subscribe', {
+      const res = await fetch('https://demo.dispatchos.co/api/public/subscribe', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           email,
-          source: 'coming-soon',
           lang,
-          ts: Date.now(),
-          referrer: document.referrer || null,
+          referer: document.referrer || undefined,
         }),
       });
 

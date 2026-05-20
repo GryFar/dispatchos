@@ -3,6 +3,19 @@ main = "dist/worker.js"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Explicitly disable the workers.dev subdomain. Routing is via custom domains
+# below — dashboard already provisioned the certs/DNS, this just tells
+# wrangler to associate the deployed Worker with these hostnames.
+workers_dev = false
+
+[[routes]]
+pattern = "dispatchos.co"
+custom_domain = true
+
+[[routes]]
+pattern = "www.dispatchos.co"
+custom_domain = true
+
 # KV binding — namespace already exists, ID matches
 [[kv_namespaces]]
 binding = "SUBSCRIBERS"

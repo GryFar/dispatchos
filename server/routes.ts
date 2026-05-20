@@ -37,6 +37,13 @@ import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerMeRoutes } from "./routes/me";
 import { registerDispatchRoutes } from "./routes/dispatch";
+import { registerLeadRoutes } from "./routes/leads";
+import { registerWebhookRoutes } from "./routes/webhooks";
+import { registerCronRoutes } from "./routes/cron";
+import { registerInboundRoutes } from "./routes/inbound";
+import { registerTelegramBotRoutes } from "./routes/telegram-bot";
+import { enrichLoadSync } from "./lib/ai";
+import { parseSylectusEmail } from "./lib/parsers/sylectus";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -570,7 +577,11 @@ function importLoadsFromCsv(csv: string) {
         marketQuality: Number(row.marketQuality || 70),
         notes: row.notes,
       };
-      created.push(storage.upsertLoad(insertLoadSchema.parse(load)));
+      // Phase 4: enrich CSV imports too — overrides any marketQuality
+      // value the CSV provided with the lane-benchmark calculation.
+      const parsed = insertLoadSchema.parse(load);
+      const enriched = enrichLoadSync(parsed);
+      created.push(storage.upsertLoad(enriched));
     } catch (error: any) {
       errors.push({ row: rowNumber, message: error.message || "Invalid row" });
     }
@@ -745,12 +756,41 @@ function buildWeeklyReport(clientId: string) {
 }
 
 function parseEmailToLoad(input: { from: string; subject: string; body: string }) {
+  // Try Sylectus parser first — it's the only board we have a real format
+  // for. Falls through to the generic regex grab-bag when not a Sylectus
+  // posting, so existing test fixtures keep passing.
+  const sylectus = parseSylectusEmail(input);
+  if (sylectus.matched && sylectus.origin && sylectus.destination) {
+    return {
+      possibleLoad: true,
+      source: "sylectus" as const,
+      extracted: {
+        rate: sylectus.rate ?? 0,
+        loadedMiles: sylectus.miles ?? 0,
+        originCity: sylectus.origin.city,
+        originState: sylectus.origin.state,
+        destinationCity: sylectus.destination.city,
+        destinationState: sylectus.destination.state,
+        weightLbs: sylectus.weightLbs,
+        pieces: sylectus.pieces,
+        equipment: sylectus.equipment,
+        pickupAt: sylectus.pickupAt,
+        postedAt: sylectus.postedAt,
+        broker: sylectus.broker,
+        reference: sylectus.reference,
+      },
+      rawFields: sylectus.rawFields,
+    };
+  }
+
+  // Generic fallback (v1.2.7 legacy) — unchanged from the original.
   const text = `${input.subject}\n${input.body}`;
   const rate = Number(text.match(/\$?\s?(\d{3,5})(?:\s|$)/)?.[1] || 0);
   const miles = Number(text.match(/(\d{2,5})\s?(?:mi|miles)/i)?.[1] || 0);
   const lane = text.match(/([A-Za-z .]+),?\s([A-Z]{2})\s*(?:-|→|to)\s*([A-Za-z .]+),?\s([A-Z]{2})/i);
   return {
     possibleLoad: Boolean(rate && miles && lane),
+    source: "generic" as const,
     extracted: {
       rate,
       loadedMiles: miles,
@@ -974,6 +1014,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // -------------------------------------------------------------------------
   registerMeRoutes(app);
 
+  // Public lead capture from landing page (no auth) + dispatcher review queue.
+  // Must register BEFORE any catch-all auth gate so /api/public/* is open.
+  registerLeadRoutes(app);
+
+  // Public webhook receivers (Resend, future: Stripe, Twilio).
+  // No auth gate; each route verifies its own service-specific signature.
+  registerWebhookRoutes(app);
+
+  // Scheduled-task endpoints (EIA fuel refresh, future cron jobs).
+  // No session auth; protected by X-Cron-Secret shared header.
+  registerCronRoutes(app);
+
+  // Inbound integration endpoints (CF Email Worker, future webhooks).
+  // No session auth; protected by X-Inbound-Secret shared header.
+  registerInboundRoutes(app);
+
+  // Telegram driver bot webhook. Path-token auth; always 200s back to TG
+  // so it doesn't retry. See server/routes/telegram-bot.ts.
+  registerTelegramBotRoutes(app);
+
   // -------------------------------------------------------------------------
   // Phase 4 dispatcher portal routes (P0). Same per-handler `requireRole`
   // pattern. See server/routes/dispatch.ts.
@@ -1031,7 +1091,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // linkage AND optional driverId for driver-portal scoping. Pre-Phase-3
       // callers (v1.2.7 frontend, Phase 1 smoke) keep working — those fields
       // are all optional, validation is strict-superset of Phase 1.
-      const load = storage.upsertLoad(insertLoadFullSchema.parse(req.body));
+      //
+      // Phase 4: enrichLoadSync replaces hand-tuned marketQuality with a real
+      // lane-benchmark calculation (origin region × dest region × equipment ×
+      // seasonality). Brokers and fuel pricing are enriched separately at
+      // score time (see scoreLoadForClient).
+      const parsed = insertLoadFullSchema.parse(req.body);
+      const enriched = enrichLoadSync(parsed);
+      const load = storage.upsertLoad(enriched);
       res.status(201).json(load);
     } catch (error) {
       handleZodError(error, res);
