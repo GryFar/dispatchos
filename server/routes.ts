@@ -39,6 +39,7 @@ import { registerMeRoutes } from "./routes/me";
 import { registerLeadRoutes } from "./routes/leads";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerCronRoutes } from "./routes/cron";
+import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { enrichLoadSync } from "./lib/ai";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
@@ -1023,6 +1024,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Scheduled-task endpoints (EIA fuel refresh, future cron jobs).
   // No session auth; protected by X-Cron-Secret shared header.
   registerCronRoutes(app);
+
+  // Inbound integration endpoints (CF Email Worker, future webhooks).
+  // No session auth; protected by X-Inbound-Secret shared header.
+  registerInboundRoutes(app);
 
   // Telegram driver bot webhook. Path-token auth; always 200s back to TG
   // so it doesn't retry. See server/routes/telegram-bot.ts.

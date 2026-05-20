@@ -1,0 +1,18 @@
+name = "dispatchos-inbound-email"
+main = "src/worker.js"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+# Receives email via Cloudflare Email Routing → email event handler.
+# No HTTP routes — this Worker is only triggered by the `email` event.
+# Routing rules live in the CF dashboard:
+#   loads@dispatchos.co → forward to this worker
+#
+# Secret (set once with `wrangler secret put DISPATCHOS_INBOUND_SECRET`):
+#   DISPATCHOS_INBOUND_SECRET — must match Fly secret on demo.dispatchos.co
+#
+# Vars (plain config, can be in this file):
+#   INGEST_URL — full URL to POST parsed emails to
+[vars]
+INGEST_URL = "https://demo.dispatchos.co/api/inbound/email"

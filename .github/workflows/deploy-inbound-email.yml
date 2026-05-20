@@ -1,0 +1,40 @@
+name: Deploy Inbound Email Worker
+
+# Auto-deploys the CF Email Worker that handles inbound mail to
+# loads@dispatchos.co. Triggered on changes under apps/inbound-email/**.
+#
+# Required secret: CLOUDFLARE_API_TOKEN (already set for the coming-soon Worker).
+#
+# Worker secret (set once with `wrangler secret put DISPATCHOS_INBOUND_SECRET`):
+#   Must match the Fly secret DISPATCHOS_INBOUND_SECRET.
+
+on:
+  push:
+    branches: [develop, main]
+    paths:
+      - "apps/inbound-email/**"
+      - ".github/workflows/deploy-inbound-email.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: inbound-email-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/inbound-email
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: apps/inbound-email
+          command: deploy
