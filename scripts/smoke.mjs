@@ -2546,7 +2546,72 @@ try {
     throw new Error("P0 audit: dispatcher.approval_task_resolved not recorded");
   }
   console.log("[OK] P4 P0 audit: dispatcher.approval_task_resolved recorded");
+// -- Admin Settings → Integrations -----------------------------------------
+  cookieHeader = p4AdminCookie;
+  const adminIntegrations = await request("/api/admin/integrations");
+  if (!adminIntegrations.generatedAt || !Array.isArray(adminIntegrations.integrations)) {
+    throw new Error("Admin integrations: missing generatedAt or integrations[]");
+  }
+  if (adminIntegrations.integrations.length < 5) {
+    throw new Error(
+      `Admin integrations: expected >=5 connectors, got ${adminIntegrations.integrations.length}`,
+    );
+  }
+  const sylectus = adminIntegrations.integrations.find((i) => i.key === "sylectus_inbound");
+  if (!sylectus) {
+    throw new Error("Admin integrations: sylectus_inbound entry missing");
+  }
+  for (const required of ["key", "label", "kind", "status", "missing", "stats24h"]) {
+    if (!(required in sylectus)) {
+      throw new Error(`Admin integrations: entry is missing field '${required}'`);
+    }
+  }
+  if (typeof sylectus.stats24h.eventCount !== "number" || !("lastEventAt" in sylectus.stats24h)) {
+    throw new Error("Admin integrations: stats24h shape mismatch");
+  }
+  // Sylectus has no env vars (works via CF Worker) → must be ready or active.
+  if (sylectus.status !== "ready" && sylectus.status !== "active") {
+    throw new Error(
+      `Admin integrations: sylectus_inbound expected ready|active, got ${sylectus.status}`,
+    );
+  }
+  // FMCSA's env vars are not set in smoke env → must be needs_config.
+  const fmcsa = adminIntegrations.integrations.find((i) => i.key === "fmcsa");
+  if (!fmcsa || fmcsa.status !== "needs_config") {
+    throw new Error(
+      `Admin integrations: fmcsa expected needs_config, got ${fmcsa?.status}`,
+    );
+  }
+  console.log("[OK] Admin GET /api/admin/integrations (shape + 24h stats)");
 
+  // -- Admin Settings → Email inbox ------------------------------------------
+  const adminEmailIngest = await request("/api/admin/email-ingest?limit=10");
+  if (!Array.isArray(adminEmailIngest.items)) {
+    throw new Error("Admin email-ingest: items[] missing");
+  }
+  if (adminEmailIngest.limit !== 10) {
+    throw new Error(`Admin email-ingest: limit echo expected 10, got ${adminEmailIngest.limit}`);
+  }
+  // Smoke earlier did POST /api/email/ingest → there must be at least 1 entry.
+  if (adminEmailIngest.items.length === 0) {
+    throw new Error("Admin email-ingest: expected at least 1 email from smoke history");
+  }
+  const firstEmail = adminEmailIngest.items[0];
+  if (!firstEmail.id || !firstEmail.createdAt) {
+    throw new Error("Admin email-ingest: item missing id or createdAt");
+  }
+  console.log("[OK] Admin GET /api/admin/email-ingest (paginated, last N)");
+
+  // -- Admin integrations endpoint blocks non-admin --------------------------
+  cookieHeader = dispCookie;
+  try {
+    await request("/api/admin/integrations");
+    throw new Error("Admin integrations: dispatcher must be blocked (403)");
+  } catch (e) {
+    if (!/403/.test(e.message)) throw e;
+  }
+  console.log("[OK] Admin /api/admin/integrations blocks non-admin (403)");
+  
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);

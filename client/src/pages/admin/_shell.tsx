@@ -12,8 +12,10 @@ import {
   Inbox,
   LayoutDashboard,
   LogOut,
+  Mail,
   Menu,
   Network,
+  Plug,
   Settings,
   Sparkles,
   Truck,
@@ -41,6 +43,11 @@ import { cn } from "@/lib/utils";
  * Контент рендерится через `children` (страница).
  *
  * Sidebar collapsible на мобильных через off-canvas.
+ *
+ * Навигация теперь группирована (NavGroup[] вместо плоского массива).
+ * Группа без `label` рендерится без заголовка (основная навигация),
+ * группа с `label` — с разделителем и uppercase-заголовком (например,
+ * "Платформа" — Интеграции, Входящая почта, Audit log, Backup).
  */
 
 interface NavItem {
@@ -50,19 +57,35 @@ interface NavItem {
   badgeKey?: "approvalQueueCount";
 }
 
-const NAV: NavItem[] = [
-  { href: "/", label: "Дашборд", icon: LayoutDashboard },
-  { href: "/users", label: "Пользователи", icon: Users },
-  { href: "/assignments", label: "Назначения", icon: Network },
-  { href: "/clients", label: "Клиенты", icon: Briefcase },
-  { href: "/loads", label: "Грузы", icon: Truck },
-  { href: "/brokers", label: "Брокеры", icon: Headset },
-  { href: "/documents", label: "Документы", icon: FileText },
-  { href: "/queue", label: "Очередь", icon: Inbox, badgeKey: "approvalQueueCount" },
-  { href: "/audit", label: "Audit log", icon: History },
-  { href: "/backup", label: "Backup", icon: Database },
-  { href: "/billing", label: "Биллинг", icon: CreditCard },
-  { href: "/settings", label: "Настройки", icon: Settings },
+interface NavGroup {
+  label?: string;
+  items: NavItem[];
+}
+
+const NAV: NavGroup[] = [
+  {
+    items: [
+      { href: "/", label: "Дашборд", icon: LayoutDashboard },
+      { href: "/users", label: "Пользователи", icon: Users },
+      { href: "/assignments", label: "Назначения", icon: Network },
+      { href: "/clients", label: "Клиенты", icon: Briefcase },
+      { href: "/loads", label: "Грузы", icon: Truck },
+      { href: "/brokers", label: "Брокеры", icon: Headset },
+      { href: "/documents", label: "Документы", icon: FileText },
+      { href: "/queue", label: "Очередь", icon: Inbox, badgeKey: "approvalQueueCount" },
+      { href: "/billing", label: "Биллинг", icon: CreditCard },
+      { href: "/settings", label: "Настройки", icon: Settings },
+    ],
+  },
+  {
+    label: "Платформа",
+    items: [
+      { href: "/integrations", label: "Интеграции", icon: Plug },
+      { href: "/email-inbox", label: "Входящая почта", icon: Mail },
+      { href: "/audit", label: "Audit log", icon: History },
+      { href: "/backup", label: "Backup", icon: Database },
+    ],
+  },
 ];
 
 export function AdminShell({ children }: { children: ReactNode }) {
@@ -129,50 +152,59 @@ function SidebarContent({ currentPath, onNavigate }: { currentPath: string; onNa
 
       {/* Nav */}
       <nav className="sidebar-scroll flex-1 overflow-y-auto px-2 py-3">
-        <ul className="space-y-0.5">
-          {NAV.map((item) => {
-            const Icon = item.icon;
-            const active =
-              item.href === "/"
-                ? currentPath === "/" || currentPath === ""
-                : currentPath === item.href || currentPath.startsWith(item.href + "/");
-            const badgeCount = item.badgeKey ? badges[item.badgeKey] : 0;
-            return (
-              <li key={item.href}>
-                <Link
-                  href={item.href}
-                  onClick={onNavigate}
-                  className={cn(
-                    "group relative flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition-all duration-150",
-                    active
-                      ? "sidebar-item-active font-medium"
-                      : "text-muted-foreground hover:bg-sidebar-accent-soft hover:text-foreground",
-                  )}
-                >
-                  <Icon
-                    className={cn(
-                      "h-4 w-4 transition-transform duration-150",
-                      active ? "text-primary" : "group-hover:scale-110",
-                    )}
-                  />
-                  <span className="flex-1">{item.label}</span>
-                  {badgeCount > 0 && (
-                    <span
+        {NAV.map((group, groupIdx) => (
+          <div key={groupIdx} className={groupIdx > 0 ? "mt-5" : undefined}>
+            {group.label && (
+              <p className="mb-1 px-2.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                {group.label}
+              </p>
+            )}
+            <ul className="space-y-0.5">
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                const active =
+                  item.href === "/"
+                    ? currentPath === "/" || currentPath === ""
+                    : currentPath === item.href || currentPath.startsWith(item.href + "/");
+                const badgeCount = item.badgeKey ? badges[item.badgeKey] : 0;
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      onClick={onNavigate}
                       className={cn(
-                        "ml-auto inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold tabular-nums",
+                        "group relative flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition-all duration-150",
                         active
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-primary/15 text-primary",
+                          ? "sidebar-item-active font-medium"
+                          : "text-muted-foreground hover:bg-sidebar-accent-soft hover:text-foreground",
                       )}
                     >
-                      {badgeCount > 99 ? "99+" : badgeCount}
-                    </span>
-                  )}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+                      <Icon
+                        className={cn(
+                          "h-4 w-4 transition-transform duration-150",
+                          active ? "text-primary" : "group-hover:scale-110",
+                        )}
+                      />
+                      <span className="flex-1">{item.label}</span>
+                      {badgeCount > 0 && (
+                        <span
+                          className={cn(
+                            "ml-auto inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold tabular-nums",
+                            active
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-primary/15 text-primary",
+                          )}
+                        >
+                          {badgeCount > 99 ? "99+" : badgeCount}
+                        </span>
+                      )}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
 
         <div className="mt-6 px-2.5">
           <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Legacy</p>

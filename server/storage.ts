@@ -2190,6 +2190,42 @@ export const storage = {
     return row?.created_at ?? null;
   },
 
+  /**
+   * Phase 5 (Admin Integrations page): count audit events whose event_type
+   * matches ANY of the given values in the last 24 hours, and return the
+   * most recent timestamp among them. Used to display per-integration
+   * activity counters in /api/admin/integrations.
+   *
+   * `eventTypes` is matched with exact equality (not LIKE), so callers must
+   * list each variant explicitly. Empty list returns {count:0, lastAt:null}.
+   */
+  countAuditEventsByTypesIn24h(eventTypes: string[]): {
+    count: number;
+    lastAt: string | null;
+  } {
+    if (!eventTypes || eventTypes.length === 0) {
+      return { count: 0, lastAt: null };
+    }
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const placeholders = eventTypes.map(() => "?").join(",");
+    const count = (
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) as c FROM audit_events
+           WHERE created_at >= ? AND event_type IN (${placeholders})`,
+        )
+        .get(since, ...eventTypes) as { c: number }
+    ).c;
+    const lastRow = sqlite
+      .prepare(
+        `SELECT created_at FROM audit_events
+         WHERE created_at >= ? AND event_type IN (${placeholders})
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(since, ...eventTypes) as { created_at: string } | undefined;
+    return { count, lastAt: lastRow?.created_at ?? null };
+  },
+
   /** Phase 3 P3 helper: user count by role, with optional blocked filter. */
   countUsersByRole(role: UserRole, includeBlocked = false): number {
     const query = includeBlocked
