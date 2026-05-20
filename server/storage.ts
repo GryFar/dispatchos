@@ -308,8 +308,18 @@ function ensureUserDriverColumns() {
     //  DEFAULT is supplied.)
     sqlite.exec("ALTER TABLE users ADD COLUMN driver_status TEXT NOT NULL DEFAULT 'available'");
   }
+  if (!names.has("telegram_chat_id")) {
+    // Phase 4 P2: TG driver bot. Nullable; only set after a driver links
+    // their account by sending an invite code to @DispatchOS_Bot. We index
+    // it because the bot webhook does a chat_id→user lookup on every msg.
+    sqlite.exec("ALTER TABLE users ADD COLUMN telegram_chat_id TEXT");
+  }
 }
 ensureUserDriverColumns();
+
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS users_telegram_chat_id_idx ON users(telegram_chat_id)",
+);
 
 // Indexes that depend on the new columns. Must follow ensureLoadDriverColumn
 // so we don't reference a column that doesn't exist yet on migrated DBs.
@@ -472,6 +482,8 @@ interface UserRow {
   // Phase 4 P0 columns (added via ensureUserDriverColumns()).
   phone: string | null;
   driver_status: string | null;
+  // Phase 4 P2: TG driver bot. Nullable until the driver links.
+  telegram_chat_id: string | null;
 }
 
 export interface UserInternal {
@@ -492,6 +504,9 @@ export interface UserInternal {
   // toUserPublic. `phone` is per-user contact, any role.
   phone?: string;
   driverStatus?: DriverStatus;
+  // Phase 4 P2: TG chat_id (string — TG IDs are int64 which overflows JS
+  // number; we store as text everywhere).
+  telegramChatId?: string;
 }
 
 function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
@@ -519,6 +534,7 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     lastLoginAt: row.last_login_at ?? undefined,
     phone: row.phone ?? undefined,
     driverStatus,
+    telegramChatId: row.telegram_chat_id ?? undefined,
   };
 }
 
@@ -598,6 +614,26 @@ export const storage = {
       | UserRow
       | undefined;
     return rowToUserInternal(row);
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 4 P2: TG driver bot lookups.
+  //
+  // chat_id is text (TG IDs are int64). The unique-ish index lets the webhook
+  // resolve user from chat in O(1) on every message.
+  // -------------------------------------------------------------------------
+  getUserByTelegramChatId(chatId: string): UserInternal | undefined {
+    const row = sqlite
+      .prepare("SELECT * FROM users WHERE telegram_chat_id = ?")
+      .get(chatId) as UserRow | undefined;
+    return rowToUserInternal(row);
+  },
+
+  setUserTelegramChatId(userId: string, chatId: string | null): UserInternal | undefined {
+    sqlite
+      .prepare("UPDATE users SET telegram_chat_id = ?, updated_at = ? WHERE id = ?")
+      .run(chatId, now(), userId);
+    return this.getUserById(userId);
   },
 
   listUsers(filter?: { role?: UserRole; includeBlocked?: boolean }): UserInternal[] {
