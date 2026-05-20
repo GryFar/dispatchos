@@ -36,6 +36,7 @@ import { localDriveRoot, storage, uploadsRoot } from "./storage";
 import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerMeRoutes } from "./routes/me";
+import { registerDispatchRoutes } from "./routes/dispatch";
 import { registerLeadRoutes } from "./routes/leads";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerCronRoutes } from "./routes/cron";
@@ -1032,6 +1033,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Telegram driver bot webhook. Path-token auth; always 200s back to TG
   // so it doesn't retry. See server/routes/telegram-bot.ts.
   registerTelegramBotRoutes(app);
+
+  // -------------------------------------------------------------------------
+  // Phase 4 dispatcher portal routes (P0). Same per-handler `requireRole`
+  // pattern. See server/routes/dispatch.ts.
+  // -------------------------------------------------------------------------
+  registerDispatchRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The

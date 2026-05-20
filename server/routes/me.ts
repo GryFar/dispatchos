@@ -584,13 +584,16 @@ export function registerMeRoutes(app: Express): void {
   //
   // POST /api/me/issues
   //
-  // Creates an approval_task for the admin queue (P1 hardcodes assigneeRole=
-  // 'admin'; when dispatcher portal lands the queue will be re-routed via the
-  // driver→client→dispatcher chain in `assignments`).
+  // Creates an approval_task. Routing logic (Phase 4 P0 dispatcher portal):
+  //   1. Driver has linkedClientId AND that client has an active dispatcher
+  //      → assigneeRole='dispatcher', payload.dispatcherUserId = X,
+  //        payload.routedTo='dispatcher'
+  //   2. Otherwise (no linked client / unassigned client)
+  //      → assigneeRole='admin', payload.routedTo='admin_fallback'
   //
-  // For now we don't keep a separate `issues` table — the approval_task
-  // payload carries title/severity/description. If issue volume justifies
-  // a dedicated table later, payload migration is trivial.
+  // Admin queue (P1.1) sees both; dispatcher queue filters by
+  // payload.dispatcherUserId via json_extract. This way nothing ever falls
+  // through the cracks even before all clients have dispatchers attached.
 
   app.post(
     "/api/me/issues",
@@ -608,15 +611,30 @@ export function registerMeRoutes(app: Express): void {
         }
       }
 
+      // Routing: dispatcher first, admin fallback.
+      let assigneeRole: "dispatcher" | "admin" = "admin";
+      let dispatcherUserId: string | null = null;
+      let routedTo: "dispatcher" | "admin_fallback" = "admin_fallback";
+      if (user.linkedClientId) {
+        const active = storage.getActiveDispatcherForClient(user.linkedClientId);
+        if (active) {
+          assigneeRole = "dispatcher";
+          dispatcherUserId = active.dispatcherUserId;
+          routedTo = "dispatcher";
+        }
+      }
+
       const task = storage.createApprovalTask({
         taskType: "driver_issue",
-        assigneeRole: "admin",
+        assigneeRole,
         payload: {
           severity: body.severity,
           title: body.title,
           description: body.description ?? null,
           loadId: body.loadId ?? null,
           reporterUserId: user.id,
+          dispatcherUserId,
+          routedTo,
         },
         createdByUserId: user.id,
       });
@@ -627,6 +645,8 @@ export function registerMeRoutes(app: Express): void {
         severity: body.severity,
         title: body.title,
         loadId: body.loadId ?? null,
+        routedTo,
+        dispatcherUserId,
       });
 
       return res.status(201).json(task);

@@ -70,3 +70,20 @@ tmp/
 
 # Build outputs
 apps/*/dist/
+# smoke test artifacts
+smoke-*.db
+smoke-*.db-shm
+smoke-*.db-wal
+smoke-data-*/
+smoke-output.txt
+inspect-smoke.ps1.txt
+
+# local dev DB
+dispatchos-unified.db
+dispatchos-unified.db-shm
+dispatchos-unified.db-wal
+dispatchos_data/
+
+# scratch notes from earlier P0 work
+p0-dispatcher-schema-storage-appends.txt
+p11-schema-storage-appends.txt

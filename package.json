@@ -8,6 +8,7 @@
     "build": "tsx script/build.ts",
     "start": "cross-env NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
+    "presmoke": "npm run build",
     "smoke": "node scripts/smoke.mjs",
     "smoke:ai": "node scripts/smoke-ai.mjs",
     "smoke:all": "node scripts/smoke-ai.mjs && node scripts/smoke.mjs",

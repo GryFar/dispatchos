@@ -1,0 +1,247 @@
+import { useQuery } from "@tanstack/react-query";
+import { useRoute, useLocation } from "wouter";
+import {
+  ArrowLeft,
+  Building2,
+  Clock,
+  MapPin,
+  Loader2,
+} from "lucide-react";
+import type {
+  CheckinKind,
+  LoadCheckin,
+  LoadFull,
+} from "@shared/schema";
+import { apiJson, ApiError } from "@/lib/queryClient";
+import {
+  formatMoney,
+  formatDateFull,
+  formatMiles,
+  formatMc,
+} from "@/lib/format";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/dispatch/StatusBadge";
+
+const CHECKIN_LABELS: Record<CheckinKind, string> = {
+  pickup_arrived: "Прибыл на pickup",
+  loaded: "Загружен",
+  in_transit: "В пути",
+  delivery_arrived: "Прибыл на delivery",
+  delivered: "Доставлен",
+  note: "Заметка",
+};
+
+/**
+ * /dispatch/loads/:id — read-only load detail for the dispatcher. Same
+ * layout as driver load-detail.tsx (route headline, pickup/delivery stops,
+ * broker info, check-ins timeline) but without action buttons. P0 is
+ * view-only; P1 will add reassign / book / cancel.
+ */
+export default function DispatchLoadDetailPage() {
+  const [match, params] = useRoute("/loads/:id");
+  const [, setLocation] = useLocation();
+  const loadId = match ? params?.id : null;
+
+  const { data, isLoading, error } = useQuery<LoadFull>({
+    queryKey: ["dispatch", "load", loadId],
+    queryFn: () => apiJson<LoadFull>("GET", `/api/dispatch/loads/${loadId}`),
+    enabled: Boolean(loadId),
+  });
+
+  const { data: checkinsData } = useQuery<{ items: LoadCheckin[] }>({
+    queryKey: ["dispatch", "load", loadId, "checkins"],
+    queryFn: () =>
+      apiJson<{ items: LoadCheckin[] }>(
+        "GET",
+        `/api/dispatch/loads/${loadId}/checkins`,
+      ),
+    enabled: Boolean(loadId),
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <BackBar onClick={() => setLocation("/loads")} />
+        <Card className="flex h-32 items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </Card>
+      </div>
+    );
+  }
+
+  if (error) {
+    const is404 = error instanceof ApiError && error.status === 404;
+    return (
+      <div className="space-y-4">
+        <BackBar onClick={() => setLocation("/loads")} />
+        <Card className="border-destructive/40 bg-destructive/5 p-4 text-sm">
+          <p className="font-medium">
+            {is404 ? "Рейс не найден." : "Не удалось загрузить рейс."}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {is404
+              ? "Возможно, он принадлежит другому клиенту или удалён."
+              : (error as Error).message}
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const isBooked = Boolean(data.driverId && data.bookedAt);
+
+  return (
+    <div className="space-y-4">
+      <BackBar onClick={() => setLocation("/loads")} />
+
+      <Card className="p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Маршрут
+            </p>
+            <p className="mt-1 text-lg font-semibold tracking-tight">
+              {data.originCity}, {data.originState}
+              <span className="mx-2 text-muted-foreground">→</span>
+              {data.destinationCity}, {data.destinationState}
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {formatMiles(data.loadedMiles)} mi · {data.equipment.replace(/_/g, " ")}
+            </p>
+          </div>
+          <div className="shrink-0 text-right">
+            <p className="font-mono text-xl font-semibold">
+              {formatMoney(data.rate)}
+            </p>
+            <div className="mt-2">
+              <StatusBadge variant={isBooked ? "active" : "info"}>
+                {isBooked ? "В работе" : "Доступен"}
+              </StatusBadge>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <Card className="p-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <StopBlock
+            label="Pickup"
+            city={data.originCity}
+            state={data.originState}
+            iso={data.pickupAt}
+          />
+          <StopBlock
+            label="Delivery"
+            city={data.destinationCity}
+            state={data.destinationState}
+            iso={data.deliveryAt}
+          />
+        </div>
+      </Card>
+
+      <Card className="p-4">
+        <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <Building2 className="h-3.5 w-3.5" /> Брокер
+        </p>
+        <p className="mt-2 text-sm font-medium">{data.brokerName}</p>
+        <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+          {formatMc(data.brokerMc)}
+        </p>
+        {data.notes && (
+          <p className="mt-3 rounded-md border border-border bg-muted/30 p-3 text-xs">
+            {data.notes}
+          </p>
+        )}
+      </Card>
+
+      {/* Driver assignment info */}
+      {data.driverId && (
+        <Card className="p-4">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Назначение
+          </p>
+          <p className="mt-2 font-mono text-sm">{data.driverId}</p>
+          {data.bookedAt && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Booked: {data.bookedAt}
+            </p>
+          )}
+        </Card>
+      )}
+
+      {/* Checkins timeline */}
+      {checkinsData && checkinsData.items.length > 0 && (
+        <Card className="p-4">
+          <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <Clock className="h-3.5 w-3.5" /> Хронология
+          </p>
+          <ul className="mt-3 space-y-2">
+            {checkinsData.items.map((c) => (
+              <li key={c.id} className="flex items-start gap-2 text-xs">
+                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                <div className="flex-1">
+                  <p className="font-medium">{CHECKIN_LABELS[c.kind]}</p>
+                  <p className="text-muted-foreground">
+                    {formatDateFull(c.createdAt)}
+                    {typeof c.lat === "number" && typeof c.lng === "number" && (
+                      <>
+                        {" "}
+                        · {c.lat.toFixed(4)}, {c.lng.toFixed(4)}
+                      </>
+                    )}
+                  </p>
+                  {c.notes && (
+                    <p className="mt-0.5 text-muted-foreground">{c.notes}</p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      <p className="px-1 pb-2 text-center text-[11px] text-muted-foreground">
+        ID: <span className="font-mono">{data.id}</span>
+      </p>
+    </div>
+  );
+}
+
+function BackBar({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+    >
+      <ArrowLeft className="h-4 w-4" />
+      Назад к грузам
+    </button>
+  );
+}
+
+function StopBlock({
+  label,
+  city,
+  state,
+  iso,
+}: {
+  label: string;
+  city: string;
+  state: string;
+  iso: string;
+}) {
+  return (
+    <div>
+      <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <MapPin className="h-3 w-3" /> {label}
+      </p>
+      <p className="mt-1 text-sm font-medium">
+        {city}, {state}
+      </p>
+      <p className="mt-0.5 text-xs text-muted-foreground">{formatDateFull(iso)}</p>
+    </div>
+  );
+}

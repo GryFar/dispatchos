@@ -407,3 +407,26 @@
   --sidebar-accent-soft-foreground: 38 92% 75%;
   --chart-1: 38 92% 50%;               /* keep chart hue family consistent */
 }
+
+/* ===========================================================================
+ * Phase 4 — dispatcher portal theme override (emerald accent).
+ *
+ * Sibling of .theme-orange. Dispatcher shell wraps its tree in
+ *   <div className="dark theme-jade">
+ * which inherits .dark tokens and overrides brand + ring + sidebar to
+ * emerald #10b981 ≈ hsl 160 84% 39%. Picked for high contrast in dark
+ * mode and clear hue separation from orange (driver) and the green admin
+ * palette. Background stays on the same #0a0e1a as driver — the two
+ * portals share the same neutral so screenshots are visually grouped.
+ * ========================================================================= */
+.theme-jade {
+  --background: 222 47% 4%;            /* #0a0e1a — same neutral as theme-orange */
+  --ring: 160 84% 39%;                 /* #10b981 — focus ring matches accent */
+  --primary: 160 84% 39%;              /* #10b981 — emerald brand */
+  --primary-foreground: 222 47% 4%;    /* dark text on accent bg */
+  --sidebar-accent: 160 84% 39%;
+  --sidebar-accent-foreground: 222 47% 4%;
+  --sidebar-accent-soft: 160 84% 14%;
+  --sidebar-accent-soft-foreground: 160 84% 75%;
+  --chart-1: 160 84% 39%;
+}
