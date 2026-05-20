@@ -181,6 +181,40 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on http://${host}:${port}`);
+      // Best-effort Telegram setWebhook — fires once on boot, doesn't block.
+      // No-op unless both TELEGRAM_DRIVER_BOT_TOKEN and DISPATCHOS_PUBLIC_URL
+      // are set. Failures are logged but never crash the server.
+      void registerTelegramWebhookOnBoot();
     },
   );
 })();
+
+async function registerTelegramWebhookOnBoot(): Promise<void> {
+  const token = process.env.TELEGRAM_DRIVER_BOT_TOKEN;
+  const publicUrl = process.env.DISPATCHOS_PUBLIC_URL;
+  if (!token || !publicUrl) {
+    if (!token) log("telegram bot: TELEGRAM_DRIVER_BOT_TOKEN not set, skipping setWebhook", "telegram");
+    else log("telegram bot: DISPATCHOS_PUBLIC_URL not set, skipping setWebhook", "telegram");
+    return;
+  }
+  const webhookUrl = `${publicUrl.replace(/\/$/, "")}/api/telegram/webhook/${token}`;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        url: webhookUrl,
+        allowed_updates: ["message", "edited_message"],
+        max_connections: 10,
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; description?: string };
+    if (body.ok) {
+      log(`telegram bot: webhook registered → ${publicUrl}/api/telegram/webhook/<token>`, "telegram");
+    } else {
+      log(`telegram bot: setWebhook failed: ${body.description ?? res.status}`, "telegram");
+    }
+  } catch (err) {
+    log(`telegram bot: setWebhook threw: ${err instanceof Error ? err.message : String(err)}`, "telegram");
+  }
+}

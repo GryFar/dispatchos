@@ -39,6 +39,7 @@ import { registerMeRoutes } from "./routes/me";
 import { registerLeadRoutes } from "./routes/leads";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerCronRoutes } from "./routes/cron";
+import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { enrichLoadSync } from "./lib/ai";
 
 const HOUR = 60 * 60 * 1000;
@@ -992,6 +993,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Scheduled-task endpoints (EIA fuel refresh, future cron jobs).
   // No session auth; protected by X-Cron-Secret shared header.
   registerCronRoutes(app);
+
+  // Telegram driver bot webhook. Path-token auth; always 200s back to TG
+  // so it doesn't retry. See server/routes/telegram-bot.ts.
+  registerTelegramBotRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The
