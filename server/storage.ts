@@ -2958,4 +2958,223 @@ export const storage = {
         .get(role) as { c: number }
     ).c;
   },
+  // =========================================================================
+  // Phase 4 P0 — Dispatcher tenant-scoping helpers
+  // =========================================================================
+
+  getActiveDispatcherForClient(clientId: string): { dispatcherUserId: string } | null {
+    const row = sqlite
+      .prepare(
+        `SELECT dispatcher_user_id FROM assignments
+         WHERE client_id = ? AND removed_at IS NULL
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(clientId) as { dispatcher_user_id: string } | undefined;
+    return row ? { dispatcherUserId: row.dispatcher_user_id } : null;
+  },
+
+  listAssignedClientsForDispatcher(dispatcherUserId: string): Array<{
+    id: string;
+    name: string;
+    activeDriversCount: number;
+    activeLoadsCount: number;
+  }> {
+    const assignments = this.listAssignmentsForDispatcher(dispatcherUserId);
+    if (assignments.length === 0) return [];
+    const clientIds = assignments.map((a) => a.clientId);
+    const placeholders = clientIds.map(() => "?").join(",");
+
+    // clients table stores data as a JSON payload (no flat `name` column).
+    // Match the pattern used by listClients/getClient elsewhere in this file.
+    const clientRows = sqlite
+      .prepare(`SELECT id, payload FROM clients WHERE id IN (${placeholders})`)
+      .all(...clientIds) as Array<{ id: string; payload: string }>;
+    const clientNameById = new Map<string, string>();
+    for (const row of clientRows) {
+      try {
+        const parsed = JSON.parse(row.payload) as { name?: unknown };
+        clientNameById.set(
+          row.id,
+          typeof parsed.name === "string" && parsed.name.length > 0 ? parsed.name : row.id,
+        );
+      } catch {
+        clientNameById.set(row.id, row.id);
+      }
+    }
+
+    const driverCounts = new Map<string, number>();
+    if (clientIds.length > 0) {
+      // users.blocked is INTEGER 0/1 in this schema (no `blocked_at` column).
+      const driverRows = sqlite
+        .prepare(
+          `SELECT linked_client_id AS cid, COUNT(*) AS c
+           FROM users
+           WHERE role = 'driver' AND blocked = 0
+             AND linked_client_id IN (${placeholders})
+           GROUP BY linked_client_id`,
+        )
+        .all(...clientIds) as Array<{ cid: string; c: number }>;
+      for (const r of driverRows) driverCounts.set(r.cid, r.c);
+    }
+    const loadCounts = new Map<string, number>();
+    if (clientIds.length > 0) {
+      const loadRows = sqlite
+        .prepare(
+          `SELECT client_id AS cid, COUNT(*) AS c
+           FROM loads
+           WHERE client_id IN (${placeholders}) AND booked_at IS NOT NULL
+           GROUP BY client_id`,
+        )
+        .all(...clientIds) as Array<{ cid: string; c: number }>;
+      for (const r of loadRows) loadCounts.set(r.cid, r.c);
+    }
+
+    // Preserve the order in which the dispatcher's assignments came back.
+    return clientIds.map((id) => ({
+      id,
+      name: clientNameById.get(id) ?? id,
+      activeDriversCount: driverCounts.get(id) ?? 0,
+      activeLoadsCount: loadCounts.get(id) ?? 0,
+    }));
+  },
+
+  listLoadsForClientIds(
+    clientIds: string[],
+    opts: { limit?: number; cursor?: string; status?: "available" | "booked" } = {},
+  ): { items: Load[]; nextCursor: string | null; hasMore: boolean; total: number } {
+    if (clientIds.length === 0) {
+      return { items: [], nextCursor: null, hasMore: false, total: 0 };
+    }
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+    const placeholders = clientIds.map(() => "?").join(",");
+    const where: string[] = [`client_id IN (${placeholders})`];
+    const params: Array<string | number> = [...clientIds];
+    if (opts.status === "available") {
+      where.push("booked_at IS NULL");
+    } else if (opts.status === "booked") {
+      where.push("booked_at IS NOT NULL");
+    }
+    if (opts.cursor) {
+      where.push("created_at < ?");
+      params.push(opts.cursor);
+    }
+    params.push(limit + 1);
+    const rows = sqlite
+      .prepare(
+        `SELECT payload, created_at FROM loads
+         WHERE ${where.join(" AND ")}
+         ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(...params) as Array<{ payload: string; created_at: string }>;
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const items: Load[] = parsePayloads<Load>(sliced);
+    const lastCreatedAt = hasMore ? sliced[sliced.length - 1]?.created_at ?? null : null;
+    const totalSql = `SELECT COUNT(*) AS c FROM loads WHERE client_id IN (${placeholders})${
+      opts.status === "available"
+        ? " AND booked_at IS NULL"
+        : opts.status === "booked"
+        ? " AND booked_at IS NOT NULL"
+        : ""
+    }`;
+    const total = (sqlite.prepare(totalSql).get(...clientIds) as { c: number }).c;
+    return {
+      items,
+      nextCursor: hasMore ? lastCreatedAt : null,
+      hasMore,
+      total,
+    };
+  },
+
+  loadIsVisibleToDispatcher(loadId: string, dispatcherUserId: string): boolean {
+    const row = sqlite
+      .prepare(
+        `SELECT 1 FROM loads l
+         JOIN assignments a ON a.client_id = l.client_id
+         WHERE l.id = ? AND a.dispatcher_user_id = ? AND a.removed_at IS NULL
+         LIMIT 1`,
+      )
+      .get(loadId, dispatcherUserId);
+    return Boolean(row);
+  },
+
+  listApprovalTasksForDispatcher(
+    dispatcherUserId: string,
+    opts: { status?: ApprovalTaskStatus; limit?: number; cursor?: string } = {},
+  ): {
+    items: Array<ApprovalTask & {
+      createdByEmail: string | null;
+      createdByFullName: string | null;
+      resolvedByEmail: string | null;
+    }>;
+    nextCursor: string | null;
+    hasMore: boolean;
+    total: number;
+  } {
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+    const where: string[] = [
+      "t.assignee_role = 'dispatcher'",
+      "json_extract(t.payload, '$.dispatcherUserId') = ?",
+    ];
+    const params: Array<string | number> = [dispatcherUserId];
+    if (opts.status) {
+      where.push("t.status = ?");
+      params.push(opts.status);
+    }
+    if (opts.cursor) {
+      where.push("t.created_at < ?");
+      params.push(opts.cursor);
+    }
+    params.push(limit + 1);
+    const sql = `
+      SELECT
+        t.*,
+        creator.email      AS creator_email,
+        creator.full_name  AS creator_full_name,
+        resolver.email     AS resolver_email
+      FROM approval_tasks t
+      LEFT JOIN users creator  ON creator.id  = t.created_by_user_id
+      LEFT JOIN users resolver ON resolver.id = t.resolved_by_user_id
+      WHERE ${where.join(" AND ")}
+      ORDER BY t.created_at DESC
+      LIMIT ?
+    `;
+    const rows = sqlite.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const items = sliced.map((r) => ({
+      id: r.id as string,
+      taskType: r.task_type as ApprovalTaskType,
+      assigneeRole: r.assignee_role as UserRole,
+      resolvedByUserId: (r.resolved_by_user_id as string | null) ?? null,
+      resolvedAt: (r.resolved_at as string | null) ?? null,
+      status: r.status as ApprovalTaskStatus,
+      payload: JSON.parse((r.payload as string) ?? "{}") as Record<string, unknown>,
+      createdByUserId: r.created_by_user_id as string,
+      createdAt: r.created_at as string,
+      createdByEmail: (r.creator_email as string | null) ?? null,
+      createdByFullName: (r.creator_full_name as string | null) ?? null,
+      resolvedByEmail: (r.resolver_email as string | null) ?? null,
+    }));
+    const totalWhere = [
+      "assignee_role = 'dispatcher'",
+      "json_extract(payload, '$.dispatcherUserId') = ?",
+    ];
+    const totalParams: Array<string | number> = [dispatcherUserId];
+    if (opts.status) {
+      totalWhere.push("status = ?");
+      totalParams.push(opts.status);
+    }
+    const total = (
+      sqlite
+        .prepare(`SELECT COUNT(*) AS c FROM approval_tasks WHERE ${totalWhere.join(" AND ")}`)
+        .get(...totalParams) as { c: number }
+    ).c;
+    return {
+      items,
+      nextCursor: hasMore ? items[items.length - 1]?.createdAt ?? null : null,
+      hasMore,
+      total,
+    };
+  },
 };
