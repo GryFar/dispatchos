@@ -19,7 +19,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Express, Request, Response, NextFunction } from "express";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
 import {
   dispatchLoadsListFiltersSchema,
   resolveApprovalTaskSchema,
@@ -326,6 +326,127 @@ export function registerDispatchRoutes(app: Express): void {
         newStatus: updated.status,
         resolution: body.resolution ?? null,
       });
+      return res.json(updated);
+    }),
+  );
+  // -------------------------------------------------------------------------
+  // GET /api/dispatch/clients/:clientId/drivers — list drivers for a client
+  // -------------------------------------------------------------------------
+  //
+  // Used by the load-detail reassign dialog. Returns drivers whose
+  // linkedClientId matches the path param. Excludes blocked users.
+  //
+  // Tenant: the client must be one of my active assignments. Cross-tenant
+  // returns 404 (anti-enumeration; same policy as /loads/:id).
+  //
+  app.get(
+    "/api/dispatch/clients/:clientId/drivers",
+    requireRole("dispatcher"),
+    ah((req, res) => {
+      const me = getCurrentUser(req);
+      if (!me) return res.status(401).json({ message: "Authentication required" });
+      const clientId = String(req.params.clientId);
+
+      // Tenant guard
+      const assignments = storage.listAssignmentsForDispatcher(me.id);
+      const isAssigned = assignments.some((a) => a.clientId === clientId);
+      if (!isAssigned) {
+        return res.status(404).json({ message: "Client not found" });
+      }
+
+      // Filter drivers by linkedClientId, exclude blocked
+      const allDrivers = storage.listUsers({ role: "driver" });
+      const items = allDrivers
+        .filter((u) => u.linkedClientId === clientId && !u.blocked)
+        .map((u) => ({
+          id: u.id,
+          fullName: u.fullName,
+          email: u.email,
+          phone: u.phone ?? null,
+          driverStatus: u.driverStatus ?? "available",
+        }));
+
+      return res.json({ items });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // PATCH /api/dispatch/loads/:id — reassign driver (Phase 4 P1)
+  // -------------------------------------------------------------------------
+  //
+  // Body: { driverId: string | null }. Set to null to unassign.
+  //
+  // Tenant: load must belong to one of my assigned clients (404 otherwise).
+  // Validation: if driverId not null, driver must exist, have role=driver,
+  // not be blocked, and have linkedClientId === load.clientId.
+  //
+  // Audit: load.driver_reassigned with { from, to, byDispatcherId }.
+  //
+  app.patch(
+    "/api/dispatch/loads/:id",
+    requireRole("dispatcher"),
+    ah((req, res) => {
+      const me = getCurrentUser(req);
+      if (!me) return res.status(401).json({ message: "Authentication required" });
+      const id = String(req.params.id);
+
+      // Parse body
+      const patchSchema = z.object({
+        driverId: z.string().min(1).nullable(),
+      });
+      let body: z.infer<typeof patchSchema>;
+      try {
+        body = patchSchema.parse(req.body);
+      } catch (e) {
+        if (e instanceof ZodError) return send400Validation(res, e);
+        throw e;
+      }
+
+      // Tenant + existence guard
+      const load = storage.getLoad(id);
+      if (!load) return res.status(404).json({ message: "Load not found" });
+      if (!storage.loadIsVisibleToDispatcher(id, me.id)) {
+        return res.status(404).json({ message: "Load not found" });
+      }
+
+      // If assigning to a driver, validate that driver
+      if (body.driverId !== null) {
+        const driver = storage.getUserById(body.driverId);
+        if (!driver || driver.role !== "driver") {
+          return res
+            .status(400)
+            .json({ message: "driverId must reference an existing driver" });
+        }
+        if (driver.blocked) {
+          return res.status(400).json({ message: "Driver is blocked" });
+        }
+        const loadClientId = (load as any).clientId;
+        if (!loadClientId) {
+          return res
+            .status(400)
+            .json({ message: "Load has no clientId; cannot assign a driver" });
+        }
+        if (driver.linkedClientId !== loadClientId) {
+          return res.status(400).json({
+            message: "Driver is not linked to this load's client",
+          });
+        }
+      }
+
+      // Persist via upsertLoad (it mirrors driver_id column from payload).
+      const previousDriverId = (load as any).driverId ?? null;
+      const updated = storage.upsertLoad({
+        ...load,
+        driverId: body.driverId ?? undefined,
+      } as any);
+
+      // Audit
+      storage.audit("load.driver_reassigned", "load", id, {
+        actorUserId: me.id,
+        from: previousDriverId,
+        to: body.driverId,
+      });
+
       return res.json(updated);
     }),
   );

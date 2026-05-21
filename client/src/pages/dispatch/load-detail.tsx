@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import {
   ArrowLeft,
@@ -6,6 +7,8 @@ import {
   Clock,
   MapPin,
   Loader2,
+  UserCircle2,
+  UserX,
 } from "lucide-react";
 import type {
   CheckinKind,
@@ -22,6 +25,30 @@ import {
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+
+type DispatchDriver = {
+  id: string;
+  fullName: string | null;
+  email: string;
+  phone: string | null;
+  driverStatus: "available" | "on_route" | "off_duty";
+};
 
 const CHECKIN_LABELS: Record<CheckinKind, string> = {
   pickup_arrived: "Прибыл на pickup",
@@ -157,20 +184,8 @@ export default function DispatchLoadDetailPage() {
         )}
       </Card>
 
-      {/* Driver assignment info */}
-      {data.driverId && (
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Назначение
-          </p>
-          <p className="mt-2 font-mono text-sm">{data.driverId}</p>
-          {data.bookedAt && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              Booked: {data.bookedAt}
-            </p>
-          )}
-        </Card>
-      )}
+      {/* Driver assignment (always shown — load can have or not have a driver) */}
+      <DriverAssignmentCard load={data} />
 
       {/* Checkins timeline */}
       {checkinsData && checkinsData.items.length > 0 && (
@@ -243,5 +258,180 @@ function StopBlock({
       </p>
       <p className="mt-0.5 text-xs text-muted-foreground">{formatDateFull(iso)}</p>
     </div>
+  );
+}
+
+function DriverAssignmentCard({ load }: { load: LoadFull }) {
+  const [reassignOpen, setReassignOpen] = useState(false);
+  const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null);
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const clientId = (load as { clientId?: string }).clientId;
+
+  // Load list of drivers for this client (only when dialog opens, to save bandwidth)
+  const driversQuery = useQuery<{ items: DispatchDriver[] }>({
+    queryKey: ["dispatch", "clients", clientId, "drivers"],
+    queryFn: () =>
+      apiJson<{ items: DispatchDriver[] }>(
+        "GET",
+        `/api/dispatch/clients/${clientId}/drivers`,
+      ),
+    enabled: reassignOpen && Boolean(clientId),
+  });
+
+  // Find current driver in the list (after it loads) to display name
+  const currentDriver = driversQuery.data?.items.find(
+    (d) => d.id === load.driverId,
+  );
+
+  const reassignMutation = useMutation({
+    mutationFn: (driverId: string | null) =>
+      apiJson("PATCH", `/api/dispatch/loads/${load.id}`, { driverId }),
+    onSuccess: () => {
+      toast({
+        title: "Водитель обновлён",
+        description: selectedDriverId
+          ? "Рейс назначен новому водителю."
+          : "Водитель снят с рейса.",
+      });
+      // Refetch the load to pull fresh driverId
+      qc.invalidateQueries({ queryKey: ["dispatch", "load", load.id] });
+      qc.invalidateQueries({ queryKey: ["dispatch", "loads"] });
+      setReassignOpen(false);
+      setSelectedDriverId(null);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Не удалось обновить",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  return (
+    <>
+      <Card className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Назначение
+            </p>
+            {load.driverId ? (
+              <>
+                <p className="mt-2 text-sm font-medium">
+                  {currentDriver?.fullName || "Водитель"}
+                </p>
+                <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+                  {load.driverId}
+                </p>
+                {load.bookedAt && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Booked: {load.bookedAt}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="mt-2 text-sm text-muted-foreground">
+                Водитель не назначен
+              </p>
+            )}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setReassignOpen(true)}
+            disabled={!clientId}
+          >
+            <UserCircle2 className="h-4 w-4" />
+            {load.driverId ? "Сменить" : "Назначить"}
+          </Button>
+        </div>
+      </Card>
+
+      <Dialog open={reassignOpen} onOpenChange={setReassignOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {load.driverId ? "Сменить водителя" : "Назначить водителя"}
+            </DialogTitle>
+            <DialogDescription>
+              Выберите водителя клиента, привязанного к этому рейсу.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-2">
+            {driversQuery.isLoading ? (
+              <div className="flex items-center justify-center py-6">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : driversQuery.data?.items.length === 0 ? (
+              <p className="py-4 text-sm text-muted-foreground">
+                У этого клиента нет доступных водителей.
+              </p>
+            ) : (
+              <Select
+                value={selectedDriverId ?? load.driverId ?? ""}
+                onValueChange={setSelectedDriverId}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Выберите водителя" />
+                </SelectTrigger>
+                <SelectContent>
+                  {driversQuery.data?.items.map((d) => (
+                    <SelectItem key={d.id} value={d.id}>
+                      {d.fullName || d.email}
+                      {d.driverStatus !== "available" && (
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          ({d.driverStatus})
+                        </span>
+                      )}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-2">
+            {load.driverId && (
+              <Button
+                variant="outline"
+                onClick={() => reassignMutation.mutate(null)}
+                disabled={reassignMutation.isPending}
+                className="mr-auto"
+              >
+                <UserX className="h-4 w-4" />
+                Снять водителя
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              onClick={() => setReassignOpen(false)}
+              disabled={reassignMutation.isPending}
+            >
+              Отмена
+            </Button>
+            <Button
+              onClick={() => {
+                if (selectedDriverId && selectedDriverId !== load.driverId) {
+                  reassignMutation.mutate(selectedDriverId);
+                }
+              }}
+              disabled={
+                reassignMutation.isPending ||
+                !selectedDriverId ||
+                selectedDriverId === load.driverId
+              }
+            >
+              {reassignMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : null}
+              Назначить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
