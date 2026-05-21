@@ -166,6 +166,40 @@ export function registerMeRoutes(app: Express): void {
           )
         : null;
 
+      // Enrich with carrier (client) + active dispatcher (Phase 5 dashboard context).
+      // Driver should see "who I work for" and "who to call" without poking the API.
+      const carrier = user.linkedClientId
+        ? storage.getClient(user.linkedClientId)
+        : undefined;
+      const clientCard = carrier
+        ? { id: carrier.id, name: carrier.name, mc: carrier.mc }
+        : null;
+
+      let dispatcherCard: {
+        id: string;
+        fullName: string;
+        email: string;
+        phone: string | null;
+      } | null = null;
+      if (user.linkedClientId) {
+        const assignments = storage.listAssignmentsForClient(user.linkedClientId);
+        // Find the first valid active dispatcher. We iterate (not [0]) because
+        // a client may have stale assignments pointing to blocked or deleted
+        // users — we want the first usable contact, not necessarily the oldest.
+        for (const a of assignments) {
+          const disp = storage.getUserById(a.dispatcherUserId);
+          if (disp && !disp.blocked && disp.role === "dispatcher") {
+            dispatcherCard = {
+              id: disp.id,
+              fullName: disp.fullName ?? disp.email,
+              email: disp.email,
+              phone: disp.phone ?? null,
+            };
+            break;
+          }
+        }
+      }
+
       const body: DriverDashboard = {
         driver: {
           id: user.id,
@@ -174,6 +208,8 @@ export function registerMeRoutes(app: Express): void {
           phone: user.phone,
           status: user.driverStatus ?? "available",
         },
+        client: clientCard,
+        dispatcher: dispatcherCard,
         currentLoad,
         todayPickup,
         todayDelivery,

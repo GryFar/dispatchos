@@ -10,6 +10,8 @@ import {
   AlertTriangle,
   Clock,
   ChevronRight,
+  Building2,
+  UserCircle,
 } from "lucide-react";
 import type { DriverDashboard, DriverStatus, LoadFull, UserPublic } from "@shared/schema";
 import { apiJson, ApiError } from "@/lib/queryClient";
@@ -82,6 +84,7 @@ export default function DriverDashboardPage() {
         todayDelivery={data.todayDelivery}
       />
       <PendingDocsCard docs={data.pendingDocs ?? []} />
+      <ContextCard client={data.client} dispatcher={data.dispatcher} />
       <QuickActions
         phone={data.driver.phone}
         currentLoadId={data.currentLoad?.id ?? null}
@@ -444,6 +447,77 @@ function RecentLoadsPanel({ loads }: { loads: LoadFull[] }) {
           ))}
         </ul>
       )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ContextCard — shows driver's carrier company + active dispatcher contact.
+// Compact card so driver knows "who I work for" and "who to call" at a glance.
+// Phase 5 enrichment. Both fields are nullable: client missing when
+// linkedClientId is unset, dispatcher missing when client has no assignment.
+// ---------------------------------------------------------------------------
+function ContextCard({
+  client,
+  dispatcher,
+}: {
+  client: { id: string; name: string; mc: string } | null;
+  dispatcher: {
+    id: string;
+    fullName: string;
+    email: string;
+    phone: string | null;
+  } | null;
+}) {
+  if (!client && !dispatcher) return null;
+
+  return (
+    <Card className="p-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        {client && (
+          <div className="flex items-start gap-2.5">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted">
+              <Building2 className="h-4 w-4 text-muted-foreground" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                Моя компания
+              </p>
+              <p className="mt-0.5 truncate text-sm font-medium">{client.name}</p>
+              <p className="font-mono text-[11px] text-muted-foreground">
+                {client.mc}
+              </p>
+            </div>
+          </div>
+        )}
+        {dispatcher && (
+          <div className="flex items-start gap-2.5">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted">
+              <UserCircle className="h-4 w-4 text-muted-foreground" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                Мой диспетчер
+              </p>
+              <p className="mt-0.5 truncate text-sm font-medium">
+                {dispatcher.fullName}
+              </p>
+              {dispatcher.phone ? (
+                <a
+                  href={`tel:${dispatcher.phone}`}
+                  className="font-mono text-[11px] text-primary hover:underline"
+                >
+                  {dispatcher.phone}
+                </a>
+              ) : (
+                <p className="truncate text-[11px] text-muted-foreground">
+                  {dispatcher.email}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </Card>
   );
 }
