@@ -326,6 +326,57 @@ sqlite.exec(
 sqlite.exec("CREATE INDEX IF NOT EXISTS loads_driver_id_idx ON loads(driver_id, created_at DESC)");
 
 // ---------------------------------------------------------------------------
+// Phase 5: smart-matching cache + history tables.
+//   load_scores    — per-(load, client) cached score so we don't recompute on
+//                    every cron poll. Invalidated when fuel/location updates.
+//   broker_history — per-broker (mc) rolling on-time%, payment days, dispute
+//                    rate. Fed by /yes /no /checkin and dispatcher actions.
+//   lane_history   — per-(origin_state, dest_state) avg $/mi and volume.
+//                    Drives next-load-potential signal in the scorer.
+// ---------------------------------------------------------------------------
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS load_scores (
+    load_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    dispatch_score INTEGER NOT NULL,
+    verdict TEXT NOT NULL,
+    estimated_net INTEGER NOT NULL,
+    breakdown_json TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    PRIMARY KEY (load_id, client_id)
+  )
+`);
+sqlite.exec("CREATE INDEX IF NOT EXISTS load_scores_client_score_idx ON load_scores(client_id, dispatch_score DESC)");
+sqlite.exec("CREATE INDEX IF NOT EXISTS load_scores_computed_at_idx ON load_scores(computed_at)");
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS broker_history (
+    mc TEXT PRIMARY KEY,
+    name TEXT,
+    loads_offered INTEGER NOT NULL DEFAULT 0,
+    loads_accepted INTEGER NOT NULL DEFAULT 0,
+    loads_completed INTEGER NOT NULL DEFAULT 0,
+    loads_late INTEGER NOT NULL DEFAULT 0,
+    disputes INTEGER NOT NULL DEFAULT 0,
+    avg_payment_days REAL,
+    last_load_at TEXT,
+    updated_at TEXT NOT NULL
+  )
+`);
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS lane_history (
+    origin_state TEXT NOT NULL,
+    destination_state TEXT NOT NULL,
+    loads_seen INTEGER NOT NULL DEFAULT 0,
+    sum_rate INTEGER NOT NULL DEFAULT 0,
+    sum_miles INTEGER NOT NULL DEFAULT 0,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (origin_state, destination_state)
+  )
+`);
+
+// ---------------------------------------------------------------------------
 // Phase 4 P1: new tables for driver operations
 // ---------------------------------------------------------------------------
 //
@@ -2481,6 +2532,118 @@ export const storage = {
       .run(id, JSON.stringify(payload), now());
     this.audit("email.ingested", "email", id, payload);
     return { id, ...(payload as object), createdAt: now() };
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 5 smart-matching helpers: load_scores, broker_history, lane_history.
+  // All upsert-style — callers don't need to track if a row exists.
+  // -------------------------------------------------------------------------
+  upsertLoadScore(input: {
+    loadId: string;
+    clientId: string;
+    dispatchScore: number;
+    verdict: string;
+    estimatedNet: number;
+    breakdown: object;
+  }) {
+    sqlite.prepare(`
+      INSERT INTO load_scores (load_id, client_id, dispatch_score, verdict, estimated_net, breakdown_json, computed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(load_id, client_id) DO UPDATE SET
+        dispatch_score = excluded.dispatch_score,
+        verdict        = excluded.verdict,
+        estimated_net  = excluded.estimated_net,
+        breakdown_json = excluded.breakdown_json,
+        computed_at    = excluded.computed_at
+    `).run(
+      input.loadId,
+      input.clientId,
+      input.dispatchScore,
+      input.verdict,
+      input.estimatedNet,
+      JSON.stringify(input.breakdown),
+      now(),
+    );
+  },
+
+  getLoadScore(loadId: string, clientId: string) {
+    return sqlite.prepare("SELECT * FROM load_scores WHERE load_id = ? AND client_id = ?")
+      .get(loadId, clientId) as { dispatch_score: number; verdict: string; estimated_net: number; breakdown_json: string; computed_at: string } | undefined;
+  },
+
+  topScoresForClient(clientId: string, limit = 25) {
+    return sqlite.prepare(`
+      SELECT load_id, dispatch_score, verdict, estimated_net, computed_at
+      FROM load_scores
+      WHERE client_id = ? AND verdict != 'skip'
+      ORDER BY dispatch_score DESC LIMIT ?
+    `).all(clientId, limit) as Array<{ load_id: string; dispatch_score: number; verdict: string; estimated_net: number; computed_at: string }>;
+  },
+
+  invalidateLoadScores(loadId?: string) {
+    if (loadId) {
+      sqlite.prepare("DELETE FROM load_scores WHERE load_id = ?").run(loadId);
+    } else {
+      sqlite.exec("DELETE FROM load_scores");
+    }
+  },
+
+  recordBrokerEvent(
+    mc: string,
+    event: "offered" | "accepted" | "completed" | "late" | "dispute",
+    extras?: { name?: string; paymentDays?: number },
+  ) {
+    const t = now();
+    // Ensure row exists
+    sqlite.prepare(`
+      INSERT INTO broker_history (mc, name, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(mc) DO UPDATE SET name = COALESCE(excluded.name, broker_history.name), updated_at = excluded.updated_at
+    `).run(mc, extras?.name ?? null, t);
+
+    const column =
+      event === "offered"   ? "loads_offered" :
+      event === "accepted"  ? "loads_accepted" :
+      event === "completed" ? "loads_completed" :
+      event === "late"      ? "loads_late" :
+                              "disputes";
+    sqlite.prepare(`UPDATE broker_history SET ${column} = ${column} + 1, updated_at = ?, last_load_at = ? WHERE mc = ?`)
+      .run(t, t, mc);
+
+    if (extras?.paymentDays !== undefined) {
+      // Running average via incremental formula. We approximate by weighting
+      // toward existing avg with 95/5 split — simple and good enough.
+      const row = sqlite.prepare("SELECT avg_payment_days FROM broker_history WHERE mc = ?").get(mc) as { avg_payment_days: number | null };
+      const prev = row?.avg_payment_days ?? extras.paymentDays;
+      const next = prev * 0.95 + extras.paymentDays * 0.05;
+      sqlite.prepare("UPDATE broker_history SET avg_payment_days = ? WHERE mc = ?").run(next, mc);
+    }
+  },
+
+  getBrokerHistory(mc: string) {
+    return sqlite.prepare("SELECT * FROM broker_history WHERE mc = ?").get(mc) as
+      | { mc: string; name: string | null; loads_offered: number; loads_accepted: number; loads_completed: number; loads_late: number; disputes: number; avg_payment_days: number | null; last_load_at: string | null; updated_at: string }
+      | undefined;
+  },
+
+  recordLaneObservation(originState: string, destState: string, rate: number, miles: number) {
+    sqlite.prepare(`
+      INSERT INTO lane_history (origin_state, destination_state, loads_seen, sum_rate, sum_miles, last_seen_at)
+      VALUES (?, ?, 1, ?, ?, ?)
+      ON CONFLICT(origin_state, destination_state) DO UPDATE SET
+        loads_seen     = loads_seen + 1,
+        sum_rate       = sum_rate + excluded.sum_rate,
+        sum_miles      = sum_miles + excluded.sum_miles,
+        last_seen_at   = excluded.last_seen_at
+    `).run(originState.toUpperCase(), destState.toUpperCase(), rate, miles, now());
+  },
+
+  getLaneAvgPpm(originState: string, destState: string): { avgPpm: number; loadsSeen: number } | undefined {
+    const row = sqlite.prepare(
+      "SELECT loads_seen, sum_rate, sum_miles FROM lane_history WHERE origin_state = ? AND destination_state = ?",
+    ).get(originState.toUpperCase(), destState.toUpperCase()) as { loads_seen: number; sum_rate: number; sum_miles: number } | undefined;
+    if (!row || row.sum_miles === 0) return undefined;
+    return { avgPpm: row.sum_rate / row.sum_miles, loadsSeen: row.loads_seen };
   },
 
   listEmailIngest(limit = 50) {
