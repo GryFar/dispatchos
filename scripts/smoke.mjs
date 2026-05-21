@@ -2682,6 +2682,87 @@ try {
   }
   console.log("[OK] Admin PATCH /api/admin/clients/:id blocks non-admin (403)");
 
+  // -- Dispatcher reassign driver: setup -------------------------------------
+  // Reuses fixtures from earlier P4 P0 block:
+  //   - dispCookie is assigned to someClient.id (= ivan-enclosed-01 = billingClient.id)
+  //   - driverA has linkedClientId = billingClient.id
+  //   - driverALoad lives on billingClient.id with driverId = driverA.id
+  //   - driverB2 (declared later in P4 P0 section as "smoke.driver.b2@example.com")
+  //     is linked to oleg-hotshot-02 (= billingClient2.id), NOT assigned to dispUser
+  cookieHeader = dispCookie;
+
+  // -- GET /api/dispatch/clients/:clientId/drivers — list drivers ------------
+  const ownDrivers = await request(`/api/dispatch/clients/${billingClient.id}/drivers`);
+  if (!Array.isArray(ownDrivers.items)) {
+    throw new Error("Dispatcher GET /clients/:id/drivers missing items[]");
+  }
+  if (!ownDrivers.items.some((d) => d.id === driverA.id)) {
+    throw new Error(
+      `Dispatcher GET /clients/:id/drivers should include driverA, got ${JSON.stringify(ownDrivers.items.map((d) => d.id))}`,
+    );
+  }
+  for (const d of ownDrivers.items) {
+    for (const f of ["id", "fullName", "email", "driverStatus"]) {
+      if (!(f in d)) {
+        throw new Error(`Dispatcher driver list item missing '${f}'`);
+      }
+    }
+  }
+  console.log("[OK] Dispatcher GET /api/dispatch/clients/:id/drivers (lists own client's drivers)");
+
+  // -- GET cross-tenant returns 404 (anti-enumeration) -----------------------
+  try {
+    await request(`/api/dispatch/clients/${billingClient2.id}/drivers`);
+    throw new Error("Dispatcher GET /clients/:id/drivers should 404 on cross-tenant client");
+  } catch (e) {
+    if (!/404/.test(e.message)) throw e;
+  }
+  console.log("[OK] Dispatcher GET /api/dispatch/clients/:id/drivers 404 on cross-tenant");
+
+  // -- PATCH /api/dispatch/loads/:id — successful reassign + audit -----------
+  // Unassign first (set driverId: null), then re-assign back to driverA.
+  const unassigned = await request(`/api/dispatch/loads/${driverALoad.id}`, {
+    method: "PATCH",
+    body: { driverId: null },
+  });
+  if (unassigned.driverId != null) {
+    throw new Error(`Dispatcher PATCH load with null driverId should clear it, got ${unassigned.driverId}`);
+  }
+
+  const reassigned = await request(`/api/dispatch/loads/${driverALoad.id}`, {
+    method: "PATCH",
+    body: { driverId: driverA.id },
+  });
+  if (reassigned.driverId !== driverA.id) {
+    throw new Error(`Dispatcher PATCH load: driverId not persisted, got ${reassigned.driverId}`);
+  }
+
+  // Audit event must be present
+  cookieHeader = p4AdminCookie; // audit requires admin
+  const reassignAudit = await request("/api/audit?eventType=load.driver_reassigned&limit=5");
+  if (!Array.isArray(reassignAudit.items) || reassignAudit.items.length < 2) {
+    throw new Error(
+      `Dispatcher PATCH load: expected 2 audit events (unassign + reassign), got ${reassignAudit.items?.length}`,
+    );
+  }
+  console.log("[OK] Dispatcher PATCH /api/dispatch/loads/:id (reassign + audit)");
+
+  // -- PATCH rejects cross-client driver -------------------------------------
+  // driverB2 is linked to billingClient2 (oleg), not billingClient (ivan).
+  // driverALoad is on billingClient (ivan). Assigning driverB2 → 400.
+  cookieHeader = dispCookie;
+  try {
+    await request(`/api/dispatch/loads/${driverALoad.id}`, {
+      method: "PATCH",
+      body: { driverId: driverB2.id },
+    });
+    throw new Error("Dispatcher PATCH load should 400 when driver linked to different client");
+  } catch (e) {
+    if (!/400/.test(e.message)) throw e;
+  }
+  console.log("[OK] Dispatcher PATCH /api/dispatch/loads/:id 400 on cross-client driver");
+
+
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);
