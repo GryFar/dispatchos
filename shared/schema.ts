@@ -763,6 +763,23 @@ export const driverDashboardSchema = z.object({
     phone: z.string().optional(),
     status: driverStatusSchema,
   }),
+  /** Driver's carrier company (resolved via user.linkedClientId). */
+  client: z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      mc: z.string(),
+    })
+    .nullable(),
+  /** Active dispatcher for the driver's client (first active assignment). */
+  dispatcher: z
+    .object({
+      id: z.string(),
+      fullName: z.string(),
+      email: z.string().email(),
+      phone: z.string().nullable(),
+    })
+    .nullable(),
   currentLoad: loadFullSchema.nullable(),
   todayPickup: dashboardLoadStopSchema.nullable(),
   todayDelivery: dashboardLoadStopSchema.nullable(),
