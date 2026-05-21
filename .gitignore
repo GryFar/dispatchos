@@ -87,3 +87,4 @@ dispatchos_data/
 # scratch notes from earlier P0 work
 p0-dispatcher-schema-storage-appends.txt
 p11-schema-storage-appends.txt
+package-lock.json

@@ -54,6 +54,26 @@ export const clientSchema = z.object({
   preferredLanes: z.array(z.string()),
   avoidStates: z.array(z.string()),
   currentLocation: driverLocationSchema,
+  // Phase 5 smart-matching: optional hard-filter and economics inputs.
+  // All optional so existing test fixtures keep validating. Defaults
+  // applied in scoreLoadForClient when missing.
+  equipmentTypes: z.array(equipmentSchema).optional(),  // accept multi-trailer fleets
+  maxGvwLbs: z.number().optional(),                     // truck/trailer combined cap
+  payCentsPerMile: z.number().optional(),               // driver pay model: flat cpm
+  payPctOfGross: z.number().optional(),                 // driver pay model: % of gross
+  blockedBrokers: z.array(z.string()).optional(),       // MC# strings to reject outright
+  tollsCostPerMile: z.number().optional(),              // default 0.05 if absent
+  wearCostPerMile: z.number().optional(),               // default 0.15 if absent
+  hoursAvailable: z.number().optional(),                // HOS hours left, used to reject too-long loads
+  fuelTankGallons: z.number().optional(),               // for future range planning
+  scoreWeights: z.object({                              // per-client tuned weights
+    ppm: z.number().optional(),
+    deadhead: z.number().optional(),
+    feasibility: z.number().optional(),
+    broker: z.number().optional(),
+    lane: z.number().optional(),
+    location: z.number().optional(),
+  }).optional(),
 });
 
 export const insertClientSchema = clientSchema.partial({ id: true }).extend({

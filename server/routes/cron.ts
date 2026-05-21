@@ -9,6 +9,7 @@
 import type { Express, Request, Response } from "express";
 import crypto from "node:crypto";
 import { refreshFromEia } from "../lib/ai/fuel";
+import { storage } from "../storage";
 
 function timingSafeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
@@ -43,6 +44,30 @@ export function registerCronRoutes(app: Express): void {
   // Body: none.
   // Response: { refreshed, fetchedAt, changes: [{padd, before, after}] }
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // POST /api/cron/rescore
+  //
+  // Drops all cached load_scores so the next /api/dispatch/board call (or any
+  // scoreLoadForClient invocation) recomputes from scratch with current
+  // fuel/location/broker_history/lane_history state.
+  //
+  // Should run AFTER /api/cron/refresh-fuel (fuel prices changed → net_profit
+  // changed) or when a driver's location was updated significantly.
+  // -------------------------------------------------------------------------
+  app.post("/api/cron/rescore", (req: Request, res: Response) => {
+    if (!requireCronSecret(req, res)) return;
+    try {
+      storage.invalidateLoadScores();
+      return res.json({ ok: true, invalidatedAt: new Date().toISOString() });
+    } catch (err) {
+      console.error("[cron/rescore] failed:", err);
+      return res.status(500).json({
+        message: "Rescore failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
   app.post("/api/cron/refresh-fuel", async (req: Request, res: Response) => {
     if (!requireCronSecret(req, res)) return;
 

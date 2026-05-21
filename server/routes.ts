@@ -313,8 +313,42 @@ function calculatePickupFeasibility(client: Client, load: Load, deadheadMiles: n
 }
 
 function scoreLoadForClient(client: Client, load: Load): ScoredLoad | null {
-  if (client.equipment !== load.equipment) return null;
+  // -------------------------------------------------------------------------
+  // Phase 5 hard filters — these reject before scoring even starts. Skipping
+  // means the load never appears in dispatcher view (different from verdict
+  // 'skip' which means "we ranked it and it lost").
+  // -------------------------------------------------------------------------
+  const equipmentTypes = (client as Client & { equipmentTypes?: string[] }).equipmentTypes;
+  const equipmentMatch = equipmentTypes?.length
+    ? equipmentTypes.includes(load.equipment)
+    : client.equipment === load.equipment;
+  if (!equipmentMatch) return null;
+
   if (client.avoidStates.includes(load.originState) || client.avoidStates.includes(load.destinationState)) {
+    return null;
+  }
+
+  const extras = client as Client & {
+    maxGvwLbs?: number;
+    blockedBrokers?: string[];
+    hoursAvailable?: number;
+    payCentsPerMile?: number;
+    payPctOfGross?: number;
+    tollsCostPerMile?: number;
+    wearCostPerMile?: number;
+  };
+
+  // Weight cap on truck/trailer combined
+  const loadWeight = (load as Load & { weightLbs?: number }).weightLbs;
+  if (extras.maxGvwLbs && loadWeight && loadWeight > extras.maxGvwLbs) return null;
+
+  // Broker blacklist by MC#
+  const brokerMc = (load as Load & { brokerMc?: string }).brokerMc;
+  if (brokerMc && extras.blockedBrokers?.includes(brokerMc)) return null;
+
+  // HOS: assume avg 50mph, so total trip hours = miles/50. Reject if it
+  // exceeds available hours. Driver-pay model assumed cpm-based later.
+  if (extras.hoursAvailable !== undefined && load.loadedMiles / 50 > extras.hoursAvailable) {
     return null;
   }
 
@@ -325,7 +359,18 @@ function scoreLoadForClient(client: Client, load: Load): ScoredLoad | null {
   const totalMiles = load.loadedMiles + deadheadMiles;
   const deadheadRatio = deadheadMiles / totalMiles;
   const fuelCost = (totalMiles / client.mpg) * client.fuelPrice;
-  const fixedCost = totalMiles * client.fixedCostPerMile;
+  // Phase 5: split fixedCost into addressable categories. Falls back to the
+  // legacy single number when client doesn't expose breakdowns.
+  const tollsCost = totalMiles * (extras.tollsCostPerMile ?? 0);
+  const wearCost = totalMiles * (extras.wearCostPerMile ?? 0);
+  const baseFixedCost = totalMiles * client.fixedCostPerMile;
+  const driverPay =
+    extras.payCentsPerMile !== undefined
+      ? totalMiles * (extras.payCentsPerMile / 100)
+      : extras.payPctOfGross !== undefined
+        ? load.rate * (extras.payPctOfGross / 100)
+        : 0;
+  const fixedCost = baseFixedCost + tollsCost + wearCost + driverPay;
   const estimatedNet = load.rate - fuelCost - fixedCost;
   const loadedPpm = load.rate / load.loadedMiles;
   const totalPpm = load.rate / totalMiles;
@@ -387,6 +432,43 @@ function scoreLoadForClient(client: Client, load: Load): ScoredLoad | null {
     `${pickupFeasibility.replace("_", " ")} pickup`,
     `${locationConfidence} location confidence`,
   ];
+
+  // Phase 5: feed lane_history (one observation per (load, client) pair is
+  // fine — lane_history is keyed by (origin_state, dest_state) and we just
+  // accumulate). Cheap, idempotent-ish counts.
+  try {
+    storage.recordLaneObservation(load.originState, load.destinationState, load.rate, load.loadedMiles);
+  } catch (err) {
+    console.error("[score] lane_history write failed:", err);
+  }
+
+  // Phase 5: persist to load_scores so the cron poller / dispatch UI can
+  // pull pre-computed scores without re-running this whole pipeline. We
+  // store the breakdown so the UI can render "why".
+  try {
+    storage.upsertLoadScore({
+      loadId: load.id,
+      clientId: client.id,
+      dispatchScore,
+      verdict,
+      estimatedNet: Math.round(estimatedNet),
+      breakdown: {
+        fuelCost: Math.round(fuelCost),
+        tollsCost: Math.round(tollsCost),
+        wearCost: Math.round(wearCost),
+        baseFixedCost: Math.round(baseFixedCost),
+        driverPay: Math.round(driverPay),
+        deadheadMiles,
+        totalMiles,
+        netPpmTotal: Number(netPpmTotal.toFixed(3)),
+        counterOffer,
+        warnings,
+      },
+    });
+  } catch (err) {
+    // Cache write is best-effort; don't fail the request.
+    console.error("[score] cache write failed:", err);
+  }
 
   return {
     ...load,
