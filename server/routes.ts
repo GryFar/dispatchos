@@ -35,6 +35,7 @@ import {
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
 import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
+import { registerAdminIntegrationTestsRoutes } from "./routes/admin-integrations-tests";
 import { registerMeRoutes } from "./routes/me";
 import { registerDispatchRoutes } from "./routes/dispatch";
 import { registerLeadRoutes } from "./routes/leads";
@@ -1088,6 +1089,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // of double-gating through `requireRole.any()`. See server/routes/admin.ts.
   // -------------------------------------------------------------------------
   registerAdminRoutes(app);
+
+  // Admin integration live-test endpoints. POST /api/admin/integrations/test/:id
+  // fires a real network probe at each connector (FMCSA, Resend, Telegram,
+  // EIA, Google Maps, Sentry DSN shape, inbound-email loop). 5min in-memory
+  // cache per integration so dispatchers can't accidentally rate-limit us.
+  registerAdminIntegrationTestsRoutes(app, requireRole("admin"));
 
   // -------------------------------------------------------------------------
   // Phase 4 driver portal routes (P0). Same registration pattern as admin —
