@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
+import type { Client } from "@shared/schema";
 import { z } from "zod";
 import {
   AlertTriangle,
@@ -62,6 +63,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+} from "@/components/ui/command";
+import { Check, ChevronsUpDown } from "lucide-react";
 
 type UserListResponse = {
   items: UserPublic[];
@@ -688,14 +698,13 @@ function CreateInviteDialog({
 
               {form.watch("role") === "driver" && (
                 <div className="space-y-1.5">
-                  <Label htmlFor="linkedClientId">Привязать к клиенту (опционально)</Label>
-                  <Input
-                    id="linkedClientId"
-                    placeholder="cli_..."
-                    {...form.register("linkedClientId")}
+                  <Label>Привязать к клиенту (опционально)</Label>
+                  <ClientCombobox
+                    value={form.watch("linkedClientId") || ""}
+                    onChange={(v) => form.setValue("linkedClientId", v)}
                   />
                   <p className="text-[11px] text-muted-foreground">
-                    Driver увидит только своего клиента.
+                    Driver увидит только своего клиента. Доступно при роли «Водитель».
                   </p>
                 </div>
               )}
@@ -1067,5 +1076,95 @@ function ResetTotpQRView({
         <Button onClick={onClose}>Я передал секрет</Button>
       </DialogFooter>
     </>
+  );
+}
+// ===========================================================================
+// ClientCombobox — searchable client picker for invite form
+// ===========================================================================
+function ClientCombobox({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const { data: clients = [], isLoading } = useQuery<Client[]>({
+    queryKey: ["/api/clients"],
+    queryFn: () => apiJson<Client[]>("GET", "/api/clients"),
+    staleTime: 60_000,
+  });
+
+  const selected = clients.find((c) => c.id === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between font-normal"
+        >
+          {selected ? (
+            <span className="flex flex-col items-start text-left">
+              <span className="text-sm">{selected.name}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {selected.mc} · {selected.id}
+              </span>
+            </span>
+          ) : (
+            <span className="text-muted-foreground">
+              {isLoading ? "Загрузка..." : "Выберите клиента"}
+            </span>
+          )}
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Поиск по имени, MC или ID..." />
+          <CommandEmpty>Клиенты не найдены.</CommandEmpty>
+          <CommandGroup className="max-h-64 overflow-auto">
+            {value && (
+              <CommandItem
+                value="__clear__"
+                onSelect={() => {
+                  onChange("");
+                  setOpen(false);
+                }}
+                className="text-muted-foreground"
+              >
+                Очистить выбор
+              </CommandItem>
+            )}
+            {clients.map((c) => (
+              <CommandItem
+                key={c.id}
+                value={`${c.name} ${c.mc} ${c.id}`}
+                onSelect={() => {
+                  onChange(c.id);
+                  setOpen(false);
+                }}
+              >
+                <Check
+                  className={`mr-2 h-4 w-4 ${
+                    value === c.id ? "opacity-100" : "opacity-0"
+                  }`}
+                />
+                <div className="flex flex-col">
+                  <span className="text-sm">{c.name}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {c.mc} · {c.id}
+                  </span>
+                </div>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
