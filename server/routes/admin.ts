@@ -36,7 +36,9 @@ import {
   resolveApprovalTaskSchema,
   updateUserSchema,
   userRoleSchema,
+  clientSchema,
   type UserPublic,
+  type Client,
 } from "@shared/schema";
 import {
   buildOtpAuthUrl,
@@ -1278,6 +1280,76 @@ export function registerAdminRoutes(app: Express): void {
       : 20;
     const items = storage.listEmailIngest(limit);
     res.json({ items, limit });
+  });
+  // -------------------------------------------------------------------------
+  // GET /api/admin/clients/:id
+  //
+  // Single-client detail fetch for the admin profile editor at
+  // /admin/clients/:id. The existing GET /api/clients returns the full
+  // list with all fields; this endpoint exists to make per-row fetching
+  // explicit and to keep the door open for per-client computed fields
+  // later (load stats, score history, etc) without polluting the list
+  // response shape.
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/clients/:id", admin, (req, res) => {
+    const client = storage.getClient(String(req.params.id));
+    if (!client) {
+      return res.status(404).json({ message: "Client not found" });
+    }
+    return res.json(client);
+  });
+
+  // -------------------------------------------------------------------------
+  // PATCH /api/admin/clients/:id
+  //
+  // Partial update of a client profile. Used by the admin profile editor
+  // to fill in smart-matching fields (equipmentTypes, maxGvwLbs,
+  // payCentsPerMile, blockedBrokers, hoursAvailable, etc) added by
+  // PR #38 — Никита's scoreLoadForClient reads these but currently
+  // there is no UI to set them.
+  //
+  // Behavior:
+  //   - 404 if client doesn't exist
+  //   - Body is a partial Client (any subset of fields). `id` in body
+  //     is ignored; URL param wins.
+  //   - Validates merged object against clientSchema (the schema after
+  //     the merge, NOT the partial — otherwise unknown fields slip in).
+  //   - Delegates persistence to storage.upsertClient(), which emits
+  //     a `client.updated` audit event with the new full payload.
+  //
+  // Note: storage.upsertClient already handles audit. We add an extra
+  // `client.profile_patched` audit AFTER the upsert so we have a
+  // narrower-grained signal for "admin edited via profile UI" vs
+  // generic "client was upserted (could be CSV import etc)".
+  // -------------------------------------------------------------------------
+  app.patch("/api/admin/clients/:id", admin, (req, res) => {
+    const existing = storage.getClient(String(req.params.id));
+    if (!existing) {
+      return res.status(404).json({ message: "Client not found" });
+    }
+
+    const body = (req.body && typeof req.body === "object" ? req.body : {}) as Partial<Client>;
+    // strip id from body — URL param is authoritative
+    const { id: _ignored, ...patch } = body;
+
+    const merged: Client = { ...existing, ...patch, id: existing.id };
+
+    const parsed = clientSchema.safeParse(merged);
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: "Validation failed",
+        issues: parsed.error.issues,
+      });
+    }
+
+    const saved = storage.upsertClient(parsed.data);
+
+    // Narrower-grained audit for the profile editor flow specifically.
+    storage.audit("client.profile_patched", "client", saved.id, {
+      patchedFields: Object.keys(patch),
+    });
+
+    return res.json(saved);
   });
 }
 

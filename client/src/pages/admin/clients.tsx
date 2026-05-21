@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -135,12 +136,15 @@ function ClientsTable({ rows, loading }: { rows: Client[]; loading: boolean }) {
       key: "name",
       header: "Клиент",
       cell: (c) => (
-        <div className="min-w-0">
+        <Link
+          href={`/clients/${c.id}`}
+          className="block min-w-0 transition-colors hover:text-primary"
+        >
           <p className="truncate font-medium">{c.name}</p>
           <p className="truncate text-xs text-muted-foreground">
             <McCell value={c.mc} />
           </p>
-        </div>
+        </Link>
       ),
     },
     {

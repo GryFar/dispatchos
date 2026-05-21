@@ -29,6 +29,7 @@ import BillingPage from "@/pages/admin/billing";
 import SettingsPage from "@/pages/admin/settings";
 import IntegrationsPage from "@/pages/admin/integrations";
 import EmailInboxPage from "@/pages/admin/email-inbox";
+import ClientDetailPage from "@/pages/admin/client-detail";
 
 // Phase 4 P0 — driver portal at /d/*
 import { DriverShell } from "@/pages/driver/_shell";
@@ -144,6 +145,7 @@ function AdminRouter() {
         <Route path="/users" component={UsersPage} />
         <Route path="/assignments" component={AssignmentsPage} />
         <Route path="/clients" component={ClientsPage} />
+        <Route path="/clients/:id" component={ClientDetailPage} />
         <Route path="/loads" component={LoadsPage} />
         <Route path="/brokers" component={BrokersPage} />
         <Route path="/documents" component={DocumentsPage} />
