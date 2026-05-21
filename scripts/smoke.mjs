@@ -2611,7 +2611,77 @@ try {
     if (!/403/.test(e.message)) throw e;
   }
   console.log("[OK] Admin /api/admin/integrations blocks non-admin (403)");
-  
+
+  // -- Admin client profile editor: GET /api/admin/clients/:id ---------------
+  cookieHeader = p4AdminCookie;
+
+  const allClientsList = await request("/api/clients");
+  if (!Array.isArray(allClientsList) || allClientsList.length === 0) {
+    throw new Error("Admin client profile: no clients in fixture to test against");
+  }
+  const profileTarget = allClientsList[0];
+
+  const profileFetched = await request(`/api/admin/clients/${profileTarget.id}`);
+  if (profileFetched.id !== profileTarget.id) {
+    throw new Error(`Admin GET /api/admin/clients/:id returned wrong id: ${profileFetched.id}`);
+  }
+  for (const required of ["name", "mc", "equipment", "currentLocation"]) {
+    if (!(required in profileFetched)) {
+      throw new Error(`Admin client profile: response missing '${required}'`);
+    }
+  }
+  try {
+    await request("/api/admin/clients/does-not-exist-xyz");
+    throw new Error("Admin GET /api/admin/clients/:id should 404 on unknown id");
+  } catch (e) {
+    if (!/404/.test(e.message)) throw e;
+  }
+  console.log("[OK] Admin GET /api/admin/clients/:id (shape + 404)");
+
+  // -- Admin client profile editor: PATCH /api/admin/clients/:id ------------
+  const patchPayload = {
+    maxGvwLbs: 80000,
+    payCentsPerMile: 0.65,
+    blockedBrokers: ["123456", "789012"],
+    tollsCostPerMile: 0.05,
+    wearCostPerMile: 0.15,
+  };
+  const patchResult = await request(`/api/admin/clients/${profileTarget.id}`, {
+    method: "PATCH",
+    body: patchPayload,
+  });
+  if (patchResult.maxGvwLbs !== 80000) {
+    throw new Error(`Admin PATCH client: maxGvwLbs not persisted, got ${patchResult.maxGvwLbs}`);
+  }
+  if (patchResult.payCentsPerMile !== 0.65) {
+    throw new Error(`Admin PATCH client: payCentsPerMile not persisted, got ${patchResult.payCentsPerMile}`);
+  }
+  if (!Array.isArray(patchResult.blockedBrokers) || patchResult.blockedBrokers.length !== 2) {
+    throw new Error("Admin PATCH client: blockedBrokers not persisted as array");
+  }
+  const reFetched = await request(`/api/admin/clients/${profileTarget.id}`);
+  if (reFetched.maxGvwLbs !== 80000) {
+    throw new Error("Admin PATCH client: re-fetch shows maxGvwLbs not persisted");
+  }
+  const auditAfterPatch = await request("/api/audit?eventType=client.profile_patched&limit=1");
+  if (!Array.isArray(auditAfterPatch.items) || auditAfterPatch.items.length === 0) {
+    throw new Error("Admin PATCH client: audit event 'client.profile_patched' missing");
+  }
+  console.log("[OK] Admin PATCH /api/admin/clients/:id (saves smart-matching fields + audit)");
+
+  // -- RBAC: dispatcher cannot edit client profiles -------------------------
+  cookieHeader = dispCookie;
+  try {
+    await request(`/api/admin/clients/${profileTarget.id}`, {
+      method: "PATCH",
+      body: { maxGvwLbs: 99999 },
+    });
+    throw new Error("Admin PATCH client: dispatcher must be blocked (403)");
+  } catch (e) {
+    if (!/403/.test(e.message)) throw e;
+  }
+  console.log("[OK] Admin PATCH /api/admin/clients/:id blocks non-admin (403)");
+
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);
