@@ -36,6 +36,7 @@ import { localDriveRoot, storage, uploadsRoot } from "./storage";
 import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerAdminIntegrationTestsRoutes } from "./routes/admin-integrations-tests";
+import { registerAdminLoadSourcesRoutes } from "./routes/admin-load-sources";
 import { registerMeRoutes } from "./routes/me";
 import { registerDispatchRoutes } from "./routes/dispatch";
 import { registerLeadRoutes } from "./routes/leads";
@@ -1095,6 +1096,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // EIA, Google Maps, Sentry DSN shape, inbound-email loop). 5min in-memory
   // cache per integration so dispatchers can't accidentally rate-limit us.
   registerAdminIntegrationTestsRoutes(app, requireRole("admin"));
+
+  // Phase 6: admin CRUD for load_sources (broker board connectors).
+  // Read /api/admin/load-sources/adapters for the dropdown, then POST to
+  // create. Credentials are encrypted via DISPATCHOS_KEYRING_PRIMARY.
+  registerAdminLoadSourcesRoutes(app, requireRole("admin"));
 
   // -------------------------------------------------------------------------
   // Phase 4 driver portal routes (P0). Same registration pattern as admin —

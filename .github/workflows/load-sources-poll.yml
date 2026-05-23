@@ -1,0 +1,48 @@
+name: Poll Load Sources
+
+# Drives the BoardAdapter cron pipeline. Every 5 min, POST to
+# /api/cron/run-load-sources — backend picks up all active load_sources
+# rows due for polling and runs them in parallel.
+#
+# Required GitHub secret (already set): CRON_SECRET
+#   must match Fly secret DISPATCHOS_CRON_SECRET on dispatchos-demo.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: load-sources-poll
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: POST /api/cron/run-load-sources
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BOT_TOKEN: ${{ secrets.TELEGRAM_ALERT_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+        run: |
+          set +e
+          RESP=$(mktemp)
+          CODE=$(curl -s -o "$RESP" -w "%{http_code}" \
+            -X POST "https://demo.dispatchos.co/api/cron/run-load-sources" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            --max-time 90)
+          echo "HTTP: $CODE"
+          echo "Body: $(cat "$RESP")"
+          if [ "$CODE" != "200" ]; then
+            MSG=$(printf '⚠️ <b>Load sources poll failed</b>\nHTTP %s\n%s\n\n<i>Run:</i> %s' \
+              "$CODE" \
+              "$(head -c 300 "$RESP")" \
+              "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -nc --arg c "$CHAT_ID" --arg t "$MSG" \
+                    '{chat_id:$c,text:$t,parse_mode:"HTML",disable_web_page_preview:true}')" > /dev/null
+            exit 1
+          fi
