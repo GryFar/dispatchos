@@ -371,6 +371,40 @@ export function registerAdminRoutes(app: Express): void {
   );
 
   // -------------------------------------------------------------------------
+  // DELETE /api/admin/users/:id — soft delete (stamp deleted_at + block)
+  // -------------------------------------------------------------------------
+  app.delete(
+    "/api/admin/users/:id",
+    admin,
+    ah((req, res) => {
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+
+      const target = storage.getUserById(String(req.params.id));
+      if (!target) return res.status(404).json({ message: "User not found" });
+
+      // Cannot delete yourself.
+      if (target.id === actor.id) {
+        return res.status(400).json({ message: "Cannot delete yourself" });
+      }
+
+      // Last-active-admin protection: deleting forces blocked=1, so a delete
+      // of the last active admin is just as dangerous as blocking them.
+      const guardError = checkLastAdminProtection({
+        targetUserId: target.id,
+        currentRole: target.role,
+        currentBlocked: target.blocked,
+        patchBlocked: true,
+      });
+      if (guardError) return res.status(400).json({ message: guardError });
+
+      const deleted = storage.softDeleteUser(target.id, actor.id);
+      if (!deleted) return res.status(404).json({ message: "User not found" });
+      return res.json(storage.toUserPublic(deleted));
+    }),
+  );
+
+  // -------------------------------------------------------------------------
   // POST /api/admin/invites
   // -------------------------------------------------------------------------
   app.post(

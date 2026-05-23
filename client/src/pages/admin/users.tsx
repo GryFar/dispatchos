@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -218,6 +219,7 @@ function UsersTab() {
 }
 
 function UsersTable({ rows, loading, error }: { rows: UserPublic[]; loading: boolean; error: Error | null }) {
+  const [, setLocation] = useLocation();
   const [resetPwUser, setResetPwUser] = useState<UserPublic | null>(null);
   const [resetTotpUser, setResetTotpUser] = useState<UserPublic | null>(null);
 
@@ -313,6 +315,7 @@ function UsersTable({ rows, loading, error }: { rows: UserPublic[]; loading: boo
         columns={columns}
         rows={rows}
         loading={loading}
+        onRowClick={(u) => setLocation(`/users/${u.id}`)}
         empty={
           <EmptyState
             icon={<UsersIcon />}

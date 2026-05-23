@@ -703,9 +703,55 @@ try {
   }
   console.log("[OK] /api/admin/users filters (q, role)");
 
+  // -- DELETE /api/admin/users/:id (soft delete) ----------------------------
+  // Create a throwaway user specifically for the delete test so we don't
+  // disturb stubDriver (used by later filter/P1 assertions).
+  const toDelete = await request("/api/admin/users", {
+    method: "POST",
+    body: {
+      email: "stub.todelete@example.com",
+      fullName: "Delete Me",
+      role: "driver",
+    },
+  });
+
+  // Self-delete is refused (admin fat-finger guard).
+  let selfDeleteStatus = 0;
+  try {
+    await request(`/api/admin/users/${me.id}`, { method: "DELETE" });
+  } catch (err) {
+    selfDeleteStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (selfDeleteStatus !== 400) {
+    throw new Error(`self-delete returned ${selfDeleteStatus}, expected 400`);
+  }
+
+  // Delete the throwaway — should succeed, stamp deletedAt, force blocked.
+  const deletedUser = await request(`/api/admin/users/${toDelete.id}`, {
+    method: "DELETE",
+  });
+  if (!deletedUser.deletedAt) {
+    throw new Error("DELETE user did not stamp deletedAt");
+  }
+  if (deletedUser.blocked !== true) {
+    throw new Error("DELETE user should force blocked=true");
+  }
+
+  // Deleted user must disappear from default listing.
+  const afterUserDelete = await request("/api/admin/users?q=todelete&limit=50");
+  if (afterUserDelete.items.some((u) => u.id === toDelete.id)) {
+    throw new Error("LEAK: soft-deleted user still appears in default listing");
+  }
+
+  // GET by id still returns the record (admin can inspect deleted users).
+  const deletedFetch = await request(`/api/admin/users/${toDelete.id}`);
+  if (!deletedFetch.deletedAt) {
+    throw new Error("GET deleted user should still return record with deletedAt");
+  }
+  console.log("[OK] DELETE /api/admin/users/:id (soft delete + hidden from list + self-guard)");
+
   // -------------------------------------------------------------------------
   // Phase 3 — P1 checks (reset-password, reset-totp, revoke invite, assignments)
-  // -------------------------------------------------------------------------
 
   // We need a real-pw user we can log in as. The dispatcher created in P0
   // (smoke.dispatcher@example.com) qualifies — bring them back for testing.

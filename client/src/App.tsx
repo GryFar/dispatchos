@@ -30,6 +30,7 @@ import SettingsPage from "@/pages/admin/settings";
 import IntegrationsPage from "@/pages/admin/integrations";
 import EmailInboxPage from "@/pages/admin/email-inbox";
 import ClientDetailPage from "@/pages/admin/client-detail";
+import UserDetailPage from "@/pages/admin/user-detail";
 
 // Phase 4 P0 — driver portal at /d/*
 import { DriverShell } from "@/pages/driver/_shell";
@@ -143,6 +144,7 @@ function AdminRouter() {
       <Switch>
         <Route path="/" component={DashboardPage} />
         <Route path="/users" component={UsersPage} />
+        <Route path="/users/:id" component={UserDetailPage} />
         <Route path="/assignments" component={AssignmentsPage} />
         <Route path="/clients" component={ClientsPage} />
         <Route path="/clients/:id" component={ClientDetailPage} />
