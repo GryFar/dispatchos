@@ -308,11 +308,14 @@ function ensureUserDriverColumns() {
     //  DEFAULT is supplied.)
     sqlite.exec("ALTER TABLE users ADD COLUMN driver_status TEXT NOT NULL DEFAULT 'available'");
   }
+
   if (!names.has("telegram_chat_id")) {
-    // Phase 4 P2: TG driver bot. Nullable; only set after a driver links
-    // their account by sending an invite code to @DispatchOS_Bot. We index
-    // it because the bot webhook does a chat_id→user lookup on every msg.
     sqlite.exec("ALTER TABLE users ADD COLUMN telegram_chat_id TEXT");
+  }
+  if (!names.has("deleted_at")) {
+    // Soft-delete marker. Nullable; set to ISO timestamp when an admin
+    // removes a user. Kept for FK integrity with loads/audit/assignments.
+    sqlite.exec("ALTER TABLE users ADD COLUMN deleted_at TEXT");
   }
 }
 ensureUserDriverColumns();
@@ -535,6 +538,8 @@ interface UserRow {
   driver_status: string | null;
   // Phase 4 P2: TG driver bot. Nullable until the driver links.
   telegram_chat_id: string | null;
+  // Soft-delete marker (added via ensureUserDriverColumns()).
+  deleted_at: string | null;
 }
 
 export interface UserInternal {
@@ -558,6 +563,8 @@ export interface UserInternal {
   // Phase 4 P2: TG chat_id (string — TG IDs are int64 which overflows JS
   // number; we store as text everywhere).
   telegramChatId?: string;
+  // Soft-delete marker. Set = removed by admin (distinct from blocked).
+  deletedAt?: string;
 }
 
 function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
@@ -586,6 +593,7 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     phone: row.phone ?? undefined,
     driverStatus,
     telegramChatId: row.telegram_chat_id ?? undefined,
+    deletedAt: row.deleted_at ?? undefined,
   };
 }
 
@@ -605,6 +613,7 @@ function toUserPublic(user: UserInternal, extras?: { assignedClientIds?: string[
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt,
+    deletedAt: user.deletedAt ?? null,
   };
 }
 
@@ -697,6 +706,9 @@ export const storage = {
     if (!filter?.includeBlocked) {
       query += " AND blocked = 0";
     }
+    // Soft-deleted users are excluded from all default listings. They remain
+    // in the table for FK integrity but never appear in lists/exports.
+    query += " AND deleted_at IS NULL";
     query += " ORDER BY created_at ASC";
     const rows = sqlite.prepare(query).all(...params) as UserRow[];
     return rows.map((row) => rowToUserInternal(row)!).filter(Boolean);
@@ -727,7 +739,8 @@ export const storage = {
 
     const where: string[] = ["1=1"];
     const params: any[] = [];
-
+    // Soft-deleted users never appear in the admin paginated listing.
+    where.push("deleted_at IS NULL");
     if (filter.role) {
       where.push("role = ?");
       params.push(filter.role);
@@ -877,6 +890,27 @@ export const storage = {
     this.audit("user.updated", "user", id, {
       patch: { ...patch, passwordSalt: undefined, passwordHash: undefined, totpSecret: undefined },
       actorUserId,
+    });
+    return this.getUserById(id);
+  },
+
+  /**
+   * Soft-delete a user: stamp deleted_at + force blocked=1. The row is kept
+   * for FK integrity (loads.driver_id, audit_events.actor, assignments). The
+   * user disappears from all default listings and can no longer authenticate.
+   */
+  softDeleteUser(id: string, actorUserId?: string): UserInternal | undefined {
+    const existing = this.getUserById(id);
+    if (!existing) return undefined;
+    if (existing.deletedAt) return existing; // already deleted, idempotent
+    const ts = now();
+    sqlite
+      .prepare("UPDATE users SET deleted_at = ?, blocked = 1, updated_at = ? WHERE id = ?")
+      .run(ts, ts, id);
+    this.audit("user.deleted", "user", id, {
+      actorUserId,
+      email: existing.email,
+      role: existing.role,
     });
     return this.getUserById(id);
   },

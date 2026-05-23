@@ -278,6 +278,10 @@ export const userPublicSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   lastLoginAt: z.string().optional(),
+  // Soft-delete marker. null/absent = active. Set = user was removed by an
+  // admin (distinct from `blocked`, which is a reversible suspension). The
+  // row is kept for FK integrity (loads.driverId, audit_events, assignments).
+  deletedAt: z.string().nullable().optional(),
 });
 
 // Input schema for admin creating a new user (no password — set via invite
