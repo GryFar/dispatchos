@@ -296,6 +296,50 @@ function ensureLoadDriverColumn() {
 }
 ensureLoadDriverColumn();
 
+// Phase 6 load_sources: dedup loads by upstream id. Both nullable so legacy
+// CSV/manual loads keep working unchanged. UNIQUE partial index ensures
+// dedup only on rows that came from an adapter.
+function ensureLoadSourceColumns() {
+  const cols = sqlite.prepare("PRAGMA table_info(loads)").all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("source_id")) {
+    sqlite.exec("ALTER TABLE loads ADD COLUMN source_id TEXT");
+  }
+  if (!names.has("source_external_id")) {
+    sqlite.exec("ALTER TABLE loads ADD COLUMN source_external_id TEXT");
+  }
+}
+ensureLoadSourceColumns();
+sqlite.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS loads_source_external_uq ON loads(source_id, source_external_id) WHERE source_id IS NOT NULL",
+);
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS load_sources (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    adapter_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    credentials_enc TEXT,
+    credentials_iv TEXT,
+    credentials_key_id TEXT,
+    poll_interval_min INTEGER NOT NULL DEFAULT 5,
+    last_polled_at TEXT,
+    last_loads_found INTEGER NOT NULL DEFAULT 0,
+    last_error_at TEXT,
+    last_error_msg TEXT,
+    failure_streak INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    created_by TEXT
+  )
+`);
+sqlite.exec("CREATE INDEX IF NOT EXISTS load_sources_adapter_status_idx ON load_sources(adapter_key, status)");
+sqlite.exec("CREATE INDEX IF NOT EXISTS load_sources_client_idx ON load_sources(client_id)");
+sqlite.exec("CREATE INDEX IF NOT EXISTS load_sources_poll_idx ON load_sources(status, last_polled_at)");
+
 function ensureUserDriverColumns() {
   const cols = sqlite.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   const names = new Set(cols.map((c) => c.name));
@@ -565,6 +609,32 @@ export interface UserInternal {
   telegramChatId?: string;
   // Soft-delete marker. Set = removed by admin (distinct from blocked).
   deletedAt?: string;
+}
+
+// Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
+// with how Vlad's admin layer expects to read these.
+function rowToLoadSource(row: any) {
+  return {
+    id: row.id as string,
+    clientId: row.client_id as string,
+    adapterKey: row.adapter_key as string,
+    label: row.label as string,
+    status: row.status as string,
+    configJson: row.config_json ? JSON.parse(row.config_json) : {},
+    hasCredentials: Boolean(row.credentials_enc),
+    credentialsEnc: row.credentials_enc as string | null,
+    credentialsIv: row.credentials_iv as string | null,
+    credentialsKeyId: row.credentials_key_id as string | null,
+    pollIntervalMin: row.poll_interval_min as number,
+    lastPolledAt: row.last_polled_at as string | null,
+    lastLoadsFound: row.last_loads_found as number,
+    lastErrorAt: row.last_error_at as string | null,
+    lastErrorMsg: row.last_error_msg as string | null,
+    failureStreak: row.failure_streak as number,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+    createdBy: row.created_by as string | null,
+  };
 }
 
 function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
@@ -2670,6 +2740,172 @@ export const storage = {
         sum_miles      = sum_miles + excluded.sum_miles,
         last_seen_at   = excluded.last_seen_at
     `).run(originState.toUpperCase(), destState.toUpperCase(), rate, miles, now());
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 6 load_sources CRUD + cron picker.
+  // The cron poller calls listLoadSourcesDueForPoll() every 5 min.
+  // -------------------------------------------------------------------------
+  createLoadSource(input: {
+    clientId: string;
+    adapterKey: string;
+    label: string;
+    configJson?: Record<string, unknown>;
+    credentialsEnc?: string | null;
+    credentialsIv?: string | null;
+    credentialsKeyId?: string | null;
+    pollIntervalMin?: number;
+    status?: string;
+    createdBy?: string;
+  }) {
+    const id = makeId("ls");
+    const t = now();
+    sqlite.prepare(`
+      INSERT INTO load_sources (
+        id, client_id, adapter_key, label, status, config_json,
+        credentials_enc, credentials_iv, credentials_key_id,
+        poll_interval_min, created_at, updated_at, created_by
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      id,
+      input.clientId,
+      input.adapterKey,
+      input.label,
+      input.status ?? "active",
+      JSON.stringify(input.configJson ?? {}),
+      input.credentialsEnc ?? null,
+      input.credentialsIv ?? null,
+      input.credentialsKeyId ?? null,
+      Math.max(1, Math.min(1440, input.pollIntervalMin ?? 5)),
+      t,
+      t,
+      input.createdBy ?? null,
+    );
+    return this.getLoadSource(id);
+  },
+
+  getLoadSource(id: string) {
+    const row = sqlite.prepare("SELECT * FROM load_sources WHERE id = ?").get(id) as any;
+    return row ? rowToLoadSource(row) : undefined;
+  },
+
+  listLoadSources(filter?: { clientId?: string; status?: string; adapterKey?: string }) {
+    let sql = "SELECT * FROM load_sources WHERE 1=1";
+    const args: any[] = [];
+    if (filter?.clientId) { sql += " AND client_id = ?"; args.push(filter.clientId); }
+    if (filter?.status)   { sql += " AND status = ?";    args.push(filter.status); }
+    if (filter?.adapterKey) { sql += " AND adapter_key = ?"; args.push(filter.adapterKey); }
+    sql += " ORDER BY created_at DESC";
+    const rows = sqlite.prepare(sql).all(...args) as any[];
+    return rows.map(rowToLoadSource);
+  },
+
+  listLoadSourcesDueForPoll() {
+    // SQLite datetime comparison via julianday. We pick active sources whose
+    // last_polled_at is null OR older than (now - poll_interval_min minutes).
+    const rows = sqlite.prepare(`
+      SELECT * FROM load_sources
+      WHERE status = 'active'
+        AND (last_polled_at IS NULL
+             OR julianday('now') - julianday(last_polled_at) > poll_interval_min / 1440.0)
+      ORDER BY (last_polled_at IS NULL) DESC, last_polled_at ASC
+    `).all() as any[];
+    return rows.map(rowToLoadSource);
+  },
+
+  updateLoadSource(id: string, patch: Record<string, unknown>) {
+    const map: Record<string, string> = {
+      label: "label",
+      status: "status",
+      configJson: "config_json",
+      credentialsEnc: "credentials_enc",
+      credentialsIv: "credentials_iv",
+      credentialsKeyId: "credentials_key_id",
+      pollIntervalMin: "poll_interval_min",
+    };
+    const sets: string[] = [];
+    const args: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      const col = map[k];
+      if (!col) continue;
+      sets.push(`${col} = ?`);
+      args.push(k === "configJson" ? JSON.stringify(v ?? {}) : v);
+    }
+    if (sets.length === 0) return this.getLoadSource(id);
+    sets.push("updated_at = ?");
+    args.push(now());
+    args.push(id);
+    sqlite.prepare(`UPDATE load_sources SET ${sets.join(", ")} WHERE id = ?`).run(...args);
+    return this.getLoadSource(id);
+  },
+
+  recordLoadSourcePoll(id: string, result: {
+    loadsFound: number;
+    errorMessage?: string | null;
+  }) {
+    const t = now();
+    if (result.errorMessage) {
+      sqlite.prepare(`
+        UPDATE load_sources
+        SET last_polled_at = ?,
+            last_error_at = ?,
+            last_error_msg = SUBSTR(?, 1, 500),
+            failure_streak = failure_streak + 1,
+            status = CASE WHEN failure_streak + 1 >= 3 THEN 'paused' ELSE status END,
+            updated_at = ?
+        WHERE id = ?
+      `).run(t, t, result.errorMessage, t, id);
+    } else {
+      sqlite.prepare(`
+        UPDATE load_sources
+        SET last_polled_at = ?,
+            last_loads_found = ?,
+            last_error_at = NULL,
+            last_error_msg = NULL,
+            failure_streak = 0,
+            updated_at = ?
+        WHERE id = ?
+      `).run(t, result.loadsFound, t, id);
+    }
+  },
+
+  /**
+   * Upsert a Load coming from an adapter. Returns { id, inserted } so the
+   * cron pipeline knows whether to fire scoreLoadForClient + TG alert.
+   * For non-source loads (manual, CSV) keep using the existing storage.upsertLoad.
+   */
+  upsertLoadFromSource(input: {
+    sourceId: string;
+    sourceExternalId: string;
+    clientId: string;
+    payload: Record<string, unknown>;
+  }): { id: string; inserted: boolean } {
+    const existing = sqlite.prepare(
+      "SELECT id FROM loads WHERE source_id = ? AND source_external_id = ?",
+    ).get(input.sourceId, input.sourceExternalId) as { id: string } | undefined;
+    if (existing) {
+      // Refresh rate / pickupAt only — leave broker_score etc untouched.
+      sqlite.prepare(`
+        UPDATE loads
+        SET payload = ?, updated_at = ?
+        WHERE id = ?
+      `).run(JSON.stringify(input.payload), now(), existing.id);
+      return { id: existing.id, inserted: false };
+    }
+    const id = makeId("load");
+    sqlite.prepare(`
+      INSERT INTO loads (id, client_id, payload, source_id, source_external_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.clientId,
+      JSON.stringify(input.payload),
+      input.sourceId,
+      input.sourceExternalId,
+      now(),
+      now(),
+    );
+    return { id, inserted: true };
   },
 
   getLaneAvgPpm(originState: string, destState: string): { avgPpm: number; loadsSeen: number } | undefined {

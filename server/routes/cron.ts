@@ -10,6 +10,8 @@ import type { Express, Request, Response } from "express";
 import crypto from "node:crypto";
 import { refreshFromEia } from "../lib/ai/fuel";
 import { storage } from "../storage";
+import { getAdapter } from "../lib/adapters";
+import { decryptCredentials } from "../lib/crypto/keyring";
 
 function timingSafeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
@@ -66,6 +68,73 @@ export function registerCronRoutes(app: Express): void {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/cron/run-load-sources
+  //
+  // For each active load_sources row whose last_polled_at is older than its
+  // poll_interval_min: authenticate → fetchLoads → normalize → upsert.
+  // New rows fire a TG alert (handled by Vlad's existing notify path or
+  // future smart-matching push). Failures auto-pause after 3 in a row.
+  // -------------------------------------------------------------------------
+  app.post("/api/cron/run-load-sources", async (req: Request, res: Response) => {
+    if (!requireCronSecret(req, res)) return;
+
+    const sources = storage.listLoadSourcesDueForPoll();
+    const results = await Promise.allSettled(sources.map(async (src) => {
+      const t0 = Date.now();
+      const adapter = getAdapter(src.adapterKey);
+      if (!adapter) {
+        storage.recordLoadSourcePoll(src.id, { loadsFound: 0, errorMessage: `Unknown adapter: ${src.adapterKey}` });
+        return { id: src.id, ok: false, error: "unknown_adapter" };
+      }
+      try {
+        let credsPlain: Record<string, string> | undefined;
+        if (adapter.requiresCredentials && src.credentialsEnc && src.credentialsIv && src.credentialsKeyId) {
+          credsPlain = decryptCredentials({
+            ciphertext: src.credentialsEnc,
+            iv: src.credentialsIv,
+            keyId: src.credentialsKeyId as "primary" | "secondary",
+          });
+        }
+        const rowForAdapter = { ...src, credentialsPlaintext: credsPlain } as any;
+        await adapter.authenticate(rowForAdapter);
+        const raws = await adapter.fetchLoads(rowForAdapter);
+        let inserted = 0;
+        for (const raw of raws) {
+          const norm = adapter.normalizeToLoad(raw, rowForAdapter);
+          const { inserted: wasNew } = storage.upsertLoadFromSource({
+            sourceId: src.id,
+            sourceExternalId: norm.sourceExternalId,
+            clientId: src.clientId,
+            payload: norm as unknown as Record<string, unknown>,
+          });
+          if (wasNew) inserted += 1;
+        }
+        storage.recordLoadSourcePoll(src.id, { loadsFound: raws.length });
+        storage.audit("load_source.polled", "load_source", src.id, {
+          loadsFound: raws.length,
+          loadsNew: inserted,
+          durationMs: Date.now() - t0,
+        });
+        return { id: src.id, ok: true, loadsFound: raws.length, loadsNew: inserted };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        storage.recordLoadSourcePoll(src.id, { loadsFound: 0, errorMessage: msg });
+        storage.audit("load_source.poll_failed", "load_source", src.id, {
+          error: msg,
+          durationMs: Date.now() - t0,
+        });
+        return { id: src.id, ok: false, error: msg };
+      }
+    }));
+
+    return res.json({
+      ok: true,
+      polled: sources.length,
+      results: results.map((r) => r.status === "fulfilled" ? r.value : { ok: false, error: String(r.reason) }),
+    });
   });
 
   app.post("/api/cron/refresh-fuel", async (req: Request, res: Response) => {
