@@ -1334,6 +1334,81 @@ export function registerAdminRoutes(app: Express): void {
   });
 
   // -------------------------------------------------------------------------
+  // GET /api/admin/loads/:id
+  //
+  // Full load detail page for admins. Same payload as the dispatcher's
+  // /api/dispatch/loads/:id PLUS:
+  //   - clientName / driverName (name-resolved IDs)
+  //   - checkins[] timeline
+  //   - events[] from audit_events scoped to this load
+  //   - scores[] from load_scores cache (per-client breakdown)
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/loads/:id", admin, (req, res) => {
+    const id = String(req.params.id);
+    const rawLoad = storage.getLoad(id);
+    if (!rawLoad) {
+      return res.status(404).json({ message: "Load not found" });
+    }
+    // Cast through `any` to read the additive fields (clientId, driverId,
+    // bookedAt) that live in loadFullSchema but not in the narrow Phase 1
+    // loadSchema. Same pattern used in storage.upsertLoad.
+    const load = rawLoad as typeof rawLoad & {
+      clientId?: string;
+      driverId?: string;
+      bookedAt?: string;
+    };
+
+    const client = load.clientId ? storage.getClient(load.clientId) : undefined;
+    const driver = load.driverId ? storage.getUserById(load.driverId) : undefined;
+
+    const checkins = storage.listCheckinsForLoad(id);
+
+    const events = storage.listAuditEventsPaginated({
+      entityType: "load",
+      entityId: id,
+      limit: 100,
+    }).items;
+
+    // load_scores is keyed (load_id, client_id). Pull all client rows that
+    // have a cached score for this load — helps when the same load was
+    // considered for several carriers.
+    const scores = storage.listClients().reduce<Array<{
+      clientId: string;
+      clientName: string;
+      dispatchScore: number;
+      verdict: string;
+      estimatedNet: number;
+      breakdown: unknown;
+      computedAt: string;
+    }>>((acc, c) => {
+      const s = storage.getLoadScore(id, c.id);
+      if (s) {
+        acc.push({
+          clientId: c.id,
+          clientName: c.name,
+          dispatchScore: s.dispatch_score,
+          verdict: s.verdict,
+          estimatedNet: s.estimated_net,
+          breakdown: JSON.parse(s.breakdown_json),
+          computedAt: s.computed_at,
+        });
+      }
+      return acc;
+    }, []);
+
+    return res.json({
+      load: {
+        ...load,
+        clientName: client?.name ?? null,
+        driverName: driver?.fullName ?? null,
+      },
+      checkins,
+      events,
+      scores,
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // PATCH /api/admin/clients/:id
   //
   // Partial update of a client profile. Used by the admin profile editor

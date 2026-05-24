@@ -63,6 +63,47 @@ function toLoadFull(load: unknown): LoadFull {
   return loadFullSchema.parse(load);
 }
 
+/**
+ * Phase 6: enrich a Load (or list of Loads) with denormalized human-readable
+ * names so the dispatcher UI doesn't render raw IDs. We pull clientName and
+ * driverName from already-loaded maps to keep this O(1) per load.
+ *
+ * Single endpoint use: build the maps once with buildNameMaps(...) then call
+ * enrichLoadWithNames per row. Both maps fall back to `undefined` if not
+ * found — frontend renders the raw ID as fallback.
+ */
+function buildNameMaps(loads: Array<{ clientId?: string; driverId?: string | null }>) {
+  const clientIds = Array.from(
+    new Set(loads.map((l) => l.clientId).filter((id): id is string => Boolean(id))),
+  );
+  const driverIds = Array.from(
+    new Set(loads.map((l) => l.driverId).filter((id): id is string => Boolean(id))),
+  );
+  const clientNames = new Map<string, string>(
+    storage
+      .listClients()
+      .filter((c) => clientIds.includes(c.id))
+      .map((c) => [c.id, c.name]),
+  );
+  const driverNames = new Map<string, string>();
+  for (const driverId of driverIds) {
+    const u = storage.getUserById(driverId);
+    if (u) driverNames.set(driverId, u.fullName);
+  }
+  return { clientNames, driverNames };
+}
+
+function enrichLoadWithNames<T extends { clientId?: string; driverId?: string | null }>(
+  load: T,
+  maps: { clientNames: Map<string, string>; driverNames: Map<string, string> },
+) {
+  return {
+    ...load,
+    clientName: load.clientId ? maps.clientNames.get(load.clientId) ?? null : null,
+    driverName: load.driverId ? maps.driverNames.get(load.driverId) ?? null : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Route registration
 // ---------------------------------------------------------------------------
@@ -187,8 +228,10 @@ export function registerDispatchRoutes(app: Express): void {
             : undefined,
       });
 
+      const items = out.items.map((l) => toLoadFull(l));
+      const maps = buildNameMaps(items);
       return res.json({
-        items: out.items.map((l) => toLoadFull(l)),
+        items: items.map((l) => enrichLoadWithNames(l, maps)),
         nextCursor: out.nextCursor,
         hasMore: out.hasMore,
         total: out.total,
@@ -215,7 +258,9 @@ export function registerDispatchRoutes(app: Express): void {
       if (!storage.loadIsVisibleToDispatcher(id, me.id)) {
         return res.status(404).json({ message: "Load not found" });
       }
-      return res.json(toLoadFull(load));
+      const full = toLoadFull(load);
+      const maps = buildNameMaps([full]);
+      return res.json(enrichLoadWithNames(full, maps));
     }),
   );
 
