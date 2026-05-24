@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { History, Search } from "lucide-react";
+import type { UserPublic } from "@shared/schema";
 import { apiJson } from "@/lib/queryClient";
 import { formatDateFull, formatRelativeAgo } from "@/lib/format";
 import { DataTable, type DataTableColumn } from "@/components/dispatch/DataTable";
@@ -54,6 +55,18 @@ export default function AuditPage() {
     queryFn: () => apiJson<AuditListResponse>("GET", "/api/audit"),
     staleTime: 15_000,
   });
+  // Resolve actor IDs to human names. Backend sends actorEmail for most
+  // events, but older/system events only carry actorUserId — map it to a name.
+  const { data: usersResp } = useQuery<{ items: UserPublic[] }>({
+    queryKey: ["/api/admin/users", "audit-names"],
+    queryFn: () => apiJson("GET", "/api/admin/users?limit=200"),
+    staleTime: 60_000,
+  });
+  const userById = useMemo(() => {
+    const m = new Map<string, string>();
+    (usersResp?.items ?? []).forEach((u) => m.set(u.id, u.fullName || u.email));
+    return m;
+  }, [usersResp]);
 
   const events = useMemo(() => {
     if (!data) return [];
@@ -131,7 +144,7 @@ export default function AuditPage() {
             <AlertDescription>Не удалось загрузить audit: {(error as Error).message}</AlertDescription>
           </Alert>
         ) : (
-          <AuditTable rows={rows} loading={isLoading} />
+          <AuditTable rows={rows} loading={isLoading} userById={userById} />
         )}
 
         {events.length > 0 && (
@@ -149,9 +162,11 @@ export default function AuditPage() {
 function AuditTable({
   rows,
   loading,
+  userById,
 }: {
   rows: (LegacyAuditEvent & { createdAt: string })[];
   loading: boolean;
+  userById: Map<string, string>;
 }) {
   const columns: DataTableColumn<LegacyAuditEvent & { createdAt: string }>[] = [
     {
@@ -194,14 +209,15 @@ function AuditTable({
     {
       key: "actor",
       header: "Actor",
-      cell: (e) =>
-        e.actorEmail ? (
-          <span className="text-[11px]">{e.actorEmail}</span>
-        ) : e.actorUserId ? (
-          <span className="font-mono text-[10px] text-muted-foreground">{e.actorUserId}</span>
-        ) : (
-          <span className="text-[10px] text-muted-foreground">система</span>
-        ),
+      cell: (e) => {
+        // Prefer email; else resolve the id to a name; else show raw id; else system.
+        const resolved = e.actorUserId ? userById.get(e.actorUserId) : undefined;
+        if (e.actorEmail) return <span className="text-[11px]">{e.actorEmail}</span>;
+        if (resolved) return <span className="text-[11px]">{resolved}</span>;
+        if (e.actorUserId)
+          return <span className="font-mono text-[10px] text-muted-foreground">{e.actorUserId}</span>;
+        return <span className="text-[10px] text-muted-foreground">система</span>;
+      },
       width: "180px",
       hideOnMobile: true,
     },
