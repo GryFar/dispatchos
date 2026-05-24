@@ -20,6 +20,7 @@ import UsersPage from "@/pages/admin/users";
 import AssignmentsPage from "@/pages/admin/assignments";
 import ClientsPage from "@/pages/admin/clients";
 import LoadsPage from "@/pages/admin/loads";
+import AdminLoadDetailPage from "@/pages/admin/load-detail";
 import BrokersPage from "@/pages/admin/brokers";
 import DocumentsPage from "@/pages/admin/documents";
 import QueuePage from "@/pages/admin/queue";
@@ -152,6 +153,7 @@ function AdminRouter() {
         <Route path="/clients" component={ClientsPage} />
         <Route path="/clients/:id" component={ClientDetailPage} />
         <Route path="/loads" component={LoadsPage} />
+        <Route path="/loads/:id" component={AdminLoadDetailPage} />
         <Route path="/brokers" component={BrokersPage} />
         <Route path="/documents" component={DocumentsPage} />
         <Route path="/queue" component={QueuePage} />
