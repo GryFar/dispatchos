@@ -2915,6 +2915,40 @@ try {
   if (lsNotFound !== 404) throw new Error(`unknown load source returned ${lsNotFound}, expected 404`);
   console.log("[OK] GET /api/admin/load-sources/:id 404 on unknown");
 
+  // ===========================================================================
+  // Admin load detail — GET /api/admin/loads/:id (PR #46 backend)
+  // ===========================================================================
+  cookieHeader = adminCookieHeader; // ensure admin session
+
+  const adminLoad = await request(`/api/admin/loads/${createdLoad.id}`);
+  if (!adminLoad.load || adminLoad.load.id !== createdLoad.id) {
+    throw new Error("admin load detail: load missing or id mismatch");
+  }
+  if (!Array.isArray(adminLoad.checkins)) throw new Error("admin load detail: checkins not array");
+  if (!Array.isArray(adminLoad.events)) throw new Error("admin load detail: events not array");
+  if (!Array.isArray(adminLoad.scores)) throw new Error("admin load detail: scores not array");
+  // load.created event should be present in the events timeline.
+  if (!adminLoad.events.some((e) => e.eventType === "load.created")) {
+    throw new Error("admin load detail: expected load.created in events");
+  }
+  // clientName / driverName keys present (nullable but defined).
+  if (!("clientName" in adminLoad.load) || !("driverName" in adminLoad.load)) {
+    throw new Error("admin load detail: clientName/driverName keys missing");
+  }
+  console.log("[OK] GET /api/admin/loads/:id (load + checkins + events + scores)");
+
+  // 404 on unknown load.
+  let adminLoadNotFound = 0;
+  try {
+    await request("/api/admin/loads/does-not-exist");
+  } catch (err) {
+    adminLoadNotFound = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (adminLoadNotFound !== 404) {
+    throw new Error(`admin load detail unknown returned ${adminLoadNotFound}, expected 404`);
+  }
+  console.log("[OK] GET /api/admin/loads/:id 404 on unknown");
+
 
 } catch (error) {
   console.error("[FAIL]", error.message);

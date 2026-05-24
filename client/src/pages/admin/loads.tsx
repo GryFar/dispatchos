@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Package, Search, Truck } from "lucide-react";
 import type { Load } from "@shared/schema";
@@ -136,6 +137,7 @@ function computePpm(l: Load): number {
 }
 
 function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
+  const [, setLocation] = useLocation();
   const columns: DataTableColumn<Load>[] = [
     {
       key: "lane",
@@ -226,6 +228,7 @@ function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
       columns={columns}
       rows={rows}
       loading={loading}
+      onRowClick={(l) => setLocation(`/loads/${l.id}`)}
       empty={
         <EmptyState
           icon={<Package />}
