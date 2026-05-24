@@ -16,6 +16,7 @@ import {
   Menu,
   Network,
   Plug,
+  Radio,
   Settings,
   Sparkles,
   Truck,
@@ -81,6 +82,7 @@ const NAV: NavGroup[] = [
     label: "Платформа",
     items: [
       { href: "/integrations", label: "Интеграции", icon: Plug },
+      { href: "/load-sources", label: "Источники грузов", icon: Radio },
       { href: "/email-inbox", label: "Входящая почта", icon: Mail },
       { href: "/audit", label: "Audit log", icon: History },
       { href: "/backup", label: "Backup", icon: Database },
