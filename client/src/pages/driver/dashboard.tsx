@@ -98,6 +98,19 @@ export default function DriverDashboardPage() {
 // Pending documents alert — P1. Only renders when driver has expiring or
 // expired docs (within 30 days). Tappable: routes to /d/documents.
 // ---------------------------------------------------------------------------
+const DOC_LABELS: Record<string, string> = {
+  cdl: "CDL",
+  medical: "Medical card",
+  coi: "COI",
+  registration: "Registration",
+  permit: "Permit",
+  ifta_decal: "IFTA decal",
+  drug_test: "Drug test",
+};
+function docLabel(type: string): string {
+  return DOC_LABELS[type] ?? type;
+}
+
 function PendingDocsCard({
   docs,
 }: {
@@ -110,40 +123,57 @@ function PendingDocsCard({
     (d: Record<string, unknown>) => d.status === "expired" || d.status === "soon",
   );
   if (flagged.length === 0) return null;
-  const hasExpired = flagged.some((d: Record<string, unknown>) => d.status === "expired");
+
+  const expired = flagged.filter((d: Record<string, unknown>) => d.status === "expired");
+  // "soon" docs within 7 days are escalated to red (urgent).
+  const urgent = flagged.filter(
+    (d: Record<string, unknown>) =>
+      d.status === "soon" && typeof d.daysUntilExpiry === "number" && d.daysUntilExpiry <= 7,
+  );
+  const isRed = expired.length > 0 || urgent.length > 0;
+
+  // Build title + detail line naming the actual documents.
+  let title: string;
+  let detail: string;
+  if (expired.length > 0) {
+    title = "Документы просрочены";
+    detail = expired.map((d) => docLabel(String(d.type))).join(", ");
+  } else if (urgent.length > 0) {
+    title = "Срочно: документы истекают";
+    detail = urgent
+      .map((d) => `${docLabel(String(d.type))} — ${d.daysUntilExpiry} дн.`)
+      .join(" · ");
+  } else {
+    title = "Документы скоро истекают";
+    detail = flagged
+      .map((d) =>
+        typeof d.daysUntilExpiry === "number"
+          ? `${docLabel(String(d.type))} (${d.daysUntilExpiry} дн.)`
+          : docLabel(String(d.type)),
+      )
+      .join(", ");
+  }
 
   return (
     <button
       type="button"
       onClick={() => setLocation("/documents")}
       className={`flex w-full items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition-colors ${
-        hasExpired
+        isRed
           ? "border-destructive/40 bg-destructive/10 hover:bg-destructive/15"
           : "border-yellow-500/40 bg-yellow-500/10 hover:bg-yellow-500/15"
       }`}
     >
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3">
         <AlertTriangle
-          className={`h-5 w-5 shrink-0 ${
-            hasExpired ? "text-destructive" : "text-yellow-500"
-          }`}
+          className={`h-5 w-5 shrink-0 ${isRed ? "text-destructive" : "text-yellow-500"}`}
         />
-        <div>
-          <p className="text-sm font-semibold">
-            {hasExpired ? "Документы просрочены" : "Документы скоро истекают"}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            {flagged.length}{" "}
-            {flagged.length === 1
-              ? "документ"
-              : flagged.length < 5
-              ? "документа"
-              : "документов"}{" "}
-            требуют внимания
-          </p>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">{title}</p>
+          <p className="truncate text-xs text-muted-foreground">{detail}</p>
         </div>
       </div>
-      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
     </button>
   );
 }
