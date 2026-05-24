@@ -31,6 +31,9 @@ import IntegrationsPage from "@/pages/admin/integrations";
 import EmailInboxPage from "@/pages/admin/email-inbox";
 import ClientDetailPage from "@/pages/admin/client-detail";
 import UserDetailPage from "@/pages/admin/user-detail";
+import LoadSourcesPage from "@/pages/admin/load-sources";
+import LoadSourceNewPage from "@/pages/admin/load-source-new";
+import LoadSourceDetailPage from "@/pages/admin/load-source-detail";
 
 // Phase 4 P0 — driver portal at /d/*
 import { DriverShell } from "@/pages/driver/_shell";
@@ -158,6 +161,9 @@ function AdminRouter() {
         <Route path="/settings" component={SettingsPage} />
         <Route path="/legacy-dashboard" component={LegacyDashboardPage} />
         <Route path="/integrations" component={IntegrationsPage} />
+        <Route path="/load-sources" component={LoadSourcesPage} />
+        <Route path="/load-sources/new" component={LoadSourceNewPage} />
+        <Route path="/load-sources/:id" component={LoadSourceDetailPage} />
         <Route path="/email-inbox" component={EmailInboxPage} />
         <Route component={NotFound} />
       </Switch>

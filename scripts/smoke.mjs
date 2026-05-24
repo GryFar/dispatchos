@@ -2808,6 +2808,113 @@ try {
   }
   console.log("[OK] Dispatcher PATCH /api/dispatch/loads/:id 400 on cross-client driver");
 
+  // ===========================================================================
+  // Phase 6 — load_sources admin CRUD (mock adapter only; mock needs no creds
+  // so these run without DISPATCHOS_KEYRING_PRIMARY configured).
+  // ===========================================================================
+  cookieHeader = adminCookieHeader; // back to admin session
+
+  // Adapters list — mock + sylectus_email implemented, stubs present.
+  const adaptersResp = await request("/api/admin/load-sources/adapters");
+  if (!Array.isArray(adaptersResp.adapters)) {
+    throw new Error("load-sources/adapters: expected adapters array");
+  }
+  const mockAdapter = adaptersResp.adapters.find((a) => a.key === "mock");
+  if (!mockAdapter || !mockAdapter.implemented) {
+    throw new Error("load-sources/adapters: mock adapter missing or not implemented");
+  }
+  if (!adaptersResp.adapters.some((a) => a.implemented === false)) {
+    throw new Error("load-sources/adapters: expected at least one stub (implemented:false)");
+  }
+  console.log("[OK] GET /api/admin/load-sources/adapters (mock implemented + stubs present)");
+
+  // Create requires clientId/adapterKey/label.
+  let lsBadStatus = 0;
+  try {
+    await request("/api/admin/load-sources", { method: "POST", body: { label: "incomplete" } });
+  } catch (err) {
+    lsBadStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (lsBadStatus !== 400) {
+    throw new Error(`load-sources create without required fields returned ${lsBadStatus}, expected 400`);
+  }
+
+  // Create a mock source (no credentials).
+  const createdSource = (
+    await request("/api/admin/load-sources", {
+      method: "POST",
+      body: {
+        clientId: "ivan-enclosed-01",
+        adapterKey: "mock",
+        label: "Smoke Mock Source",
+        configJson: { lane: { originState: "FL", destinationState: "GA" }, count: 3 },
+        pollIntervalMin: 20,
+        status: "paused",
+      },
+    })
+  ).loadSource;
+  if (!createdSource?.id) throw new Error("load-sources create did not return an id");
+  if (createdSource.status !== "paused") throw new Error("created source should be paused");
+  if (createdSource.hasCredentials !== false) {
+    throw new Error("mock source should report hasCredentials:false");
+  }
+  // Credentials must never leak to the UI payload.
+  if ("credentialsEnc" in createdSource || "credentialsIv" in createdSource) {
+    throw new Error("LEAK: load source payload exposed credential fields");
+  }
+  console.log("[OK] POST /api/admin/load-sources (mock create + redaction + hasCredentials)");
+
+  // List includes it.
+  const lsList = await request("/api/admin/load-sources");
+  if (!lsList.loadSources.some((s) => s.id === createdSource.id)) {
+    throw new Error("created source not present in list");
+  }
+  console.log("[OK] GET /api/admin/load-sources (list includes created)");
+
+  // Get by id.
+  const lsOne = await request(`/api/admin/load-sources/${createdSource.id}`);
+  if (lsOne.loadSource?.id !== createdSource.id) throw new Error("get-by-id mismatch");
+  console.log("[OK] GET /api/admin/load-sources/:id");
+
+  // Test the mock adapter — should authenticate + fetch 1 sample.
+  const lsTest = await request(`/api/admin/load-sources/${createdSource.id}/test`, { method: "POST" });
+  if (lsTest.ok !== true) {
+    throw new Error(`mock test should succeed, got ok=${lsTest.ok} error=${lsTest.error}`);
+  }
+  if (typeof lsTest.latencyMs !== "number") throw new Error("test should report latencyMs");
+  console.log("[OK] POST /api/admin/load-sources/:id/test (mock authenticate + fetch)");
+
+  // Patch label + status.
+  const lsPatched = (
+    await request(`/api/admin/load-sources/${createdSource.id}`, {
+      method: "PATCH",
+      body: { label: "Smoke Mock Renamed", status: "active" },
+    })
+  ).loadSource;
+  if (lsPatched.label !== "Smoke Mock Renamed" || lsPatched.status !== "active") {
+    throw new Error("PATCH did not persist label/status");
+  }
+  console.log("[OK] PATCH /api/admin/load-sources/:id (label + status)");
+
+  // Soft delete -> status paused.
+  const lsDeleted = await request(`/api/admin/load-sources/${createdSource.id}`, { method: "DELETE" });
+  if (lsDeleted.ok !== true) throw new Error("DELETE should return ok:true");
+  const lsAfterDelete = await request(`/api/admin/load-sources/${createdSource.id}`);
+  if (lsAfterDelete.loadSource.status !== "paused") {
+    throw new Error("soft-deleted source should be paused");
+  }
+  console.log("[OK] DELETE /api/admin/load-sources/:id (soft delete -> paused)");
+
+  // 404 on unknown id.
+  let lsNotFound = 0;
+  try {
+    await request("/api/admin/load-sources/does-not-exist");
+  } catch (err) {
+    lsNotFound = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (lsNotFound !== 404) throw new Error(`unknown load source returned ${lsNotFound}, expected 404`);
+  console.log("[OK] GET /api/admin/load-sources/:id 404 on unknown");
+
 
 } catch (error) {
   console.error("[FAIL]", error.message);
