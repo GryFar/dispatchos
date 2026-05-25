@@ -12,8 +12,15 @@ import { EmptyState } from "@/components/dispatch/EmptyState";
 
 type Status = "all" | "available" | "booked";
 
+// Backend (dispatch.ts) denormalizes clientName/driverName onto each load so
+// the UI doesn't render raw IDs. They're nullable (null when unresolved).
+type LoadListItem = LoadFull & {
+  clientName?: string | null;
+  driverName?: string | null;
+};
+
 interface ListResponse {
-  items: LoadFull[];
+  items: LoadListItem[];
   nextCursor: string | null;
   hasMore: boolean;
   total: number;
@@ -133,8 +140,16 @@ export default function DispatchLoadsPage() {
                         {load.brokerName} · {formatMiles(load.loadedMiles)} mi ·{" "}
                         {load.equipment.replace(/_/g, " ")}
                       </p>
+                      {load.clientName && (
+                        <p className="mt-1 text-xs font-medium text-foreground">
+                          Клиент: {load.clientName}
+                        </p>
+                      )}
                       <p className="mt-1 text-xs text-muted-foreground">
                         Pickup: {formatDateFull(load.pickupAt)}
+                        {isBooked && load.driverName && (
+                          <> · Водитель: {load.driverName}</>
+                        )}
                       </p>
                     </div>
                     <div className="shrink-0 text-right">
