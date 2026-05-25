@@ -508,6 +508,56 @@ sqlite.exec(`
     ON approval_tasks(assignee_role, status, created_at DESC);
 `);
 
+// ---------------------------------------------------------------------------
+// Phase 6.1 — Broker safety audit snapshots (SCOTUS Montgomery v. Caribe, 2026-05-14)
+// ---------------------------------------------------------------------------
+// SCOTUS 9-0 held that FAAAA does NOT preempt state negligent-hiring claims
+// against freight brokers. Brokers can now be sued by accident victims for
+// hiring unsafe motor carriers. To defend in court, brokers must prove that
+// at the moment of booking they performed due-diligence vetting of the
+// carrier (FMCSA authority, BOC-3, insurance, safety rating, out-of-service
+// rate, crash history). This table is the immutable evidentiary record:
+// every load booking writes one snapshot row capturing all vetting data we
+// had at that timestamp. Rows are append-only (UPDATE/DELETE forbidden at
+// app layer) so they remain admissible as a business record. Also feeds
+// Killer #1 (Broker Trust Score) on read.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS broker_safety_audit_snapshots (
+    id TEXT PRIMARY KEY,
+    load_id TEXT,
+    client_id TEXT,
+    broker_mc TEXT NOT NULL,
+    broker_name TEXT,
+    -- FMCSA vetting at booking time
+    fmcsa_authority_status TEXT,           -- ACTIVE | INACTIVE | NOT_AUTHORIZED | UNKNOWN
+    fmcsa_bond_amount_cents INTEGER,       -- e.g. 7500000 = $75K
+    fmcsa_bond_status TEXT,                -- ACTIVE | AT_RISK | SUSPENDED (FMCSA Jan-16-2026 rule)
+    fmcsa_insurance_active INTEGER,        -- 1/0
+    fmcsa_safety_rating TEXT,              -- SATISFACTORY | CONDITIONAL | UNSATISFACTORY | NOT_RATED
+    fmcsa_oos_rate REAL,                   -- driver out-of-service %
+    fmcsa_crash_rate REAL,                 -- crashes per power unit
+    -- our internal performance signals (snapshot from broker_history at booking)
+    internal_loads_completed INTEGER NOT NULL DEFAULT 0,
+    internal_disputes INTEGER NOT NULL DEFAULT 0,
+    internal_double_broker_flags INTEGER NOT NULL DEFAULT 0,
+    internal_avg_payment_days REAL,
+    -- computed score 0-100 (higher = safer; null if not enough data)
+    trust_score INTEGER,
+    risk_factors TEXT,                     -- JSON array of human-readable reasons
+    -- evidentiary metadata
+    raw_fmcsa_payload TEXT,                -- full FMCSA response JSON (frozen at booking)
+    captured_at TEXT NOT NULL,             -- ISO timestamp when snapshot was taken
+    captured_by_user_id TEXT,              -- dispatcher who booked the load
+    captured_reason TEXT NOT NULL DEFAULT 'load_booking' -- load_booking | manual_audit | periodic
+  );
+  CREATE INDEX IF NOT EXISTS broker_safety_snapshots_mc_idx
+    ON broker_safety_audit_snapshots(broker_mc, captured_at DESC);
+  CREATE INDEX IF NOT EXISTS broker_safety_snapshots_load_idx
+    ON broker_safety_audit_snapshots(load_id);
+  CREATE INDEX IF NOT EXISTS broker_safety_snapshots_client_idx
+    ON broker_safety_audit_snapshots(client_id, captured_at DESC);
+`);
+
 
 function now() {
   return new Date().toISOString();
@@ -2728,6 +2778,88 @@ export const storage = {
     return sqlite.prepare("SELECT * FROM broker_history WHERE mc = ?").get(mc) as
       | { mc: string; name: string | null; loads_offered: number; loads_accepted: number; loads_completed: number; loads_late: number; disputes: number; avg_payment_days: number | null; last_load_at: string | null; updated_at: string }
       | undefined;
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 6.1 broker safety audit snapshots (SCOTUS legal evidence trail).
+  // Append-only — there is NO update/delete API on purpose. Each snapshot is
+  // an immutable business record of due-diligence vetting at booking time.
+  // -------------------------------------------------------------------------
+  recordBrokerSafetySnapshot(input: {
+    loadId?: string | null;
+    clientId?: string | null;
+    brokerMc: string;
+    brokerName?: string | null;
+    fmcsaAuthorityStatus?: string | null;
+    fmcsaBondAmountCents?: number | null;
+    fmcsaBondStatus?: string | null;
+    fmcsaInsuranceActive?: boolean | null;
+    fmcsaSafetyRating?: string | null;
+    fmcsaOosRate?: number | null;
+    fmcsaCrashRate?: number | null;
+    internalLoadsCompleted?: number;
+    internalDisputes?: number;
+    internalDoubleBrokerFlags?: number;
+    internalAvgPaymentDays?: number | null;
+    trustScore?: number | null;
+    riskFactors?: string[];
+    rawFmcsaPayload?: unknown;
+    capturedByUserId?: string | null;
+    capturedReason?: "load_booking" | "manual_audit" | "periodic";
+  }): string {
+    const id = makeId("bsas");
+    sqlite.prepare(`
+      INSERT INTO broker_safety_audit_snapshots (
+        id, load_id, client_id, broker_mc, broker_name,
+        fmcsa_authority_status, fmcsa_bond_amount_cents, fmcsa_bond_status,
+        fmcsa_insurance_active, fmcsa_safety_rating, fmcsa_oos_rate, fmcsa_crash_rate,
+        internal_loads_completed, internal_disputes, internal_double_broker_flags, internal_avg_payment_days,
+        trust_score, risk_factors, raw_fmcsa_payload,
+        captured_at, captured_by_user_id, captured_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.loadId ?? null,
+      input.clientId ?? null,
+      input.brokerMc,
+      input.brokerName ?? null,
+      input.fmcsaAuthorityStatus ?? null,
+      input.fmcsaBondAmountCents ?? null,
+      input.fmcsaBondStatus ?? null,
+      input.fmcsaInsuranceActive == null ? null : input.fmcsaInsuranceActive ? 1 : 0,
+      input.fmcsaSafetyRating ?? null,
+      input.fmcsaOosRate ?? null,
+      input.fmcsaCrashRate ?? null,
+      input.internalLoadsCompleted ?? 0,
+      input.internalDisputes ?? 0,
+      input.internalDoubleBrokerFlags ?? 0,
+      input.internalAvgPaymentDays ?? null,
+      input.trustScore ?? null,
+      input.riskFactors ? JSON.stringify(input.riskFactors) : null,
+      input.rawFmcsaPayload ? JSON.stringify(input.rawFmcsaPayload) : null,
+      now(),
+      input.capturedByUserId ?? null,
+      input.capturedReason ?? "load_booking",
+    );
+    return id;
+  },
+
+  getBrokerSafetySnapshot(id: string) {
+    return sqlite.prepare("SELECT * FROM broker_safety_audit_snapshots WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+  },
+
+  listBrokerSafetySnapshotsByMc(mc: string, limit = 50) {
+    return sqlite.prepare(
+      "SELECT * FROM broker_safety_audit_snapshots WHERE broker_mc = ? ORDER BY captured_at DESC LIMIT ?"
+    ).all(mc, limit) as Array<Record<string, unknown>>;
+  },
+
+  listBrokerSafetySnapshotsByLoad(loadId: string) {
+    return sqlite.prepare(
+      "SELECT * FROM broker_safety_audit_snapshots WHERE load_id = ? ORDER BY captured_at DESC"
+    ).all(loadId) as Array<Record<string, unknown>>;
   },
 
   recordLaneObservation(originState: string, destState: string, rate: number, miles: number) {
