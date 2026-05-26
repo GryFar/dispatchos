@@ -6,8 +6,13 @@ import {
   ArrowLeft,
   Briefcase,
   ChevronRight,
+  Download,
+  FileText,
+  Loader2,
   MapPin,
   Save,
+  Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import type { Client, Equipment } from "@shared/schema";
@@ -709,6 +714,9 @@ function ProfileTab({ client }: { client: Client }) {
           </div>
         </CardContent>
       </Card>
+
+      {/* Compliance documents upload — photo/PDF or manual date (per user request 2026-05-26) */}
+      <ComplianceDocsCard clientId={client.id} />
 
       {/* Footer — save */}
       <div className="sticky bottom-0 -mx-4 flex items-center justify-end gap-2 border-t border-border bg-background/90 px-4 py-3 backdrop-blur md:-mx-6 md:px-6">
@@ -1668,5 +1676,237 @@ function ClearinghouseRecordDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ComplianceDocsCard — upload + list of carrier-scoped compliance docs
+// ---------------------------------------------------------------------------
+//
+// Two ways to capture compliance dates (per user request 2026-05-26):
+//   1. Type the date manually in the cards above.
+//   2. Upload a photo / PDF of the doc here — the server auto-fills the
+//      matching cargoInsuranceExpiresAt / ucrExpiresAt / etc on the client
+//      when an expiry is provided with the upload.
+//
+// Owner-operator drivers upload directly via the driver portal
+// (/api/me/documents). Those land with client_id auto-set to their
+// linked_client_id so they appear here too.
+
+interface ComplianceDoc {
+  id: string;
+  ownerUserId: string;
+  clientId: string | null;
+  type:
+    | "cargo_insurance" | "auto_liability" | "general_liability"
+    | "ucr_certificate" | "irp_cab_card" | "mcs150" | "dq_file"
+    | "cdl" | "medical" | "coi" | "w9" | "ifta" | "other";
+  fileName: string;
+  storagePath: string;
+  expiresAt: string | null;
+  notes: string | null;
+  createdAt: string;
+}
+
+const COMPLIANCE_DOC_TYPES = [
+  { value: "cargo_insurance", label: "Cargo insurance" },
+  { value: "auto_liability", label: "Auto liability" },
+  { value: "general_liability", label: "General liability" },
+  { value: "ucr_certificate", label: "UCR certificate" },
+  { value: "irp_cab_card", label: "IRP cab card" },
+  { value: "mcs150", label: "MCS-150" },
+  { value: "dq_file", label: "DQ file" },
+  { value: "other", label: "Другое" },
+] as const;
+
+function ComplianceDocsCard({ clientId }: { clientId: string }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [docType, setDocType] = useState<string>("cargo_insurance");
+  const [docExpires, setDocExpires] = useState<string>("");
+  const [docNotes, setDocNotes] = useState<string>("");
+  const [pickedFile, setPickedFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const q = useQuery<{ items: ComplianceDoc[]; total: number }>({
+    queryKey: ["/api/admin/clients", clientId, "documents"],
+    queryFn: () => apiJson("GET", `/api/admin/clients/${clientId}/documents`),
+  });
+
+  async function handleUpload() {
+    if (!pickedFile) {
+      toast({ title: "Выберите файл", variant: "destructive" });
+      return;
+    }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", pickedFile);
+      fd.append("type", docType);
+      if (docExpires) fd.append("expiresAt", docExpires);
+      if (docNotes) fd.append("notes", docNotes);
+      const res = await fetch(`/api/admin/clients/${clientId}/documents`, {
+        method: "POST",
+        body: fd,
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => null);
+        throw new Error((j as { message?: string })?.message ?? `${res.status}`);
+      }
+      toast({ title: "Документ загружен" });
+      setPickedFile(null);
+      setDocExpires("");
+      setDocNotes("");
+      await queryClient.invalidateQueries({
+        queryKey: ["/api/admin/clients", clientId, "documents"],
+      });
+      // Also refetch the client so the auto-filled date shows up immediately.
+      await queryClient.invalidateQueries({
+        queryKey: ["/api/admin/clients", clientId],
+      });
+    } catch (err) {
+      toast({
+        title: "Не удалось загрузить",
+        description: (err as Error).message,
+        variant: "destructive",
+      });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleDelete(docId: string) {
+    if (!window.confirm("Удалить документ безвозвратно?")) return;
+    try {
+      const res = await fetch(
+        `/api/admin/clients/${clientId}/documents/${docId}`,
+        { method: "DELETE", credentials: "same-origin" },
+      );
+      if (!res.ok) throw new Error(`${res.status}`);
+      await queryClient.invalidateQueries({
+        queryKey: ["/api/admin/clients", clientId, "documents"],
+      });
+    } catch (err) {
+      toast({
+        title: "Не удалось удалить",
+        description: (err as Error).message,
+        variant: "destructive",
+      });
+    }
+  }
+
+  const items = q.data?.items ?? [];
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <FileText className="h-4 w-4" /> Документы (фото / PDF)
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-xs text-muted-foreground">
+          Загрузите фото или PDF сертификата — сервер сам подставит дату
+          истечения в соответствующее поле выше (cargo insurance / UCR / IRP и т.д.).
+          Owner-operator водители грузят со своего портала — документ автоматически
+          привязывается к этой компании.
+        </p>
+
+        <div className="grid gap-3 rounded-lg border border-dashed border-border p-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Тип документа</Label>
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={docType}
+              onChange={(e) => setDocType(e.target.value)}
+            >
+              {COMPLIANCE_DOC_TYPES.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Истекает (опционально)</Label>
+            <Input
+              type="date"
+              value={docExpires}
+              onChange={(e) => setDocExpires(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label className="text-xs">Заметка</Label>
+            <Input
+              value={docNotes}
+              onChange={(e) => setDocNotes(e.target.value)}
+              placeholder="Policy #, агент, доп.инфо..."
+              maxLength={500}
+            />
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label className="text-xs">Файл (PDF / JPG / PNG, до 10 MB)</Label>
+            <Input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png"
+              onChange={(e) => setPickedFile(e.target.files?.[0] ?? null)}
+            />
+          </div>
+          <div className="sm:col-span-2 flex justify-end">
+            <Button
+              size="sm"
+              onClick={handleUpload}
+              disabled={!pickedFile || uploading}
+              className="gap-2"
+            >
+              {uploading ? (
+                <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Загрузка...</>
+              ) : (
+                <><Upload className="h-3.5 w-3.5" /> Загрузить</>
+              )}
+            </Button>
+          </div>
+        </div>
+
+        {items.length === 0 ? (
+          <p className="text-xs text-muted-foreground">Пока документов нет.</p>
+        ) : (
+          <ul className="divide-y divide-border rounded-md border border-border">
+            {items.map((d) => {
+              const label =
+                COMPLIANCE_DOC_TYPES.find((t) => t.value === d.type)?.label ?? d.type;
+              return (
+                <li
+                  key={d.id}
+                  className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-[10px]">{label}</Badge>
+                      <span className="truncate font-medium">{d.fileName}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      {d.expiresAt ? `Истекает ${d.expiresAt}` : "Без срока"}
+                      {" · "}
+                      загружен {new Date(d.createdAt).toLocaleDateString()}
+                      {d.notes ? ` · ${d.notes.slice(0, 50)}` : ""}
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                    onClick={() => handleDelete(d.id)}
+                    title="Удалить документ"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
   );
 }

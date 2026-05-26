@@ -46,6 +46,13 @@ const DOC_TYPE_LABELS: Record<DriverDocumentType, string> = {
   w9: "W9",
   ifta: "IFTA",
   other: "Другое",
+  cargo_insurance: "Cargo insurance",
+  auto_liability: "Auto liability",
+  general_liability: "General liability",
+  ucr_certificate: "UCR certificate",
+  irp_cab_card: "IRP cab card",
+  mcs150: "MCS-150",
+  dq_file: "DQ file",
 };
 
 function fmtExpiry(expiresAt: string | null): { label: string; tone: "ok" | "soon" | "expired" } {

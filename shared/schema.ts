@@ -959,18 +959,31 @@ export const insertBrokerEventSchema = z.object({
 // Driver documents
 // ---------------------------------------------------------------------------
 export const driverDocumentTypeSchema = z.enum([
+  // Per-driver documents (legacy)
   "cdl",
   "medical",
   "coi",
   "w9",
   "ifta",
   "other",
+  // Killer feature #5 + per-user request — compliance docs that can sit
+  // on a driver (owner-operator self-files) OR on a client (компания
+  // загружает за всех).
+  "cargo_insurance",
+  "auto_liability",
+  "general_liability",
+  "ucr_certificate",
+  "irp_cab_card",
+  "mcs150",
+  "dq_file",
 ]);
 export type DriverDocumentType = z.infer<typeof driverDocumentTypeSchema>;
 
 export const driverDocumentSchema = z.object({
   id: z.string(),
   ownerUserId: z.string(),
+  /** Optional carrier (client) scope. NULL when the doc is per-driver only. */
+  clientId: z.string().nullable().optional(),
   type: driverDocumentTypeSchema,
   fileName: z.string(),
   storagePath: z.string(),
@@ -985,6 +998,8 @@ export const uploadDriverDocumentSchema = z.object({
   type: driverDocumentTypeSchema,
   expiresAt: dateOnlySchema.optional(),
   notes: z.string().max(500).optional(),
+  /** Admin-only: attach the doc to a carrier instead of the uploader. */
+  clientId: z.string().optional(),
 });
 export type UploadDriverDocumentInput = z.infer<typeof uploadDriverDocumentSchema>;
 
