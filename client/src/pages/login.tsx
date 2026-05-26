@@ -127,9 +127,9 @@ export default function LoginPage() {
             id="email"
             type="email"
             autoComplete="username"
-            autoFocus
+            autoFocus={!needsTotp}
             placeholder="you@example.com"
-            disabled={needsTotp}
+            readOnly={needsTotp}
             {...form.register("email")}
           />
           {form.formState.errors.email && (
@@ -148,7 +148,7 @@ export default function LoginPage() {
             id="password"
             type="password"
             autoComplete="current-password"
-            disabled={needsTotp}
+            readOnly={needsTotp}
             {...form.register("password")}
           />
           {form.formState.errors.password && (
