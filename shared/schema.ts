@@ -80,6 +80,14 @@ export const clientSchema = z.object({
   cargoInsuranceExpiresAt: z.string().optional(),       // «Cargo insurance» expiry
   autoLiabilityExpiresAt: z.string().optional(),        // «Auto liability» expiry
   generalLiabilityExpiresAt: z.string().optional(),     // «General liability» expiry (optional)
+  // Killer feature #5 — UCR / IRP renewal calendar. Optional ISO dates.
+  ucrExpiresAt: z.string().optional(),                  // UCR annual filing due date
+  ucrBaseState: z.string().optional(),                  // 2-letter US state
+  irpExpiresAt: z.string().optional(),                  // IRP apportioned plates anniversary
+  irpBaseJurisdiction: z.string().optional(),           // 2-letter base jurisdiction
+  // Killer feature #4 — detention billing overrides.
+  detentionFreeHours: z.number().min(0).max(24).optional(),
+  detentionRatePerHourCents: z.number().int().min(0).max(50_000).optional(),
 });
 
 export const insertClientSchema = clientSchema.partial({ id: true }).extend({

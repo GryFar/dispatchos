@@ -156,6 +156,30 @@ export function registerCronRoutes(app: Express): void {
     }
   });
 
+  // POST /api/cron/check-renewals
+  // Killer feature #5 — UCR/IRP renewal alerts. Same anti-spam pattern as
+  // insurance. Schedule alongside check-insurance (daily 09:00 ET via GH Actions).
+  app.post("/api/cron/check-renewals", async (req: Request, res: Response) => {
+    if (!requireCronSecret(req, res)) return;
+    const { runComplianceRenewalsCheck } = await import("../lib/compliance-renewals");
+    try {
+      const outcomes = await runComplianceRenewalsCheck();
+      const dispatched = outcomes.filter((o) => o.sentChannels.length > 0);
+      return res.json({
+        ok: true,
+        evaluated: outcomes.length,
+        dispatched: dispatched.length,
+        outcomes,
+      });
+    } catch (err) {
+      console.error("[cron/check-renewals] failed:", err);
+      return res.status(500).json({
+        message: "Compliance renewals check failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
   // POST /api/cron/purge-old-data
   // Audit V2-7 / V2-29 — expanded purge:
   //   • GPS pings older than 15 days (existing).

@@ -432,6 +432,19 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS insurance_alerts_lookup_idx
     ON insurance_alerts_sent(client_id, insurance_type, expires_at, days_before);
+
+  -- Killer feature #5 — UCR/IRP renewal calendar. Same shape as insurance_alerts_sent.
+  CREATE TABLE IF NOT EXISTS compliance_alerts_sent (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    kind TEXT NOT NULL,            -- ucr | irp
+    expires_at TEXT NOT NULL,
+    days_before INTEGER NOT NULL,
+    sent_at TEXT NOT NULL,
+    channels TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS compliance_alerts_lookup_idx
+    ON compliance_alerts_sent(client_id, kind, expires_at, days_before);
 `);
 
 // ---------------------------------------------------------------------------
@@ -1626,6 +1639,51 @@ export const storage = {
   listInsuranceAlertsForClient(clientId: string, limit = 20) {
     return sqlite.prepare(`
       SELECT * FROM insurance_alerts_sent
+      WHERE client_id = ? ORDER BY sent_at DESC LIMIT ?
+    `).all(clientId, limit) as Array<Record<string, unknown>>;
+  },
+
+  // -------------------------------------------------------------------------
+  // Killer feature #5 — UCR/IRP renewal calendar
+  // -------------------------------------------------------------------------
+
+  /** Has an alert for (client, kind, expires_at, days_before) already been sent? */
+  hasComplianceAlertBeenSent(
+    clientId: string,
+    kind: string,
+    expiresAt: string,
+    daysBefore: number,
+  ): boolean {
+    const row = sqlite.prepare(`
+      SELECT 1 FROM compliance_alerts_sent
+      WHERE client_id = ? AND kind = ? AND expires_at = ? AND days_before = ?
+      LIMIT 1
+    `).get(clientId, kind, expiresAt, daysBefore);
+    return Boolean(row);
+  },
+
+  recordComplianceAlertSent(input: {
+    clientId: string;
+    kind: string;
+    expiresAt: string;
+    daysBefore: number;
+    channels: string[];
+  }): string {
+    const id = makeId("compalert");
+    sqlite.prepare(`
+      INSERT INTO compliance_alerts_sent (
+        id, client_id, kind, expires_at, days_before, sent_at, channels
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, input.clientId, input.kind, input.expiresAt,
+      input.daysBefore, now(), JSON.stringify(input.channels),
+    );
+    return id;
+  },
+
+  listComplianceAlertsForClient(clientId: string, limit = 20) {
+    return sqlite.prepare(`
+      SELECT * FROM compliance_alerts_sent
       WHERE client_id = ? ORDER BY sent_at DESC LIMIT ?
     `).all(clientId, limit) as Array<Record<string, unknown>>;
   },
