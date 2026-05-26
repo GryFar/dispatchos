@@ -466,6 +466,22 @@ sqlite.exec(`
   );
 `);
 ensureUserDriverColumns();
+ensureDriverDocumentsColumns();
+
+// Compliance documents — add optional client_id scope so admins can attach a
+// doc to the carrier instead of a specific user. NULL = per-driver only.
+function ensureDriverDocumentsColumns() {
+  const cols = sqlite.prepare("PRAGMA table_info(driver_documents)").all() as Array<{
+    name: string;
+  }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("client_id")) {
+    sqlite.exec("ALTER TABLE driver_documents ADD COLUMN client_id TEXT");
+    sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS driver_documents_client_idx ON driver_documents(client_id, created_at DESC) WHERE client_id IS NOT NULL",
+    );
+  }
+}
 
 // signup_leads: добавлены note и name для «Contact us» варианта lead-formы на landing.
 {
@@ -4255,6 +4271,8 @@ export const storage = {
 
   insertDriverDocument(input: {
     ownerUserId: string;
+    /** Optional carrier scope. Set when admin uploads on behalf of a carrier. */
+    clientId?: string | null;
     type: DriverDocumentType;
     fileName: string;
     storagePath: string;
@@ -4266,12 +4284,13 @@ export const storage = {
     sqlite
       .prepare(
         `INSERT INTO driver_documents
-         (id, owner_user_id, type, file_name, storage_path, expires_at, notes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, owner_user_id, client_id, type, file_name, storage_path, expires_at, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         input.ownerUserId,
+        input.clientId ?? null,
         input.type,
         input.fileName,
         input.storagePath,
@@ -4283,6 +4302,7 @@ export const storage = {
     return {
       id,
       ownerUserId: input.ownerUserId,
+      clientId: input.clientId ?? null,
       type: input.type,
       fileName: input.fileName,
       storagePath: input.storagePath,
@@ -4312,6 +4332,7 @@ export const storage = {
     const items: DriverDocument[] = sliced.map((r) => ({
       id: r.id as string,
       ownerUserId: r.owner_user_id as string,
+      clientId: (r.client_id as string | null) ?? null,
       type: r.type as DriverDocumentType,
       fileName: r.file_name as string,
       storagePath: r.storage_path as string,
@@ -4341,6 +4362,7 @@ export const storage = {
     return {
       id: row.id as string,
       ownerUserId: row.owner_user_id as string,
+      clientId: (row.client_id as string | null) ?? null,
       type: row.type as DriverDocumentType,
       fileName: row.file_name as string,
       storagePath: row.storage_path as string,
@@ -4356,6 +4378,33 @@ export const storage = {
       .prepare("DELETE FROM driver_documents WHERE id = ? AND owner_user_id = ?")
       .run(id, ownerUserId);
     return r.changes > 0;
+  },
+
+  /** Admin-scope delete by id only (no owner check). */
+  deleteDriverDocumentById(id: string): boolean {
+    const r = sqlite.prepare("DELETE FROM driver_documents WHERE id = ?").run(id);
+    return r.changes > 0;
+  },
+
+  /** Compliance docs uploaded on behalf of a carrier (client_id set). */
+  listDriverDocumentsForClient(clientId: string, limit = 50): DriverDocument[] {
+    const rows = sqlite
+      .prepare(
+        "SELECT * FROM driver_documents WHERE client_id = ? ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(clientId, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as string,
+      ownerUserId: r.owner_user_id as string,
+      clientId: (r.client_id as string | null) ?? null,
+      type: r.type as DriverDocumentType,
+      fileName: r.file_name as string,
+      storagePath: r.storage_path as string,
+      expiresAt: (r.expires_at as string | null) ?? null,
+      notes: (r.notes as string | null) ?? null,
+      createdAt: r.created_at as string,
+      updatedAt: r.updated_at as string,
+    }));
   },
 
   computePendingDocsForUser(userId: string, withinDays = 30): PendingDoc[] {

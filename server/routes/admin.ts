@@ -22,6 +22,8 @@
 // ---------------------------------------------------------------------------
 
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { getEnrichedIntegrationStatus, INTEGRATIONS } from "../lib/integrations";
@@ -49,7 +51,9 @@ import {
   hashPassword,
   requireRole,
 } from "../auth";
-import { storage } from "../storage";
+import { storage, uploadsRoot } from "../storage";
+import { upload } from "../upload";
+import { uploadDriverDocumentSchema } from "@shared/schema";
 import { computeInvoiceForWeek } from "../lib/billing";
 import {
   computeDetentionForLoad,
@@ -1732,6 +1736,138 @@ export function registerAdminRoutes(app: Express): void {
     const w = Math.max(0, Math.min(365, Number(req.query.withinDays ?? 90) || 90));
     const rows = listUpcomingRenewals(w);
     return res.json({ rows, withinDays: w, generatedAt: new Date().toISOString() });
+  });
+
+  // -------------------------------------------------------------------------
+  // Compliance document upload (per user request 2026-05-26):
+  //   - Owner-operator drivers upload via /api/me/documents (existing)
+  //     — we auto-attach to their linked carrier when present.
+  //   - Companies upload on behalf of carriers via these admin endpoints.
+  // -------------------------------------------------------------------------
+
+  // GET /api/admin/clients/:id/documents
+  // Lists driver_documents rows scoped to a carrier (client_id = :id).
+  app.get("/api/admin/clients/:id/documents", admin, (req, res) => {
+    const clientId = String(req.params.id);
+    if (!storage.getClient(clientId)) {
+      return res.status(404).json({ message: "Client not found" });
+    }
+    const docs = storage.listDriverDocumentsForClient(clientId, 100);
+    return res.json({ items: docs, total: docs.length });
+  });
+
+  // POST /api/admin/clients/:id/documents
+  // Multipart upload (file + metadata). file size + MIME enforced by
+  // server/upload.ts. expiresAt is optional ISO date — if provided the
+  // monitor crons will alert at the same thresholds as for driver-uploaded
+  // compliance docs.
+  app.post("/api/admin/clients/:id/documents", admin, upload.single("file"), (req, res) => {
+    const actor = getCurrentUser(req);
+    if (!actor) return res.status(401).json({ message: "Authentication required" });
+    const clientId = String(req.params.id);
+    const client = storage.getClient(clientId);
+    if (!client) {
+      // Cleanup multer temp file before bailing.
+      if (req.file?.path) {
+        try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+      }
+      return res.status(404).json({ message: "Client not found" });
+    }
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ message: "file is required (multipart field 'file')" });
+    }
+
+    let meta: ReturnType<typeof uploadDriverDocumentSchema.parse>;
+    try {
+      meta = uploadDriverDocumentSchema.parse(req.body);
+    } catch (err) {
+      try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+      if (err instanceof ZodError) {
+        return res.status(400).json({
+          message: "Invalid metadata",
+          issues: err.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+        });
+      }
+      throw err;
+    }
+
+    // Move temp file into typed subfolder. We use client-docs/<clientId>/
+    // distinct from driver-docs/<userId>/ so backups are easy to slice.
+    const subdir = path.join(uploadsRoot, "client-docs", clientId);
+    fs.mkdirSync(subdir, { recursive: true });
+    const safeBase = `${Date.now()}-${path.basename(file.originalname).replace(/[^\w.\-]/g, "_")}`;
+    const finalPath = path.join(subdir, safeBase);
+    fs.renameSync(file.path, finalPath);
+    const storagePath = path.relative(uploadsRoot, finalPath);
+
+    const doc = storage.insertDriverDocument({
+      ownerUserId: actor.id, // admin who uploaded
+      clientId,              // scoped to the carrier
+      type: meta.type,
+      fileName: file.originalname,
+      storagePath,
+      expiresAt: meta.expiresAt ?? null,
+      notes: meta.notes ?? null,
+    });
+
+    // Auto-fill the matching expiry field on the client when a known
+    // compliance doc carries a date. This is the "upload-instead-of-typing"
+    // shortcut requested 2026-05-26 — dispatcher uploads a photo of the COI,
+    // doesn't have to copy-paste the date by hand.
+    const expiryFieldByType: Record<string, string> = {
+      cargo_insurance: "cargoInsuranceExpiresAt",
+      auto_liability: "autoLiabilityExpiresAt",
+      general_liability: "generalLiabilityExpiresAt",
+      ucr_certificate: "ucrExpiresAt",
+      irp_cab_card: "irpExpiresAt",
+    };
+    const field = expiryFieldByType[meta.type];
+    if (field && meta.expiresAt) {
+      const existing = (client as Record<string, unknown>)[field];
+      // Don't clobber a date that's later than the new doc's expiry.
+      if (!existing || String(existing) < meta.expiresAt) {
+        storage.upsertClient({
+          ...(client as unknown as Parameters<typeof storage.upsertClient>[0]),
+          [field]: meta.expiresAt,
+        } as Parameters<typeof storage.upsertClient>[0]);
+      }
+    }
+
+    storage.audit("client.document_uploaded", "client", clientId, {
+      actorUserId: actor.id,
+      docId: doc.id,
+      type: doc.type,
+      expiresAt: doc.expiresAt,
+      autoFilledField: field && meta.expiresAt ? field : undefined,
+      sizeBytes: file.size,
+    });
+
+    return res.status(201).json(doc);
+  });
+
+  // DELETE /api/admin/clients/:id/documents/:docId
+  app.delete("/api/admin/clients/:id/documents/:docId", admin, (req, res) => {
+    const actor = getCurrentUser(req);
+    if (!actor) return res.status(401).json({ message: "Authentication required" });
+    const docId = String(req.params.docId);
+    const doc = storage.getDriverDocument(docId);
+    if (!doc || doc.clientId !== String(req.params.id)) {
+      return res.status(404).json({ message: "Document not found" });
+    }
+    // Best-effort file unlink.
+    try {
+      fs.unlinkSync(path.join(uploadsRoot, doc.storagePath));
+    } catch (err) {
+      console.warn("[admin/clients/docs] file unlink failed:", (err as Error).message);
+    }
+    storage.deleteDriverDocumentById(docId);
+    storage.audit("client.document_deleted", "client", String(req.params.id), {
+      actorUserId: actor.id,
+      docId,
+      type: doc.type,
+    });
+    return res.status(204).end();
   });
 
   // -------------------------------------------------------------------------

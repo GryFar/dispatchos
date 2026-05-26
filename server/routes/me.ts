@@ -427,8 +427,26 @@ export function registerMeRoutes(app: Express): void {
       // storage_path is server-relative; resolution to absolute happens at read.
       const storagePath = path.relative(uploadsRoot, finalPath);
 
+      // Compliance documents: if the driver is linked to a carrier (linked_client_id),
+      // attach the doc to that carrier so the admin dashboard picks it up.
+      // Owner-operator uploads (no carrier linkage) stay user-scoped — the
+      // admin still sees them on the user-detail page but per-client compliance
+      // pulls are empty for owner-operators (expected).
+      const isComplianceDoc = [
+        "cargo_insurance",
+        "auto_liability",
+        "general_liability",
+        "ucr_certificate",
+        "irp_cab_card",
+        "mcs150",
+        "dq_file",
+      ].includes(meta.type);
+      const inferredClientId =
+        isComplianceDoc && user.linkedClientId ? user.linkedClientId : null;
+
       const doc = storage.insertDriverDocument({
         ownerUserId: user.id,
+        clientId: inferredClientId,
         type: meta.type,
         fileName: file.originalname,
         storagePath,
