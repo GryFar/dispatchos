@@ -26,7 +26,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { getEnrichedIntegrationStatus, INTEGRATIONS } from "../lib/integrations";
 import { encryptSecret, isPrimaryConfigured } from "../lib/crypto/keyring";
-import { invalidateIntegrationConfigCache } from "../lib/integration-config";
+import { getIntegrationValue, invalidateIntegrationConfigCache } from "../lib/integration-config";
 import {
   approvalTaskListFiltersSchema,
   createAssignmentSchema,
@@ -1995,9 +1995,13 @@ function buildDashboardIntegrationsMap(): Record<
   const now = new Date().toISOString();
   const has = (...keys: string[]) => keys.every((k) => Boolean(process.env[k]));
 
+  // Audit V2-3 — read canonical FMCSA_WEB_KEY from integration store with legacy
+  // FMCSA_WEBKEY env fallback so admin dashboard agrees with broker-check + safety profile.
+  const fmcsaKey =
+    getIntegrationValue("fmcsa", "FMCSA_WEB_KEY") ?? process.env.FMCSA_WEBKEY;
   return {
     fmcsa: {
-      status: has("FMCSA_API_URL", "FMCSA_WEBKEY") ? "ok" : "missing",
+      status: Boolean(process.env.FMCSA_API_URL && fmcsaKey) ? "ok" : "missing",
       lastCheckedAt: now,
     },
     telegram: {

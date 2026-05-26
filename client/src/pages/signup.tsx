@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { CheckCircle2, Copy, Loader2, ShieldCheck } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import type { SignupResponse } from "@shared/schema";
 import { ApiError, apiJson } from "@/lib/queryClient";
 import { refreshAuth, useAuth } from "@/lib/use-auth";
@@ -220,8 +221,6 @@ function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue
   // QR code via Google Charts API (no extra deps). Simple, works offline if the
   // user has reached this point with internet. If we want a JS-side QR encoder
   // we can add `qrcode` to deps in Phase 5.
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=0&data=${encodeURIComponent(data.otpauthUrl!)}`;
-
   async function copySecret() {
     try {
       await navigator.clipboard.writeText(data.totpSecret!);
@@ -243,7 +242,7 @@ function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue
       </div>
 
       <div className="flex justify-center rounded-md border border-border bg-card p-3">
-        <img src={qrUrl} alt="TOTP QR" className="h-44 w-44" />
+        <QRCodeSVG value={data.otpauthUrl!} size={176} level="M" aria-label="TOTP QR" />
       </div>
 
       <div className="space-y-1.5">
