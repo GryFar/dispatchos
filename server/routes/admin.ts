@@ -671,6 +671,73 @@ export function registerAdminRoutes(app: Express): void {
   );
 
   // -------------------------------------------------------------------------
+  // POST /api/admin/users/:id/tracking-token
+  // -------------------------------------------------------------------------
+  // Generates (or rotates) a per-driver tracking token. The token is the
+  // shared secret between our /api/track/* endpoints and the GPS app on the
+  // driver's phone. Issuing a new token immediately invalidates the previous
+  // one (the next ping from the old config will 401). Use the `revoke=true`
+  // variant to disable tracking entirely.
+  app.post(
+    "/api/admin/users/:id/tracking-token",
+    admin,
+    ah((req, res) => {
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+      const target = storage.getUserById(String(req.params.id));
+      if (!target) return res.status(404).json({ message: "User not found" });
+
+      const revoke = (req.body ?? {}).revoke === true;
+      if (revoke) {
+        storage.revokeTrackingToken(target.id, actor.id);
+        return res.json({ userId: target.id, revoked: true });
+      }
+
+      const token = storage.setTrackingToken(target.id, actor.id);
+      const base = process.env.DISPATCHOS_PUBLIC_URL ?? "https://demo.dispatchos.co";
+      return res.json({
+        userId: target.id,
+        token,
+        // Pre-built URLs for the two supported apps. The driver pastes these
+        // straight into the corresponding field in Traccar Client / Owntracks.
+        osmandUrl: `${base}/api/track/osmand?id=${token}`,
+        owntracksUrl: `${base}/api/track/owntracks`,
+        owntracksUserId: token, // for the «User ID» field in Owntracks settings
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/users/:id/track?sinceHours=24
+  // -------------------------------------------------------------------------
+  // Returns the user's GPS track + current snapshot for the map widget.
+  app.get(
+    "/api/admin/users/:id/track",
+    admin,
+    ah((req, res) => {
+      const target = storage.getUserById(String(req.params.id));
+      if (!target) return res.status(404).json({ message: "User not found" });
+      const sinceHours = Math.min(Number(req.query.sinceHours ?? 24), 24 * 15);
+      const sinceIso = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
+      const pings = storage.listLocationPings(target.id, { sinceIso });
+      return res.json({
+        userId: target.id,
+        current: target.lastLat != null && target.lastLng != null
+          ? {
+              lat: target.lastLat,
+              lng: target.lastLng,
+              capturedAt: target.lastLocationAt,
+              accuracyM: target.lastLocationAccuracyM,
+              source: target.lastLocationSource,
+            }
+          : null,
+        pings,
+        hasTrackingToken: Boolean(target.trackingToken),
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
   // DELETE /api/admin/invites/:code — soft-revoke
   // -------------------------------------------------------------------------
   //

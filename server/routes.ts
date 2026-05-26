@@ -39,6 +39,7 @@ import { registerAdminIntegrationTestsRoutes } from "./routes/admin-integrations
 import { registerAdminLoadSourcesRoutes } from "./routes/admin-load-sources";
 import { registerMeRoutes } from "./routes/me";
 import { registerMeTotpRoutes } from "./routes/me-totp";
+import { registerTrackRoutes } from "./routes/track";
 import { registerDispatchRoutes } from "./routes/dispatch";
 import { registerBrokerTrustRoutes } from "./routes/broker-trust";
 import { registerCockpitRoutes } from "./routes/cockpit";
@@ -1113,6 +1114,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // -------------------------------------------------------------------------
   registerMeRoutes(app);
   registerMeTotpRoutes(app);
+  // GPS ping ingest — public (token-auth), must be BEFORE requireRole.any().
+  registerTrackRoutes(app);
 
   // Public lead capture from landing page (no auth) + dispatcher review queue.
   // Must register BEFORE any catch-all auth gate so /api/public/* is open.
