@@ -74,6 +74,11 @@ export const clientSchema = z.object({
     lane: z.number().optional(),
     location: z.number().optional(),
   }).optional(),
+  // Phase 7.2 — insurance certificate expiry tracking. ISO dates (yyyy-MM-dd).
+  // The monitor cron fires alerts at 14/7/3/1 days before any of these.
+  cargoInsuranceExpiresAt: z.string().optional(),       // «Cargo insurance» expiry
+  autoLiabilityExpiresAt: z.string().optional(),        // «Auto liability» expiry
+  generalLiabilityExpiresAt: z.string().optional(),     // «General liability» expiry (optional)
 });
 
 export const insertClientSchema = clientSchema.partial({ id: true }).extend({

@@ -137,6 +137,24 @@ export function registerCronRoutes(app: Express): void {
     });
   });
 
+  // POST /api/cron/check-insurance
+  // Daily check for upcoming insurance expirations. Anti-spam via
+  // insurance_alerts_sent. Idempotent within a day; safe to call manually.
+  app.post("/api/cron/check-insurance", async (req: Request, res: Response) => {
+    if (!requireCronSecret(req, res)) return;
+    const { runInsuranceCheck } = await import("../lib/insurance-monitor");
+    try {
+      const result = await runInsuranceCheck();
+      return res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error("[cron/check-insurance] failed:", err);
+      return res.status(500).json({
+        message: "Insurance check failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
   // POST /api/cron/purge-old-data
   // Purges GPS pings older than 15 days and fuel price observations older
   // than 90 days. Safe to call hourly; idempotent and bounded.

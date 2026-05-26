@@ -394,6 +394,26 @@ function ensureUserDriverColumns() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 7.2 — Insurance expiry alert log (anti-duplicate)
+// ---------------------------------------------------------------------------
+// One row per (client, insurance_type, days_before) once an alert is sent.
+// Cron checks existence here before sending to avoid spamming Tg/email every
+// day for the same upcoming expiry. Rows persist for audit — don't expire.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS insurance_alerts_sent (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    insurance_type TEXT NOT NULL,  -- cargo | auto_liability | general_liability
+    expires_at TEXT NOT NULL,      -- the expiry date the alert was about
+    days_before INTEGER NOT NULL,  -- 14 | 7 | 3 | 1
+    sent_at TEXT NOT NULL,
+    channels TEXT NOT NULL         -- JSON array, e.g. ["telegram","email"]
+  );
+  CREATE INDEX IF NOT EXISTS insurance_alerts_lookup_idx
+    ON insurance_alerts_sent(client_id, insurance_type, expires_at, days_before);
+`);
+
+// ---------------------------------------------------------------------------
 // Phase 7.1 — Integration configs (UI-editable secrets, encrypted at rest)
 // ---------------------------------------------------------------------------
 // One row per env-var-equivalent. Plain text NEVER stored. Values are read
@@ -1361,6 +1381,59 @@ export const storage = {
     this.audit("integration.config_cleared", "integration", integrationKey, {
       envVar, actorUserId,
     });
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 7.2 — Insurance expiry alert log
+  // -------------------------------------------------------------------------
+
+  /** Has an alert for (client, type, expires_at, days_before) already been sent? */
+  hasInsuranceAlertBeenSent(
+    clientId: string,
+    insuranceType: string,
+    expiresAt: string,
+    daysBefore: number,
+  ): boolean {
+    const row = sqlite.prepare(`
+      SELECT 1 FROM insurance_alerts_sent
+      WHERE client_id = ? AND insurance_type = ? AND expires_at = ? AND days_before = ?
+      LIMIT 1
+    `).get(clientId, insuranceType, expiresAt, daysBefore);
+    return Boolean(row);
+  },
+
+  /** Record that an insurance expiry alert was sent. */
+  recordInsuranceAlertSent(input: {
+    clientId: string;
+    insuranceType: string;
+    expiresAt: string;
+    daysBefore: number;
+    channels: string[];
+  }): string {
+    const id = makeId("insalert");
+    sqlite.prepare(`
+      INSERT INTO insurance_alerts_sent (
+        id, client_id, insurance_type, expires_at, days_before, sent_at, channels
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, input.clientId, input.insuranceType, input.expiresAt,
+      input.daysBefore, now(), JSON.stringify(input.channels),
+    );
+    this.audit("insurance.alert_sent", "client", input.clientId, {
+      insuranceType: input.insuranceType,
+      expiresAt: input.expiresAt,
+      daysBefore: input.daysBefore,
+      channels: input.channels,
+    });
+    return id;
+  },
+
+  /** History of alerts for a client (for client-detail UI). */
+  listInsuranceAlertsForClient(clientId: string, limit = 20) {
+    return sqlite.prepare(`
+      SELECT * FROM insurance_alerts_sent
+      WHERE client_id = ? ORDER BY sent_at DESC LIMIT ?
+    `).all(clientId, limit) as Array<Record<string, unknown>>;
   },
 
   /**
