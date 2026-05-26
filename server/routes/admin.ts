@@ -1876,6 +1876,67 @@ export function registerAdminRoutes(app: Express): void {
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     return res.send(md);
   });
+
+  // -------------------------------------------------------------------------
+  // FMCSA Drug & Alcohol Clearinghouse (49 CFR Part 382)
+  //
+  //   GET  /api/admin/clients/:id/clearinghouse                → per-driver status
+  //   GET  /api/admin/users/:userId/clearinghouse              → driver query log
+  //   POST /api/admin/users/:userId/clearinghouse              → record new query
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/clients/:id/clearinghouse", admin, (req, res) => {
+    const client = storage.getClient(String(req.params.id));
+    if (!client) return res.status(404).json({ message: "Client not found" });
+    const rows = storage.listClearinghouseStatusForClient(client.id);
+    return res.json({ clientId: client.id, drivers: rows });
+  });
+
+  app.get("/api/admin/users/:userId/clearinghouse", admin, (req, res) => {
+    const userId = String(req.params.userId);
+    const user = storage.getUserById(userId);
+    if (!user) return res.status(404).json({ message: "Driver not found" });
+    if (user.role !== "driver") {
+      return res.status(400).json({ message: "Clearinghouse queries are driver-only." });
+    }
+    const queries = storage.listClearinghouseQueriesForDriver(userId);
+    return res.json({ userId, queries });
+  });
+
+  app.post("/api/admin/users/:userId/clearinghouse", admin, (req, res) => {
+    const userId = String(req.params.userId);
+    const user = storage.getUserById(userId);
+    if (!user) return res.status(404).json({ message: "Driver not found" });
+    if (user.role !== "driver") {
+      return res.status(400).json({ message: "Clearinghouse queries are driver-only." });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const queryType = String(body.queryType ?? "");
+    if (queryType !== "pre_employment" && queryType !== "annual") {
+      return res.status(400).json({ message: "queryType must be 'pre_employment' or 'annual'" });
+    }
+    const result = String(body.result ?? "");
+    if (!["clear", "prohibited", "pending", "consent_revoked"].includes(result)) {
+      return res.status(400).json({
+        message: "result must be one of: clear, prohibited, pending, consent_revoked",
+      });
+    }
+    const queriedAt = String(body.queriedAt ?? new Date().toISOString());
+    if (Number.isNaN(new Date(queriedAt).getTime())) {
+      return res.status(400).json({ message: "queriedAt must be a valid ISO date" });
+    }
+    const me = getCurrentUser(req);
+    if (!me) return res.status(401).json({ message: "Unauthorized" });
+    const { id } = storage.recordClearinghouseQuery({
+      userId,
+      clientId: user.linkedClientId ?? null,
+      queryType: queryType as "pre_employment" | "annual",
+      queriedAt,
+      result: result as "clear" | "prohibited" | "pending" | "consent_revoked",
+      notes: typeof body.notes === "string" ? body.notes.slice(0, 2000) : null,
+      recordedByUserId: me.id,
+    });
+    return res.status(201).json({ ok: true, id });
+  });
 }
 
 // ===========================================================================

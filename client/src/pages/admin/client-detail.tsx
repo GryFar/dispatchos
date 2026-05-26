@@ -63,7 +63,7 @@ const US_STATES = [
   "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
 ];
 
-type TabKey = "profile" | "location" | "stats" | "fuel" | "ifta" | "safety";
+type TabKey = "profile" | "location" | "stats" | "fuel" | "ifta" | "safety" | "clearinghouse";
 
 export default function ClientDetailPage() {
   const [, params] = useRoute("/clients/:id");
@@ -158,6 +158,9 @@ export default function ClientDetailPage() {
         <TabButton active={tab === "safety"} onClick={() => setTab("safety")}>
           Safety
         </TabButton>
+        <TabButton active={tab === "clearinghouse"} onClick={() => setTab("clearinghouse")}>
+          D&A
+        </TabButton>
         <TabButton active={tab === "stats"} onClick={() => setTab("stats")}>
           Статистика
         </TabButton>
@@ -168,6 +171,7 @@ export default function ClientDetailPage() {
       {tab === "fuel" && <FuelTab client={client} />}
       {tab === "ifta" && <IftaTab client={client} />}
       {tab === "safety" && <SafetyTab client={client} />}
+      {tab === "clearinghouse" && <ClearinghouseTab client={client} />}
       {tab === "stats" && <StatsTab client={client} />}
     </div>
   );
@@ -1344,5 +1348,270 @@ function SafetyOperationalCard({ op }: { op: SafetyProfile["operational"] }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ClearinghouseTab — FMCSA Drug & Alcohol Clearinghouse query log (49 CFR §382)
+// Backend: GET /api/admin/clients/:id/clearinghouse
+//          POST /api/admin/users/:userId/clearinghouse
+// ---------------------------------------------------------------------------
+
+interface ClearinghouseDriverRow {
+  user_id: string;
+  full_name: string;
+  email: string;
+  last_annual_at: string | null;
+  annual_valid_until: string | null;
+  annual_result: string | null;
+  pre_employment_at: string | null;
+}
+
+function ClearinghouseTab({ client }: { client: Client }) {
+  const qc = useQueryClient();
+  const queryKey = ["/api/admin/clients", client.id, "clearinghouse"] as const;
+  const q = useQuery<{ drivers: ClearinghouseDriverRow[] }>({
+    queryKey,
+    queryFn: () =>
+      apiJson<{ drivers: ClearinghouseDriverRow[] }>(
+        "GET",
+        `/api/admin/clients/${client.id}/clearinghouse`,
+      ),
+  });
+
+  const [recording, setRecording] = useState<ClearinghouseDriverRow | null>(null);
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>FMCSA Drug & Alcohol Clearinghouse</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm text-muted-foreground">
+          <p>
+            FMCSA 49 CFR §382 требует <span className="font-semibold text-foreground">pre-employment</span> query
+            на каждого нового CDL driver'a и <span className="font-semibold text-foreground">annual</span> query
+            каждые 12 месяцев. Штраф $7,500/инцидент.
+          </p>
+          <p className="text-xs">
+            Сам запрос делайте на clearinghouse.fmcsa.dot.gov, а здесь фиксируйте дату и результат для audit trail.
+          </p>
+        </CardContent>
+      </Card>
+
+      {q.isLoading && (
+        <Card>
+          <CardContent className="flex h-24 items-center justify-center text-sm text-muted-foreground">
+            …
+          </CardContent>
+        </Card>
+      )}
+
+      {q.data && q.data.drivers.length === 0 && (
+        <Card>
+          <CardContent className="py-6 text-center text-sm text-muted-foreground">
+            У этого перевозчика нет привязанных водителей.
+          </CardContent>
+        </Card>
+      )}
+
+      {q.data && q.data.drivers.length > 0 && (
+        <Card>
+          <CardContent className="pt-4">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                    <th className="py-2 pr-3">Driver</th>
+                    <th className="py-2 pr-3">Pre-employment</th>
+                    <th className="py-2 pr-3">Annual last</th>
+                    <th className="py-2 pr-3">Annual valid until</th>
+                    <th className="py-2 pr-3">Status</th>
+                    <th className="py-2 pr-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {q.data.drivers.map((d) => (
+                    <ClearinghouseRow key={d.user_id} row={d} onRecord={() => setRecording(d)} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {recording && (
+        <ClearinghouseRecordDialog
+          driver={recording}
+          onClose={() => setRecording(null)}
+          onSaved={() => {
+            setRecording(null);
+            qc.invalidateQueries({ queryKey });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ClearinghouseRow({
+  row, onRecord,
+}: { row: ClearinghouseDriverRow; onRecord: () => void }) {
+  const annualValidMs = row.annual_valid_until ? new Date(row.annual_valid_until).getTime() : null;
+  const annualDaysLeft = annualValidMs !== null
+    ? Math.floor((annualValidMs - Date.now()) / (24 * 3600 * 1000))
+    : null;
+
+  let statusLabel: string;
+  let statusCls: string;
+  if (row.annual_result === "prohibited") {
+    statusLabel = "PROHIBITED";
+    statusCls = "text-destructive";
+  } else if (annualDaysLeft === null) {
+    statusLabel = "Annual missing";
+    statusCls = "text-destructive";
+  } else if (annualDaysLeft < 0) {
+    statusLabel = `Expired ${-annualDaysLeft}d ago`;
+    statusCls = "text-destructive";
+  } else if (annualDaysLeft <= 60) {
+    statusLabel = `Due in ${annualDaysLeft}d`;
+    statusCls = "text-warning";
+  } else {
+    statusLabel = "Current";
+    statusCls = "text-success";
+  }
+
+  return (
+    <tr className="border-b border-border/40">
+      <td className="py-2 pr-3 font-medium">{row.full_name || row.email}</td>
+      <td className="py-2 pr-3 text-xs text-muted-foreground">
+        {row.pre_employment_at ? new Date(row.pre_employment_at).toISOString().slice(0, 10) : "—"}
+      </td>
+      <td className="py-2 pr-3 text-xs text-muted-foreground">
+        {row.last_annual_at ? new Date(row.last_annual_at).toISOString().slice(0, 10) : "—"}
+      </td>
+      <td className="py-2 pr-3 text-xs text-muted-foreground">
+        {row.annual_valid_until ? new Date(row.annual_valid_until).toISOString().slice(0, 10) : "—"}
+      </td>
+      <td className={`py-2 pr-3 text-xs font-medium ${statusCls}`}>{statusLabel}</td>
+      <td className="py-2 pr-3 text-right">
+        <Button size="sm" variant="outline" onClick={onRecord}>Записать query</Button>
+      </td>
+    </tr>
+  );
+}
+
+function ClearinghouseRecordDialog({
+  driver, onClose, onSaved,
+}: {
+  driver: ClearinghouseDriverRow;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  const [queryType, setQueryType] = useState<"pre_employment" | "annual">("annual");
+  const [result, setResult] = useState<"clear" | "prohibited" | "pending" | "consent_revoked">("clear");
+  const [queriedAt, setQueriedAt] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+
+  const mut = useMutation({
+    mutationFn: () => apiJson("POST", `/api/admin/users/${driver.user_id}/clearinghouse`, {
+      queryType,
+      result,
+      queriedAt: new Date(queriedAt + "T12:00:00Z").toISOString(),
+      notes: notes.trim() || undefined,
+    }),
+    onSuccess: () => {
+      toast.toast({ title: "Сохранили", description: "D&A query записан в журнал." });
+      onSaved();
+    },
+    onError: (err) => {
+      toast.toast({
+        title: "Ошибка",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    },
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
+      <div className="relative w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-2xl">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Закрыть"
+          className="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <h3 className="text-base font-semibold">Записать Clearinghouse query</h3>
+        <p className="mt-1 text-xs text-muted-foreground">{driver.full_name || driver.email}</p>
+
+        <div className="mt-4 space-y-3 text-sm">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Тип запроса</label>
+            <div className="inline-flex rounded-md border border-border bg-muted/30 p-1">
+              {(["pre_employment", "annual"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setQueryType(t)}
+                  className={`rounded px-3 py-1 text-xs font-medium transition ${
+                    queryType === t ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t === "pre_employment" ? "Pre-employment" : "Annual"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Дата запроса</label>
+            <Input
+              type="date"
+              value={queriedAt}
+              onChange={(e) => setQueriedAt(e.target.value)}
+              className="max-w-xs"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Результат</label>
+            <select
+              value={result}
+              onChange={(e) => setResult(e.target.value as typeof result)}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+            >
+              <option value="clear">Clear (нет нарушений)</option>
+              <option value="prohibited">Prohibited (запрещён)</option>
+              <option value="pending">Pending (в обработке)</option>
+              <option value="consent_revoked">Consent revoked</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Заметки (опц.)</label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              maxLength={2000}
+              placeholder="FMCSA case ref, контекст"
+              className="w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={onClose} disabled={mut.isPending}>Отмена</Button>
+            <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
+              {mut.isPending ? "Сохраняем…" : "Записать"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

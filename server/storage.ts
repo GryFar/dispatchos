@@ -465,6 +465,36 @@ sqlite.exec(
   "CREATE INDEX IF NOT EXISTS users_telegram_chat_id_idx ON users(telegram_chat_id)",
 );
 
+// ---------------------------------------------------------------------------
+// FMCSA Drug & Alcohol Clearinghouse query log (paid compliance feature).
+//
+// 49 CFR Part 382 требует от carrier'а:
+//   1. PRE-EMPLOYMENT full query при найме любого CDL driver'a
+//   2. ANNUAL limited query на всех драйверов каждые 12 месяцев
+// Штраф: $7,500/инцидент (FMCSA enforcement 2026).
+//
+// Сам запрос делается вручную на clearinghouse.fmcsa.dot.gov; мы
+// фиксируем только факт выполнения и результат. Reminder cron выводит
+// drivers у кого annual query старше 11 месяцев.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS clearinghouse_queries (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,             -- driver this query is about
+    client_id TEXT,                    -- carrier who initiated
+    query_type TEXT NOT NULL,          -- 'pre_employment' | 'annual'
+    queried_at TEXT NOT NULL,          -- ISO when the query was actually run on FMCSA
+    result TEXT NOT NULL,              -- 'clear' | 'prohibited' | 'pending' | 'consent_revoked'
+    valid_until TEXT NOT NULL,         -- pre_employment: indefinite (set to 9999-12-31); annual: queried_at + 12mo
+    notes TEXT,                        -- free text (case ref, FMCSA query ID, etc.)
+    recorded_by_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS clearinghouse_user_idx
+    ON clearinghouse_queries(user_id, queried_at DESC);
+  CREATE INDEX IF NOT EXISTS clearinghouse_client_idx
+    ON clearinghouse_queries(client_id, queried_at DESC);
+`);
+
 // Indexes that depend on the new columns. Must follow ensureLoadDriverColumn
 // so we don't reference a column that doesn't exist yet on migrated DBs.
 sqlite.exec("CREATE INDEX IF NOT EXISTS loads_driver_id_idx ON loads(driver_id, created_at DESC)");
@@ -1367,6 +1397,101 @@ export const storage = {
     sqlite
       .prepare("UPDATE users SET last_used_totp_counter = ? WHERE id = ?")
       .run(counter, id);
+  },
+
+  // -------------------------------------------------------------------------
+  // FMCSA Drug & Alcohol Clearinghouse query log (49 CFR Part 382).
+  // -------------------------------------------------------------------------
+
+  recordClearinghouseQuery(input: {
+    userId: string;
+    clientId?: string | null;
+    queryType: "pre_employment" | "annual";
+    queriedAt: string;
+    result: "clear" | "prohibited" | "pending" | "consent_revoked";
+    notes?: string | null;
+    recordedByUserId: string;
+  }): { id: string } {
+    const id = makeId("chq");
+    // pre_employment действует бессрочно (только при найме); annual = 12 месяцев.
+    const queriedAt = new Date(input.queriedAt);
+    let validUntil: string;
+    if (input.queryType === "pre_employment") {
+      validUntil = "9999-12-31T00:00:00.000Z";
+    } else {
+      const v = new Date(queriedAt);
+      v.setUTCFullYear(v.getUTCFullYear() + 1);
+      validUntil = v.toISOString();
+    }
+    sqlite.prepare(`
+      INSERT INTO clearinghouse_queries (
+        id, user_id, client_id, query_type, queried_at, result, valid_until,
+        notes, recorded_by_user_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.userId,
+      input.clientId ?? null,
+      input.queryType,
+      input.queriedAt,
+      input.result,
+      validUntil,
+      input.notes ?? null,
+      input.recordedByUserId,
+      now(),
+    );
+    this.audit("clearinghouse.query_recorded", "user", input.userId, {
+      queryType: input.queryType,
+      result: input.result,
+      validUntil,
+    });
+    return { id };
+  },
+
+  listClearinghouseQueriesForDriver(userId: string) {
+    return sqlite
+      .prepare(`
+        SELECT * FROM clearinghouse_queries
+        WHERE user_id = ?
+        ORDER BY queried_at DESC
+      `)
+      .all(userId) as Array<Record<string, unknown>>;
+  },
+
+  /**
+   * Статус D&A clearinghouse по каждому драйверу одного carrier'а.
+   * Для UI list и для cron-reminder'а.
+   */
+  listClearinghouseStatusForClient(clientId: string) {
+    return sqlite.prepare(`
+      SELECT u.id AS user_id, u.full_name, u.email,
+             (SELECT queried_at FROM clearinghouse_queries q
+               WHERE q.user_id = u.id AND q.query_type = 'annual'
+               ORDER BY q.queried_at DESC LIMIT 1) AS last_annual_at,
+             (SELECT valid_until FROM clearinghouse_queries q
+               WHERE q.user_id = u.id AND q.query_type = 'annual'
+               ORDER BY q.queried_at DESC LIMIT 1) AS annual_valid_until,
+             (SELECT result FROM clearinghouse_queries q
+               WHERE q.user_id = u.id AND q.query_type = 'annual'
+               ORDER BY q.queried_at DESC LIMIT 1) AS annual_result,
+             (SELECT queried_at FROM clearinghouse_queries q
+               WHERE q.user_id = u.id AND q.query_type = 'pre_employment'
+               ORDER BY q.queried_at DESC LIMIT 1) AS pre_employment_at
+      FROM users u
+      WHERE u.role = 'driver'
+        AND u.deleted_at IS NULL
+        AND u.blocked = 0
+        AND u.linked_client_id = ?
+      ORDER BY annual_valid_until ASC NULLS FIRST, u.full_name ASC
+    `).all(clientId) as Array<{
+      user_id: string;
+      full_name: string;
+      email: string;
+      last_annual_at: string | null;
+      annual_valid_until: string | null;
+      annual_result: string | null;
+      pre_employment_at: string | null;
+    }>;
   },
 
   // -------------------------------------------------------------------------
