@@ -72,6 +72,13 @@ function rowToBrokerEvent(row: Record<string, unknown>): BrokerEvent {
 const sqlite = new Database(process.env.DISPATCHOS_DB_PATH || "dispatchos-unified.db");
 sqlite.pragma("journal_mode = WAL");
 
+// Audit Critical #5 (2026-05-26): включаем FK enforcement на все будущие
+// CREATE TABLE с FOREIGN KEY clauses. Существующие таблицы FK в DDL не имеют
+// — этот флаг НИЧЕГО не ломает в текущей базе, но разблокирует возможность
+// декларировать FK на новых таблицах и в будущих миграциях без сюрпризов.
+// SQLite ships FK OFF by default; без этого PRAGMA REFERENCES clause — no-op.
+sqlite.pragma("foreign_keys = ON");
+
 sqlite.exec(`
 CREATE TABLE IF NOT EXISTS clients (
   id TEXT PRIMARY KEY,
