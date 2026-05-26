@@ -16,15 +16,47 @@ import { storage } from "./storage";
 
 const app = express();
 const isVdsMode = process.env.DISPATCHOS_DEPLOYMENT_MODE === "vds";
+const isProdLike =
+  process.env.NODE_ENV === "production" ||
+  isVdsMode ||
+  process.env.FLY_APP_NAME !== undefined;
 
-if (
-  isVdsMode &&
-  (!process.env.DISPATCHOS_SESSION_SECRET ||
-    process.env.DISPATCHOS_SESSION_SECRET === "change-this-before-real-use" ||
-    process.env.DISPATCHOS_SESSION_SECRET === "change-this-local-dispatchos-secret-before-production")
-) {
-  throw new Error("VDS mode requires a strong DISPATCHOS_SESSION_SECRET in .env");
+// -----------------------------------------------------------------------------
+// Session secret boot gate (Audit Critical #3).
+//
+// Any production-like deployment (NODE_ENV=production, VDS mode, or running
+// on Fly.io) MUST set DISPATCHOS_SESSION_SECRET to a strong value (≥ 32 chars,
+// not the historical placeholders). In local dev a default is allowed so
+// developers don't need to wire up env vars to run `npm run dev`.
+//
+// History: prior to 2026-05-26 only `vds` mode enforced this. Fly deployments
+// without DISPATCHOS_DEPLOYMENT_MODE=vds silently fell back to the placeholder
+// secret — a known string, trivial session forgery surface.
+// -----------------------------------------------------------------------------
+const PLACEHOLDER_SECRETS = new Set([
+  "change-this-before-real-use",
+  "change-this-local-dispatchos-secret-before-production",
+]);
+const sessionSecretFromEnv = process.env.DISPATCHOS_SESSION_SECRET;
+if (isProdLike) {
+  if (!sessionSecretFromEnv) {
+    throw new Error(
+      "DISPATCHOS_SESSION_SECRET must be set in production / Fly / VDS mode (>= 32 chars).",
+    );
+  }
+  if (PLACEHOLDER_SECRETS.has(sessionSecretFromEnv)) {
+    throw new Error(
+      "DISPATCHOS_SESSION_SECRET is set to a known placeholder. Rotate it before booting.",
+    );
+  }
+  if (sessionSecretFromEnv.length < 32) {
+    throw new Error(
+      "DISPATCHOS_SESSION_SECRET is too short (must be >= 32 chars in production).",
+    );
+  }
 }
+const sessionSecret =
+  sessionSecretFromEnv || "change-this-local-dispatchos-secret-before-production";
 
 if (isVdsMode) {
   app.set("trust proxy", Number(process.env.DISPATCHOS_TRUST_PROXY || 1));
@@ -81,8 +113,7 @@ fs.mkdirSync(dataRoot, { recursive: true });
 app.use(
   session({
     name: "dispatchos.sid",
-    secret:
-      process.env.DISPATCHOS_SESSION_SECRET || "change-this-local-dispatchos-secret-before-production",
+    secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
     store: new (SQLiteStore as any)({
@@ -93,7 +124,12 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.DISPATCHOS_COOKIE_SECURE === "true",
+      // Default to secure cookies in any production-like deployment. Explicit
+      // opt-out only via DISPATCHOS_COOKIE_SECURE=false (e.g. local HTTPS proxy).
+      secure:
+        process.env.DISPATCHOS_COOKIE_SECURE === "false"
+          ? false
+          : process.env.DISPATCHOS_COOKIE_SECURE === "true" || isProdLike,
       maxAge: 12 * 60 * 60 * 1000,
     },
   }),
