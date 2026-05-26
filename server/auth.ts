@@ -33,7 +33,7 @@ export function verifyPassword(password: string, salt: string, expectedHash: str
 }
 
 // ===========================================================================
-// TOTP (RFC 6238, SHA1, 30s, 6 digits, ±1 window drift) — unchanged
+// TOTP (RFC 6238, SHA1, 30s, 6 digits, ±2 window drift = 150s tolerance)
 // ===========================================================================
 
 export function generateBase32Secret(length = 20) {
@@ -73,9 +73,14 @@ function hotp(secret: string, counter: number) {
 }
 
 export function verifyTotp(secret: string, token: string) {
-  const clean = token.replace(/\s+/g, "");
+  // Strip whitespace and any non-digit (e.g. soft hyphens from clipboard).
+  const clean = token.replace(/\D+/g, "");
+  if (clean.length !== 6) return false;
   const counter = Math.floor(Date.now() / 30_000);
-  for (const drift of [-1, 0, 1]) {
+  // ±2 window = 150 seconds of tolerance. RFC 6238 allows up to ±1 by
+  // default but users frequently type slower than 30s and authenticator
+  // apps can drift up to a minute, so we widen to ±2.
+  for (const drift of [-2, -1, 0, 1, 2]) {
     if (hotp(secret, counter + drift) === clean) return true;
   }
   return false;
