@@ -976,9 +976,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(401).json({ message: "Invalid credentials" });
     }
     if (user.totpSecret) {
-      if (!verifyTotp(user.totpSecret, String(body.token || ""))) {
+      // Audit High #11 — reject replays by passing the last accepted counter.
+      const minCounter = storage.getLastUsedTotpCounter(user.id);
+      const acceptedCounter = verifyTotp(user.totpSecret, String(body.token || ""), minCounter);
+      if (acceptedCounter === null) {
         return res.status(401).json({ message: "Invalid 2FA token" });
       }
+      storage.setLastUsedTotpCounter(user.id, acceptedCounter);
     }
     req.session.userId = user.id;
     req.session.role = user.role;

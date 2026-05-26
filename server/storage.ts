@@ -391,6 +391,13 @@ function ensureUserDriverColumns() {
     // (now - last_seen_at) < 2 minutes.
     sqlite.exec("ALTER TABLE users ADD COLUMN last_seen_at TEXT");
   }
+  if (!names.has("last_used_totp_counter")) {
+    // Audit High #11 — TOTP replay protection.
+    // Stores the most-recently-accepted RFC 6238 counter for this user.
+    // verifyTotp() rejects any code whose counter is <= this value,
+    // preventing replay of an observed 6-digit code within its ±1 window.
+    sqlite.exec("ALTER TABLE users ADD COLUMN last_used_totp_counter INTEGER");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1319,6 +1326,21 @@ export const storage = {
 
   recordUserLogin(id: string) {
     sqlite.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(now(), id);
+  },
+
+  /** Audit High #11 — TOTP replay protection: last counter that was accepted. */
+  getLastUsedTotpCounter(id: string): number | null {
+    const row = sqlite
+      .prepare("SELECT last_used_totp_counter FROM users WHERE id = ?")
+      .get(id) as { last_used_totp_counter: number | null } | undefined;
+    return row?.last_used_totp_counter ?? null;
+  },
+
+  /** Persist the counter that was just accepted so future codes ≤ it are rejected. */
+  setLastUsedTotpCounter(id: string, counter: number): void {
+    sqlite
+      .prepare("UPDATE users SET last_used_totp_counter = ? WHERE id = ?")
+      .run(counter, id);
   },
 
   // -------------------------------------------------------------------------

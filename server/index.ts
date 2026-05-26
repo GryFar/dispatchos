@@ -101,6 +101,37 @@ app.use(
 );
 
 // ---------------------------------------------------------------------------
+// Audit Critical #4 — dedicated rate limits on credential/2FA endpoints.
+//
+// The global /api bucket of 240/min is generous enough to brute-force a 6-digit
+// TOTP code or to enumerate emails via login-error timing. These limiters
+// apply per-IP on top of the global one, and use a 15-minute window with a
+// low ceiling. We register them BEFORE the routes are wired up so they cover
+// all four auth-style endpoints regardless of route order.
+// ---------------------------------------------------------------------------
+const authBruteLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: Number(process.env.DISPATCHOS_AUTH_RATE_LIMIT_PER_15MIN || 10),
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Custom key combines IP + (email|token) so credential stuffing across one
+  // user is throttled even when distributed across many IPs from the same
+  // upstream NAT. Body is read after express.json() so it's already parsed.
+  keyGenerator: (req) => {
+    const ip = req.ip || "unknown";
+    const body = (req.body || {}) as { email?: string; username?: string; token?: string };
+    const ident = (body.email || body.username || "").toString().toLowerCase().trim();
+    return ident ? `${ip}|${ident}` : ip;
+  },
+  message: { message: "Too many attempts. Try again in 15 minutes." },
+});
+app.use("/api/auth/login", authBruteLimiter);
+app.use("/api/auth/signup", authBruteLimiter);
+app.use("/api/auth/bootstrap", authBruteLimiter);
+app.use("/api/auth/setup", authBruteLimiter); // legacy alias of /bootstrap
+app.use("/api/me/totp/confirm", authBruteLimiter);
+
+// ---------------------------------------------------------------------------
 // Persistent session store (SQLite). Sessions live in their own file alongside
 // uploads + drive under DISPATCHOS_DATA_ROOT, so a bizdata backup doesn't drag
 // ephemeral sessions with it. Replaces the v1.2.7 in-process MemoryStore.

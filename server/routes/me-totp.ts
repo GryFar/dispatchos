@@ -107,12 +107,17 @@ export function registerMeTotpRoutes(app: Express): void {
         });
       }
 
-      if (!verifyTotp(pending, body.token)) {
+      // Audit High #11/#12 — verifyTotp returns the accepted counter or null.
+      // For initial setup minCounter=null (no replay history yet); we seed it
+      // with the counter we just accepted so future logins reject replays.
+      const acceptedCounter = verifyTotp(pending, body.token);
+      if (acceptedCounter === null) {
         return res.status(401).json({ message: "Invalid 2FA token" });
       }
 
       const updated = storage.updateUser(user.id, { totpSecret: pending }, user.id);
       if (!updated) return res.status(404).json({ message: "User not found" });
+      storage.setLastUsedTotpCounter(user.id, acceptedCounter);
 
       // Clear the staging field — secret is now in the DB.
       req.session.pendingTotpSecret = undefined;
