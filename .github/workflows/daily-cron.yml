@@ -1,0 +1,60 @@
+name: Daily Cron (billing + compliance)
+
+# Fires every day at 13:00 UTC (09:00 ET / 06:00 PT) — early morning for US ops.
+# Hits three endpoints in sequence:
+#   1. /api/cron/check-insurance       — insurance expiry alerts (Phase 7.2)
+#   2. /api/cron/check-renewals        — UCR/IRP renewal alerts (PR #86)
+#   3. /api/cron/check-trial-expiry    — trial reminders + auto-expire (PR #94)
+#
+# Each call is independent — a failure on one doesn't skip the others.
+# All endpoints are anti-spam / idempotent on their own (anti-dupe rows).
+
+on:
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: daily-cron
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check insurance expiries
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS -X POST "https://dispatchos.co/api/cron/check-insurance" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            --max-time 60 | head -c 800
+          echo ""
+
+      - name: Check UCR/IRP renewals
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS -X POST "https://dispatchos.co/api/cron/check-renewals" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            --max-time 60 | head -c 800
+          echo ""
+
+      - name: Check trial expiry
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS -X POST "https://dispatchos.co/api/cron/check-trial-expiry" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            --max-time 60 | head -c 800
+          echo ""
+
+      - name: Purge old data (audit, fuel, email, pings)
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS -X POST "https://dispatchos.co/api/cron/purge-old-data" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            --max-time 60 | head -c 800
+          echo ""
