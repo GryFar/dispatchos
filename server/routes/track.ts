@@ -38,13 +38,28 @@ function ah(
   };
 }
 
-/** Parse a unix-seconds or unix-millis timestamp into an ISO string. */
-function parseTimestamp(raw: unknown): string {
-  if (raw == null || raw === "") return new Date().toISOString();
+/**
+ * Parse a unix-seconds or unix-millis timestamp into an ISO string, clamped to
+ * a freshness window. Devices (and anyone holding a tracking_token) can stamp
+ * pings to arbitrary past dates, which would poison IFTA quarter attribution
+ * and trip metrics (audit #13). We accept only [now-5min, now+1min]; anything
+ * outside that — including unparseable input — falls back to server now().
+ */
+const PING_MAX_AGE_MS = 5 * 60 * 1000; // 5 min in the past
+const PING_MAX_SKEW_MS = 60 * 1000; // 1 min in the future (clock drift)
+
+export function parseTimestamp(raw: unknown): string {
+  const now = Date.now();
+  if (raw == null || raw === "") return new Date(now).toISOString();
   const n = Number(raw);
-  if (!Number.isFinite(n)) return new Date().toISOString();
+  if (!Number.isFinite(n)) return new Date(now).toISOString();
   // Heuristic: if 13+ digits, it's already millis; else seconds.
   const ms = n > 9_999_999_999 ? n : n * 1000;
+  // Clamp to the freshness window — reject stale/future stamps by falling back
+  // to server time, so a forged timestamp can't be attributed to another day.
+  if (ms < now - PING_MAX_AGE_MS || ms > now + PING_MAX_SKEW_MS) {
+    return new Date(now).toISOString();
+  }
   return new Date(ms).toISOString();
 }
 
