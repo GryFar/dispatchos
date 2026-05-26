@@ -464,6 +464,20 @@ sqlite.exec(`
     updated_by_user_id TEXT,
     PRIMARY KEY (integration_key, env_var)
   );
+
+  -- Onboarding wizard state machine (per user request 2026-05-26).
+  -- One row per user that has started but not completed onboarding;
+  -- row is preserved post-completion for audit + step revisits.
+  CREATE TABLE IF NOT EXISTS onboarding_progress (
+    user_id TEXT PRIMARY KEY,
+    step INTEGER NOT NULL DEFAULT 0,
+    data TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS onboarding_progress_completed_idx
+    ON onboarding_progress(completed_at);
 `);
 ensureUserDriverColumns();
 ensureDriverDocumentsColumns();
@@ -1702,6 +1716,59 @@ export const storage = {
       SELECT * FROM compliance_alerts_sent
       WHERE client_id = ? ORDER BY sent_at DESC LIMIT ?
     `).all(clientId, limit) as Array<Record<string, unknown>>;
+  },
+
+  // -------------------------------------------------------------------------
+  // Onboarding wizard progress (per user request 2026-05-26)
+  // -------------------------------------------------------------------------
+
+  /** Read the user's onboarding row; returns null if they never started. */
+  getOnboardingProgress(userId: string): {
+    userId: string;
+    step: number;
+    data: Record<string, unknown>;
+    startedAt: string;
+    updatedAt: string;
+    completedAt: string | null;
+  } | null {
+    const row = sqlite
+      .prepare("SELECT * FROM onboarding_progress WHERE user_id = ?")
+      .get(userId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      userId: row.user_id as string,
+      step: Number(row.step ?? 0),
+      data: JSON.parse((row.data as string) ?? "{}") as Record<string, unknown>,
+      startedAt: row.started_at as string,
+      updatedAt: row.updated_at as string,
+      completedAt: (row.completed_at as string | null) ?? null,
+    };
+  },
+
+  /** Insert or update onboarding row. Merges `data` shallowly so callers can
+   *  send partial answers per step without losing prior keys. */
+  upsertOnboardingProgress(
+    userId: string,
+    patch: { step?: number; data?: Record<string, unknown>; completed?: boolean },
+  ): void {
+    const existing = this.getOnboardingProgress(userId);
+    const ts = now();
+    const mergedData = { ...(existing?.data ?? {}), ...(patch.data ?? {}) };
+    const step = patch.step ?? existing?.step ?? 0;
+    const completedAt = patch.completed ? ts : existing?.completedAt ?? null;
+    if (existing) {
+      sqlite
+        .prepare(
+          "UPDATE onboarding_progress SET step = ?, data = ?, updated_at = ?, completed_at = ? WHERE user_id = ?",
+        )
+        .run(step, JSON.stringify(mergedData), ts, completedAt, userId);
+    } else {
+      sqlite
+        .prepare(
+          "INSERT INTO onboarding_progress (user_id, step, data, started_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(userId, step, JSON.stringify(mergedData), ts, ts, completedAt);
+    }
   },
 
   /**
