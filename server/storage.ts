@@ -419,9 +419,43 @@ sqlite.exec(`
     sum_rate INTEGER NOT NULL DEFAULT 0,
     sum_miles INTEGER NOT NULL DEFAULT 0,
     last_seen_at TEXT NOT NULL,
+    dow_distribution TEXT,
     PRIMARY KEY (origin_state, destination_state)
   )
 `);
+
+// Additive migration: existing DBs created before dow_distribution gain it now.
+try {
+  sqlite.exec("ALTER TABLE lane_history ADD COLUMN dow_distribution TEXT");
+} catch {
+  // Column already exists — fine.
+}
+
+// ---------------------------------------------------------------------------
+// Killer #4 — Predictive Load Hunting: lane watchlist.
+// A dispatcher watches a lane (origin→dest state, optional city/equipment/min
+// PPM). When a matching load lands we bump match_count + last_matched_at and
+// emit an audit event. No TG alerts yet (dispatcher bot not wired).
+// ---------------------------------------------------------------------------
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS lane_watchlist (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    origin_state TEXT NOT NULL,
+    origin_city TEXT,
+    destination_state TEXT NOT NULL,
+    destination_city TEXT,
+    min_ppm REAL,
+    equipment TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    match_count INTEGER NOT NULL DEFAULT 0,
+    last_matched_at TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL
+  )
+`);
+sqlite.exec("CREATE INDEX IF NOT EXISTS idx_lane_watchlist_client ON lane_watchlist (client_id)");
+sqlite.exec("CREATE INDEX IF NOT EXISTS idx_lane_watchlist_active ON lane_watchlist (active)");
 
 // ---------------------------------------------------------------------------
 // Phase 4 P1: new tables for driver operations
@@ -2948,6 +2982,8 @@ export const storage = {
   },
 
   recordLaneObservation(originState: string, destState: string, rate: number, miles: number) {
+    const o = originState.toUpperCase();
+    const d = destState.toUpperCase();
     sqlite.prepare(`
       INSERT INTO lane_history (origin_state, destination_state, loads_seen, sum_rate, sum_miles, last_seen_at)
       VALUES (?, ?, 1, ?, ?, ?)
@@ -2956,7 +2992,25 @@ export const storage = {
         sum_rate       = sum_rate + excluded.sum_rate,
         sum_miles      = sum_miles + excluded.sum_miles,
         last_seen_at   = excluded.last_seen_at
-    `).run(originState.toUpperCase(), destState.toUpperCase(), rate, miles, now());
+    `).run(o, d, rate, miles, now());
+
+    // Accumulate day-of-week distribution (0=Sun..6=Sat) for future predictions.
+    const dow = new Date().getDay();
+    const row = sqlite
+      .prepare("SELECT dow_distribution FROM lane_history WHERE origin_state = ? AND destination_state = ?")
+      .get(o, d) as { dow_distribution: string | null } | undefined;
+    let dist: Record<string, number> = {};
+    if (row?.dow_distribution) {
+      try {
+        dist = JSON.parse(row.dow_distribution) as Record<string, number>;
+      } catch {
+        dist = {};
+      }
+    }
+    dist[String(dow)] = (dist[String(dow)] ?? 0) + 1;
+    sqlite
+      .prepare("UPDATE lane_history SET dow_distribution = ? WHERE origin_state = ? AND destination_state = ?")
+      .run(JSON.stringify(dist), o, d);
   },
 
   // -------------------------------------------------------------------------
@@ -3131,6 +3185,128 @@ export const storage = {
     ).get(originState.toUpperCase(), destState.toUpperCase()) as { loads_seen: number; sum_rate: number; sum_miles: number } | undefined;
     if (!row || row.sum_miles === 0) return undefined;
     return { avgPpm: row.sum_rate / row.sum_miles, loadsSeen: row.loads_seen };
+  },
+
+  // -------------------------------------------------------------------------
+  // Killer #4 — lane watchlist + predictions (dow distribution).
+  // -------------------------------------------------------------------------
+  createLaneWatch(input: {
+    clientId: string;
+    originState: string;
+    originCity?: string | null;
+    destinationState: string;
+    destinationCity?: string | null;
+    minPpm?: number | null;
+    equipment?: string | null;
+    createdBy?: string | null;
+  }): { id: string } {
+    const id = makeId("watch");
+    sqlite.prepare(`
+      INSERT INTO lane_watchlist (
+        id, client_id, origin_state, origin_city, destination_state, destination_city,
+        min_ppm, equipment, active, match_count, last_matched_at, created_by, created_at
+      ) VALUES (?,?,?,?,?,?,?,?,1,0,NULL,?,?)
+    `).run(
+      id,
+      input.clientId,
+      input.originState.toUpperCase(),
+      input.originCity ?? null,
+      input.destinationState.toUpperCase(),
+      input.destinationCity ?? null,
+      typeof input.minPpm === "number" ? input.minPpm : null,
+      input.equipment ?? null,
+      input.createdBy ?? null,
+      now(),
+    );
+    return { id };
+  },
+
+  listLaneWatchesByClient(clientId: string): any[] {
+    return sqlite
+      .prepare("SELECT * FROM lane_watchlist WHERE client_id = ? ORDER BY created_at DESC")
+      .all(clientId);
+  },
+
+  listActiveLaneWatches(): any[] {
+    return sqlite.prepare("SELECT * FROM lane_watchlist WHERE active = 1").all();
+  },
+
+  deleteLaneWatch(id: string, clientId: string): { deleted: boolean } {
+    const res = sqlite
+      .prepare("DELETE FROM lane_watchlist WHERE id = ? AND client_id = ?")
+      .run(id, clientId);
+    return { deleted: res.changes > 0 };
+  },
+
+  bumpLaneWatchMatch(id: string): void {
+    sqlite
+      .prepare("UPDATE lane_watchlist SET match_count = match_count + 1, last_matched_at = ? WHERE id = ?")
+      .run(now(), id);
+  },
+
+  // Match a freshly-created load against active watches. State must match;
+  // optional min_ppm / equipment filters narrow further. Bumps match_count +
+  // emits an audit event per hit. Returns the watches that matched.
+  matchLoadAgainstWatches(load: {
+    id: string;
+    originState: string;
+    destinationState: string;
+    rate: number;
+    loadedMiles: number;
+    equipment?: string | null;
+  }): Array<{ id: string; clientId: string }> {
+    const watches = this.listActiveLaneWatches() as Array<{
+      id: string;
+      client_id: string;
+      origin_state: string;
+      destination_state: string;
+      min_ppm: number | null;
+      equipment: string | null;
+    }>;
+    const o = load.originState.toUpperCase();
+    const d = load.destinationState.toUpperCase();
+    const ppm = load.loadedMiles > 0 ? load.rate / load.loadedMiles : 0;
+    const matched: Array<{ id: string; clientId: string }> = [];
+    for (const w of watches) {
+      if (w.origin_state !== o || w.destination_state !== d) continue;
+      if (typeof w.min_ppm === "number" && ppm < w.min_ppm) continue;
+      if (w.equipment && load.equipment && w.equipment !== load.equipment) continue;
+      this.bumpLaneWatchMatch(w.id);
+      this.audit("watchlist.matched", "lane_watchlist", w.id, {
+        loadId: load.id,
+        clientId: w.client_id,
+        lane: `${o}->${d}`,
+        ppm: Math.round(ppm * 100) / 100,
+      });
+      matched.push({ id: w.id, clientId: w.client_id });
+    }
+    return matched;
+  },
+
+  getLanePrediction(originState: string, destState: string): {
+    loadsSeen: number;
+    avgPpm: number;
+    dowDistribution: Record<string, number>;
+  } | undefined {
+    const row = sqlite.prepare(
+      "SELECT loads_seen, sum_rate, sum_miles, dow_distribution FROM lane_history WHERE origin_state = ? AND destination_state = ?",
+    ).get(originState.toUpperCase(), destState.toUpperCase()) as
+      | { loads_seen: number; sum_rate: number; sum_miles: number; dow_distribution: string | null }
+      | undefined;
+    if (!row) return undefined;
+    let dow: Record<string, number> = {};
+    if (row.dow_distribution) {
+      try {
+        dow = JSON.parse(row.dow_distribution) as Record<string, number>;
+      } catch {
+        dow = {};
+      }
+    }
+    return {
+      loadsSeen: row.loads_seen,
+      avgPpm: row.sum_miles > 0 ? row.sum_rate / row.sum_miles : 0,
+      dowDistribution: dow,
+    };
   },
 
   listEmailIngest(limit = 50) {

@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LayoutGrid,
   LogOut,
+  Target,
   Menu,
   Truck,
 } from "lucide-react";
@@ -46,6 +47,7 @@ const NAV: NavItem[] = [
   { href: "/cockpit", label: "Кокпит", icon: LayoutGrid },
   { href: "/clients", label: "Клиенты", icon: Briefcase },
   { href: "/loads", label: "Грузы", icon: Truck },
+  { href: "/predictions", label: "Прогнозы", icon: Target },
   { href: "/queue", label: "Очередь", icon: Inbox, badgeKey: "queueCount" },
 ];
 
