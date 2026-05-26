@@ -78,18 +78,35 @@ function hotp(secret: string, counter: number) {
   return String(code % 1_000_000).padStart(6, "0");
 }
 
-export function verifyTotp(secret: string, token: string) {
+/**
+ * Verify a TOTP token.
+ *
+ * Audit hardening (2026-05-26):
+ *  - High #12: window narrowed from ±2 (150s tolerance) to ±1 (90s),
+ *    matching RFC 6238 guidance. Reduces brute-force surface 60%.
+ *  - High #11: optional `minCounter` enables replay protection — caller
+ *    passes the last successfully-accepted counter, we refuse any drift
+ *    ≤ minCounter. Caller must persist the returned counter on success.
+ *
+ * Returns the accepted counter on success (>= minCounter), or `null` on
+ * failure. Call sites that don't yet track replay can ignore the value;
+ * passing `null` for minCounter preserves the old (replay-tolerant) behaviour.
+ */
+export function verifyTotp(
+  secret: string,
+  token: string,
+  minCounter: number | null = null,
+): number | null {
   // Strip whitespace and any non-digit (e.g. soft hyphens from clipboard).
   const clean = token.replace(/\D+/g, "");
-  if (clean.length !== 6) return false;
+  if (clean.length !== 6) return null;
   const counter = Math.floor(Date.now() / 30_000);
-  // ±2 window = 150 seconds of tolerance. RFC 6238 allows up to ±1 by
-  // default but users frequently type slower than 30s and authenticator
-  // apps can drift up to a minute, so we widen to ±2.
-  for (const drift of [-2, -1, 0, 1, 2]) {
-    if (hotp(secret, counter + drift) === clean) return true;
+  for (const drift of [-1, 0, 1]) {
+    const candidate = counter + drift;
+    if (minCounter !== null && candidate <= minCounter) continue;
+    if (hotp(secret, candidate) === clean) return candidate;
   }
-  return false;
+  return null;
 }
 
 export function buildOtpAuthUrl(username: string, secret: string) {
