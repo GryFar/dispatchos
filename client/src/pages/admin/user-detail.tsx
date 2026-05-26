@@ -45,6 +45,8 @@ import {
 } from "@/components/ui/command";
 import { RoleBadge } from "@/components/dispatch/RoleBadge";
 import { formatDateFull } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { ResetTotpDialog } from "@/pages/admin/users";
 
 /**
  * Admin / User detail — /admin/users/:id
@@ -63,9 +65,16 @@ const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
 
 type FormState = {
   fullName: string;
+  email: string;
   role: UserRole;
   linkedClientId: string;
   phone: string;
+  /**
+   * UI-only field for drivers. When false (owner-operator), we send
+   * linkedClientId=null to the backend regardless of the combobox value.
+   * When true (employee), we send the selected client.
+   */
+  driverIsEmployee: boolean;
 };
 
 export default function UserDetailPage() {
@@ -83,20 +92,26 @@ export default function UserDetailPage() {
 
   const [form, setForm] = useState<FormState>({
     fullName: "",
+    email: "",
     role: "driver",
     linkedClientId: "",
     phone: "",
+    driverIsEmployee: true,
   });
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [resetTotpMode, setResetTotpMode] = useState<"rotate" | "disable" | null>(null);
 
   // Hydrate the form once data arrives (or when the user id changes).
   useEffect(() => {
     if (data) {
       setForm({
         fullName: data.fullName ?? "",
+        email: data.email,
         role: data.role,
         linkedClientId: data.linkedClientId ?? "",
         phone: data.phone ?? "",
+        // For drivers: employee if a linkedClientId is set, otherwise owner-op.
+        driverIsEmployee: Boolean(data.linkedClientId),
       });
     }
   }, [data]);
@@ -108,8 +123,18 @@ export default function UserDetailPage() {
         role: form.role,
         phone: form.phone || null,
       };
-      // linkedClientId is only meaningful for drivers; send null otherwise.
-      body.linkedClientId = form.role === "driver" ? form.linkedClientId || null : null;
+      // Only send email if it actually changed — saves an audit event and
+      // avoids the uniqueness check round-trip for no-op saves.
+      if (data && form.email.trim().toLowerCase() !== data.email.toLowerCase()) {
+        body.email = form.email.trim();
+      }
+      // linkedClientId is only meaningful for drivers employed by a company.
+      // Owner-operators and non-drivers always get null.
+      if (form.role === "driver" && form.driverIsEmployee) {
+        body.linkedClientId = form.linkedClientId || null;
+      } else {
+        body.linkedClientId = null;
+      }
       return apiJson<UserPublic>("PATCH", `/api/admin/users/${userId}`, body);
     },
     onSuccess: () => {
@@ -229,6 +254,20 @@ export default function UserDetailPage() {
           </div>
 
           <div className="space-y-1.5">
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              type="email"
+              value={form.email}
+              disabled={isDeleted}
+              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Используется для входа. Изменение потребует от юзера входить по новому адресу.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
             <Label>Роль</Label>
             <Select
               value={form.role}
@@ -249,16 +288,51 @@ export default function UserDetailPage() {
           </div>
 
           {form.role === "driver" && (
-            <div className="space-y-1.5">
-              <Label>Привязанный клиент</Label>
-              <ClientCombobox
-                value={form.linkedClientId}
-                disabled={isDeleted}
-                onChange={(v) => setForm((f) => ({ ...f, linkedClientId: v }))}
-              />
-              <p className="text-[11px] text-muted-foreground">
-                Водитель видит только этого клиента на своём дашборде.
-              </p>
+            <div className="space-y-2">
+              <Label>Тип занятости</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={isDeleted}
+                  onClick={() => setForm((f) => ({ ...f, driverIsEmployee: true }))}
+                  className={cn(
+                    "rounded-md border px-3 py-2 text-left text-sm transition",
+                    form.driverIsEmployee
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border text-muted-foreground hover:border-foreground/30",
+                  )}
+                >
+                  <div className="font-medium">Работает на компанию</div>
+                  <div className="mt-0.5 text-[11px] opacity-80">Привязывается к конкретному carrier</div>
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeleted}
+                  onClick={() => setForm((f) => ({ ...f, driverIsEmployee: false, linkedClientId: "" }))}
+                  className={cn(
+                    "rounded-md border px-3 py-2 text-left text-sm transition",
+                    !form.driverIsEmployee
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border text-muted-foreground hover:border-foreground/30",
+                  )}
+                >
+                  <div className="font-medium">Owner-operator</div>
+                  <div className="mt-0.5 text-[11px] opacity-80">Сам себе carrier, без привязки</div>
+                </button>
+              </div>
+              {form.driverIsEmployee && (
+                <div className="space-y-1.5 pt-1">
+                  <Label>Клиент (carrier)</Label>
+                  <ClientCombobox
+                    value={form.linkedClientId}
+                    disabled={isDeleted}
+                    onChange={(v) => setForm((f) => ({ ...f, linkedClientId: v }))}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Водитель видит только этого клиента на своём дашборде.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
@@ -302,6 +376,48 @@ export default function UserDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Security card — 2FA reset / disable */}
+      {!isDeleted && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Безопасность</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">Two-Factor Authentication</p>
+                <p className="text-xs text-muted-foreground">
+                  {data.twoFactorEnabled
+                    ? "Включено. Пользователь вводит 6-значный код при входе."
+                    : "Не включено. При входе код не запрашивается."}
+                </p>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setResetTotpMode("rotate")}
+                >
+                  <ShieldCheck className="h-4 w-4" /> Новый QR
+                </Button>
+                {data.twoFactorEnabled && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setResetTotpMode("disable")}
+                  >
+                    <ShieldOff className="h-4 w-4" /> Отключить
+                  </Button>
+                )}
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              «Новый QR» — выдаёт сразу новый секрет. «Отключить» — убирает 2FA, юзер зайдёт без кода и сможет настроить 2FA заново в Настройках.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Danger zone */}
       {!isDeleted && (
         <Card className="border-destructive/30">
@@ -342,6 +458,18 @@ export default function UserDetailPage() {
             </Button>
           </div>
         </div>
+      )}
+
+      {/* TOTP reset / disable dialog (shared with users list) */}
+      {resetTotpMode && data && (
+        <ResetTotpDialog
+          user={data}
+          initialMode={resetTotpMode === "rotate" ? "reset" : "disable"}
+          onClose={() => {
+            setResetTotpMode(null);
+            qc.invalidateQueries({ queryKey: ["/api/admin/users", userId] });
+          }}
+        />
       )}
 
       {/* Delete confirm dialog */}

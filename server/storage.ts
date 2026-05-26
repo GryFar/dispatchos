@@ -1011,6 +1011,7 @@ export const storage = {
     id: string,
     patch: {
       fullName?: string;
+      email?: string;
       role?: UserRole;
       blocked?: boolean;
       linkedClientId?: string | null;
@@ -1030,6 +1031,11 @@ export const storage = {
     if (patch.fullName !== undefined) {
       sets.push("full_name = ?");
       params.push(patch.fullName);
+    }
+    if (patch.email !== undefined) {
+      // Normalize to lowercase so getUserByEmail lookups stay consistent.
+      sets.push("email = ?");
+      params.push(patch.email.toLowerCase());
     }
     if (patch.role !== undefined) {
       sets.push("role = ?");

@@ -909,12 +909,12 @@ type ResetTotpResponse =
   | { userId: string; totpSecret: string; otpauthUrl: string }
   | { userId: string; totpDisabled: true };
 
-function ResetTotpDialog({ user, onClose }: { user: UserPublic; onClose: () => void }) {
+export function ResetTotpDialog({ user, onClose, initialMode }: { user: UserPublic; onClose: () => void; initialMode?: "reset" | "disable" }) {
   const { toast } = useToast();
   const { copy, copied } = useClipboard();
   const qc = useQueryClient();
   const [result, setResult] = useState<ResetTotpResponse | null>(null);
-  const [mode, setMode] = useState<"reset" | "disable">("reset");
+  const [mode, setMode] = useState<"reset" | "disable">(initialMode ?? "reset");
 
   const mutation = useMutation({
     mutationFn: () =>

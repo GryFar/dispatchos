@@ -297,6 +297,8 @@ export const createUserSchema = z.object({
 // Used by PATCH /api/admin/users/:id in Phase 3.
 export const updateUserSchema = z.object({
   fullName: z.string().min(1).optional(),
+  email: z.string().email().optional(),
+  phone: z.string().nullable().optional(),
   role: userRoleSchema.optional(),
   blocked: z.boolean().optional(),
   linkedClientId: z.string().nullable().optional(),

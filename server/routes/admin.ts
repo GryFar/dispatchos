@@ -330,6 +330,17 @@ export function registerAdminRoutes(app: Express): void {
         return res.status(400).json({ message: "Cannot block yourself" });
       }
 
+      // Email uniqueness check. Lowercase compare matches getUserByEmail.
+      if (patch.email !== undefined) {
+        const normalized = patch.email.toLowerCase();
+        if (normalized !== target.email.toLowerCase()) {
+          const conflict = storage.getUserByEmail(normalized);
+          if (conflict && conflict.id !== target.id) {
+            return res.status(409).json({ message: "Email уже используется другим пользователем" });
+          }
+        }
+      }
+
       // linkedClientId is only meaningful for drivers.
       const effectiveRole = patch.role ?? target.role;
       if (patch.linkedClientId !== undefined && patch.linkedClientId !== null) {
@@ -359,6 +370,8 @@ export function registerAdminRoutes(app: Express): void {
         target.id,
         {
           fullName: patch.fullName,
+          email: patch.email,
+          phone: patch.phone,
           role: patch.role,
           blocked: patch.blocked,
           linkedClientId: dropLinkedClient ? null : patch.linkedClientId,

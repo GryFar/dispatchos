@@ -38,6 +38,7 @@ import { registerAdminRoutes } from "./routes/admin";
 import { registerAdminIntegrationTestsRoutes } from "./routes/admin-integrations-tests";
 import { registerAdminLoadSourcesRoutes } from "./routes/admin-load-sources";
 import { registerMeRoutes } from "./routes/me";
+import { registerMeTotpRoutes } from "./routes/me-totp";
 import { registerDispatchRoutes } from "./routes/dispatch";
 import { registerBrokerTrustRoutes } from "./routes/broker-trust";
 import { registerCockpitRoutes } from "./routes/cockpit";
@@ -1111,6 +1112,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // before the catch-all `requireRole.any()` gate. See server/routes/me.ts.
   // -------------------------------------------------------------------------
   registerMeRoutes(app);
+  registerMeTotpRoutes(app);
 
   // Public lead capture from landing page (no auth) + dispatcher review queue.
   // Must register BEFORE any catch-all auth gate so /api/public/* is open.
