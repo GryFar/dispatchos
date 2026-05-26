@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { Link } from "wouter";
 import { useForm } from "react-hook-form";
@@ -31,20 +31,38 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
  *      редиректа из RoleGate когда его заблокировали)
  *   ?reason=expired → "сессия истекла, войдите снова"
  *   ?redirect=/admin/users → куда после логина (вместо дефолтного)
+ *
+ * 2026-05-27 hotfix (Vlad report):
+ *  - Bug 1: rate-limit responses (HTTP 429) were swallowed by the catch-all
+ *    branch and surfaced as "Неверный email или пароль", which is exactly
+ *    the wrong UX when password-manager autofill happens to mis-fire a few
+ *    times in a row (the user thinks the password is wrong and tries
+ *    harder, locking themselves out further). We now branch on
+ *    err.status === 429 and show the dedicated "too many attempts" copy
+ *    (text comes from i18n so EN switch covers it too).
+ *  - Bug 2: every visible string on this page (titles, alerts, buttons,
+ *    AuthShell tagline) was hardcoded in Russian — switching to EN left
+ *    the form Russian, which is what the screenshot showed. All strings
+ *    now go through `useT()`.
  */
 
-const schema = z.object({
-  email: z.string().email("Введите корректный email"),
-  password: z.string().min(1, "Введите пароль"),
-  token: z.string().optional(),
-});
-type FormValues = z.infer<typeof schema>;
+const buildSchema = (t: (key: string) => string) =>
+  z.object({
+    email: z.string().email(t("signup.validation.emailRequired")),
+    password: z.string().min(1, t("signup.validation.passwordRequired")),
+    token: z.string().optional(),
+  });
 
 export default function LoginPage() {
+  const { t } = useT();
   const [, setLocation] = useLocation();
   const { user, isLoading: authLoading } = useAuth();
   const [needsTotp, setNeedsTotp] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+
+  // Recompute schema when language changes so validation messages localize too.
+  const schema = useMemo(() => buildSchema(t), [t]);
+  type FormValues = z.infer<typeof schema>;
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -78,45 +96,54 @@ export default function LoginPage() {
       setLocation(redirectTo || data.redirect || defaultRouteForRole(data.role));
     } catch (err) {
       if (err instanceof ApiError) {
-        // TOTP fork.
+        // Audit Critical #4 rate-limit (15-min window, 10 attempts). The
+        // limiter answers 429 BEFORE the handler runs, so we MUST surface a
+        // distinct message — otherwise the user sees "Invalid credentials"
+        // and keeps trying, which deepens the lockout.
+        if (err.status === 429) {
+          setGlobalError(t("login.errorRateLimit"));
+          return;
+        }
+        // TOTP fork — backend signals 2FA required by message containing
+        // "2fa" / "token". After Audit V2-17 the message is "Invalid
+        // credentials" for *both* wrong pw and bad 2fa, so we fork only
+        // when the second submit (with token) hits 401 — see below.
         if (err.status === 401 && /2fa|token/i.test(err.message)) {
           setNeedsTotp(true);
-          setGlobalError("Введите 6-значный код из приложения-аутентификатора.");
+          setGlobalError(t("login.totpAlert"));
           return;
         }
         if (err.status === 401) {
-          setGlobalError("Неверный email или пароль.");
+          setGlobalError(t("login.errorInvalid"));
           return;
         }
         if (err.status === 403) {
-          setGlobalError("Учётная запись заблокирована. Свяжитесь с администратором.");
+          setGlobalError(t("login.errorBlocked"));
           return;
         }
         setGlobalError(err.message);
         return;
       }
-      setGlobalError("Не удалось подключиться к серверу.");
+      setGlobalError(t("login.errorNetwork"));
     }
   }
 
   return (
     <AuthShell>
       <div className="mb-6 space-y-1.5">
-        <h1 className="text-xl font-semibold tracking-tight">Вход в DispatchOS</h1>
-        <p className="text-sm text-muted-foreground">
-          Используйте email и пароль. Если включён 2FA — также код из аутентификатора.
-        </p>
+        <h1 className="text-xl font-semibold tracking-tight">{t("login.title")}</h1>
+        <p className="text-sm text-muted-foreground">{t("login.subtitle")}</p>
       </div>
 
       {reason === "blocked" && (
         <Alert variant="destructive" className="mb-4">
           <AlertTriangle className="h-4 w-4" />
-          <AlertDescription>Доступ к учётной записи приостановлен.</AlertDescription>
+          <AlertDescription>{t("login.reasonBlocked")}</AlertDescription>
         </Alert>
       )}
       {reason === "expired" && (
         <Alert className="mb-4">
-          <AlertDescription>Сессия истекла. Войдите снова.</AlertDescription>
+          <AlertDescription>{t("login.reasonExpired")}</AlertDescription>
         </Alert>
       )}
       {globalError && (
@@ -127,7 +154,7 @@ export default function LoginPage() {
 
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
         <div className="space-y-1.5">
-          <Label htmlFor="email">Email</Label>
+          <Label htmlFor="email">{t("login.email")}</Label>
           <Input
             id="email"
             type="email"
@@ -144,9 +171,9 @@ export default function LoginPage() {
 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <Label htmlFor="password">Пароль</Label>
+            <Label htmlFor="password">{t("login.password")}</Label>
             <Link href="/forgot-password" className="text-xs text-muted-foreground hover:text-foreground">
-              Забыли пароль?
+              {t("login.forgot")}
             </Link>
           </div>
           <Input
@@ -163,7 +190,7 @@ export default function LoginPage() {
 
         {needsTotp && (
           <div className="space-y-1.5">
-            <Label htmlFor="token">Код из аутентификатора</Label>
+            <Label htmlFor="token">{t("login.totp")}</Label>
             <Input
               id="token"
               type="text"
@@ -175,20 +202,18 @@ export default function LoginPage() {
               className="font-mono tracking-widest text-center text-lg"
               {...form.register("token")}
             />
-            <p className="text-xs text-muted-foreground">
-              6 цифр из Google Authenticator / 1Password / Authy.
-            </p>
+            <p className="text-xs text-muted-foreground">{t("login.totpHint")}</p>
           </div>
         )}
 
         <Button type="submit" className="w-full" disabled={form.formState.isSubmitting}>
           {form.formState.isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Войти
+          {t("login.submit")}
         </Button>
       </form>
 
       <div className="mt-6 text-center text-xs text-muted-foreground">
-        Нет аккаунта? <Link href="/signup" className="text-foreground underline-offset-4 hover:underline">Войти по invite-коду</Link>
+        {t("login.noAccount")} <Link href="/signup" className="text-foreground underline-offset-4 hover:underline">{t("login.signupLink")}</Link>
       </div>
     </AuthShell>
   );
@@ -196,6 +221,7 @@ export default function LoginPage() {
 
 /** Shared wrapper for /login, /signup, /forgot-password — centered card on slate bg. */
 export function AuthShell({ children }: { children: React.ReactNode }) {
+  const { t } = useT();
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-12">
       {/* Aurora background — emerald + blue radial spots, very subtle. */}
@@ -221,7 +247,7 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
           <CardContent className="p-6">{children}</CardContent>
         </Card>
         <p className="mt-6 text-center text-xs text-muted-foreground">
-          DispatchOS — внутренний диспетчерский сервис. Доступ только по приглашениям.
+          {t("auth.shell.tagline")}
         </p>
       </div>
     </div>

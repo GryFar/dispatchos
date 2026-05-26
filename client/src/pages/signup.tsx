@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, Link } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useT } from "@/lib/i18n";
 import { AuthShell } from "./login";
 
 /**
@@ -26,21 +27,24 @@ import { AuthShell } from "./login";
  *   5. Пользователь кликает "Продолжить" → редирект в его портал
  *
  * URL params: ?code=DOS-XXXX-... — пред-заполнение поля инвайт-кода (из admin-сгенерированной ссылки)
+ *
+ * 2026-05-27 hotfix: i18n-ified after Vlad's RU/EN coverage report.
  */
 
-const schema = z.object({
-  inviteCode: z.string()
-    .min(1, "Введите invite-код")
-    .transform((s) => s.toUpperCase().trim()),
-  email: z.string().email("Введите корректный email"),
-  fullName: z.string().min(2, "Введите ФИО"),
-  password: z.string()
-    .min(10, "Минимум 10 символов")
-    .max(128, "Слишком длинный"),
-});
-type FormValues = z.infer<typeof schema>;
+const buildSchema = (t: (key: string) => string) =>
+  z.object({
+    inviteCode: z.string()
+      .min(1, t("signup.validation.inviteRequired"))
+      .transform((s) => s.toUpperCase().trim()),
+    email: z.string().email(t("signup.validation.emailInvalid")),
+    fullName: z.string().min(2, t("signup.validation.fullNameRequired")),
+    password: z.string()
+      .min(10, t("signup.validation.passwordMin"))
+      .max(128, t("signup.validation.passwordMax")),
+  });
 
 export default function SignupPage() {
+  const { t } = useT();
   const [, setLocation] = useLocation();
   const { user, isLoading: authLoading } = useAuth();
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -48,6 +52,10 @@ export default function SignupPage() {
 
   const params = parseHashSearch();
   const prefilledCode = params.get("code") || "";
+
+  // Recompute schema when language changes so validation messages localize too.
+  const schema = useMemo(() => buildSchema(t), [t]);
+  type FormValues = z.infer<typeof schema>;
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -74,18 +82,23 @@ export default function SignupPage() {
       setSuccessData(data);
     } catch (err) {
       if (err instanceof ApiError) {
+        // Same rate-limit branch as /login (Audit Critical #4 covers both).
+        if (err.status === 429) {
+          setGlobalError(t("login.errorRateLimit"));
+          return;
+        }
         if (err.status === 400 && /invite/i.test(err.message)) {
-          setGlobalError("Invite-код не найден, истёк или уже использован.");
+          setGlobalError(t("signup.errorInvite"));
           return;
         }
         if (err.status === 409) {
-          setGlobalError("Этот email уже зарегистрирован.");
+          setGlobalError(t("signup.errorEmailTaken"));
           return;
         }
         setGlobalError(err.message);
         return;
       }
-      setGlobalError("Не удалось подключиться к серверу.");
+      setGlobalError(t("login.errorNetwork"));
     }
   }
 
@@ -99,15 +112,13 @@ export default function SignupPage() {
   }
 
   const password = form.watch("password");
-  const strength = passwordStrength(password);
+  const strength = passwordStrength(password, t);
 
   return (
     <AuthShell>
       <div className="mb-6 space-y-1.5">
-        <h1 className="text-xl font-semibold tracking-tight">Регистрация</h1>
-        <p className="text-sm text-muted-foreground">
-          Введите invite-код, полученный от администратора.
-        </p>
+        <h1 className="text-xl font-semibold tracking-tight">{t("signup.title")}</h1>
+        <p className="text-sm text-muted-foreground">{t("signup.subtitle")}</p>
       </div>
 
       {globalError && (
@@ -118,7 +129,7 @@ export default function SignupPage() {
 
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
         <div className="space-y-1.5">
-          <Label htmlFor="inviteCode">Invite-код</Label>
+          <Label htmlFor="inviteCode">{t("signup.inviteCode")}</Label>
           <Input
             id="inviteCode"
             type="text"
@@ -134,7 +145,7 @@ export default function SignupPage() {
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="email">Email</Label>
+          <Label htmlFor="email">{t("login.email")}</Label>
           <Input
             id="email"
             type="email"
@@ -148,12 +159,12 @@ export default function SignupPage() {
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="fullName">ФИО</Label>
+          <Label htmlFor="fullName">{t("signup.fullName")}</Label>
           <Input
             id="fullName"
             type="text"
             autoComplete="name"
-            placeholder="Иван Петров"
+            placeholder={t("signup.fullNamePlaceholder")}
             {...form.register("fullName")}
           />
           {form.formState.errors.fullName && (
@@ -162,7 +173,7 @@ export default function SignupPage() {
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="password">Пароль (мин. 10 символов)</Label>
+          <Label htmlFor="password">{t("signup.password")}</Label>
           <Input
             id="password"
             type="password"
@@ -191,12 +202,12 @@ export default function SignupPage() {
 
         <Button type="submit" className="w-full" disabled={form.formState.isSubmitting}>
           {form.formState.isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Создать аккаунт
+          {t("signup.submit")}
         </Button>
       </form>
 
       <div className="mt-6 text-center text-xs text-muted-foreground">
-        Уже есть аккаунт? <Link href="/login" className="text-foreground underline-offset-4 hover:underline">Войти</Link>
+        {t("signup.haveAccount")} <Link href="/login" className="text-foreground underline-offset-4 hover:underline">{t("signup.loginLink")}</Link>
       </div>
     </AuthShell>
   );
@@ -204,6 +215,7 @@ export default function SignupPage() {
 
 /** Post-signup TOTP setup — show QR + secret, ask user to scan before continuing. */
 function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue: () => void }) {
+  const { t } = useT();
   const hasTotp = Boolean(data.totpSecret && data.otpauthUrl);
   const [copied, setCopied] = useState(false);
 
@@ -211,16 +223,13 @@ function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue
     return (
       <div className="space-y-4 text-center">
         <CheckCircle2 className="mx-auto h-12 w-12 text-success" />
-        <h1 className="text-xl font-semibold tracking-tight">Аккаунт создан</h1>
-        <p className="text-sm text-muted-foreground">Сейчас вы будете перенаправлены в портал.</p>
-        <Button onClick={onContinue} className="w-full">Продолжить</Button>
+        <h1 className="text-xl font-semibold tracking-tight">{t("signup.createdTitle")}</h1>
+        <p className="text-sm text-muted-foreground">{t("signup.createdBody")}</p>
+        <Button onClick={onContinue} className="w-full">{t("signup.createdContinue")}</Button>
       </div>
     );
   }
 
-  // QR code via Google Charts API (no extra deps). Simple, works offline if the
-  // user has reached this point with internet. If we want a JS-side QR encoder
-  // we can add `qrcode` to deps in Phase 5.
   async function copySecret() {
     try {
       await navigator.clipboard.writeText(data.totpSecret!);
@@ -235,10 +244,8 @@ function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue
     <div className="space-y-4">
       <div className="flex flex-col items-center gap-2 text-center">
         <ShieldCheck className="h-10 w-10 text-success" />
-        <h1 className="text-xl font-semibold tracking-tight">Настройте 2FA</h1>
-        <p className="text-sm text-muted-foreground">
-          Отсканируйте QR-код в приложении Google Authenticator, 1Password или Authy.
-        </p>
+        <h1 className="text-xl font-semibold tracking-tight">{t("signup.totpTitle")}</h1>
+        <p className="text-sm text-muted-foreground">{t("signup.totpSubtitle")}</p>
       </div>
 
       <div className="flex justify-center rounded-md border border-border bg-card p-3">
@@ -246,37 +253,38 @@ function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-xs">Или введите секрет вручную:</Label>
+        <Label className="text-xs">{t("signup.totpManual")}</Label>
         <div className="flex items-center gap-2">
           <Input readOnly value={data.totpSecret} className="font-mono text-xs" />
-          <Button type="button" variant="outline" size="icon" onClick={copySecret} aria-label="Копировать">
+          <Button type="button" variant="outline" size="icon" onClick={copySecret} aria-label={t("signup.copyAria")}>
             {copied ? <CheckCircle2 className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
           </Button>
         </div>
       </div>
 
       <Alert>
-        <AlertDescription className="text-xs">
-          <strong>Сохраните секрет!</strong> Без него вы не сможете войти при потере телефона.
-          Запишите его в менеджере паролей.
-        </AlertDescription>
+        <AlertDescription className="text-xs">{t("signup.totpWarning")}</AlertDescription>
       </Alert>
 
       <Button onClick={onContinue} className="w-full">
-        Я отсканировал, продолжить
+        {t("signup.totpContinue")}
       </Button>
     </div>
   );
 }
 
-function passwordStrength(pw: string): { score: 0 | 1 | 2 | 3 | 4; label: string } {
+function passwordStrength(pw: string, t: (key: string) => string): { score: 0 | 1 | 2 | 3 | 4; label: string } {
   if (pw.length === 0) return { score: 0, label: "" };
   let score = 0;
   if (pw.length >= 10) score++;
   if (pw.length >= 14) score++;
   if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) score++;
   if (/\d/.test(pw) && /[^A-Za-z0-9]/.test(pw)) score++;
-  const label = score >= 4 ? "Сильный" : score === 3 ? "Хороший" : score === 2 ? "Средний" : "Слабый";
+  const label =
+    score >= 4 ? t("signup.strengthStrong") :
+    score === 3 ? t("signup.strengthGood") :
+    score === 2 ? t("signup.strengthMedium") :
+    t("signup.strengthWeak");
   return { score: Math.min(score, 4) as 0 | 1 | 2 | 3 | 4, label };
 }
 
