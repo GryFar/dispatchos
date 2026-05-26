@@ -385,6 +385,12 @@ function ensureUserDriverColumns() {
     // Owntracks as the device id. We index on it for O(1) ping lookup.
     sqlite.exec("ALTER TABLE users ADD COLUMN tracking_token TEXT");
   }
+  if (!names.has("last_seen_at")) {
+    // Phase 7 — online presence. Every authenticated /api request bumps
+    // this column (throttled in-process to 30s/user). Online =
+    // (now - last_seen_at) < 2 minutes.
+    sqlite.exec("ALTER TABLE users ADD COLUMN last_seen_at TEXT");
+  }
 }
 ensureUserDriverColumns();
 
@@ -847,6 +853,7 @@ interface UserRow {
   last_location_accuracy_m: number | null;
   last_location_source: string | null;
   tracking_token: string | null;
+  last_seen_at: string | null;
 }
 
 export interface UserInternal {
@@ -879,6 +886,8 @@ export interface UserInternal {
   lastLocationAccuracyM?: number;
   lastLocationSource?: string;
   trackingToken?: string;
+  // Phase 7 presence — last authenticated /api hit.
+  lastSeenAt?: string;
 }
 
 // Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
@@ -940,6 +949,7 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     lastLocationAccuracyM: row.last_location_accuracy_m ?? undefined,
     lastLocationSource: row.last_location_source ?? undefined,
     trackingToken: row.tracking_token ?? undefined,
+    lastSeenAt: row.last_seen_at ?? undefined,
   };
 }
 
@@ -959,6 +969,7 @@ function toUserPublic(user: UserInternal, extras?: { assignedClientIds?: string[
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt,
+    lastSeenAt: user.lastSeenAt,
     deletedAt: user.deletedAt ?? null,
   };
 }
@@ -1269,6 +1280,28 @@ export const storage = {
 
   recordUserLogin(id: string) {
     sqlite.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(now(), id);
+  },
+
+  /**
+   * Phase 7 — presence: bump last_seen_at. Called from the /api middleware
+   * on every authenticated request (throttled in-process to 30s/user). Does
+   * NOT update updated_at because that would invalidate caches across the
+   * stack for what is fundamentally a passive read marker.
+   */
+  touchUserPresence(id: string) {
+    sqlite.prepare("UPDATE users SET last_seen_at = ? WHERE id = ?").run(now(), id);
+  },
+
+  /**
+   * Phase 7 — presence: list users seen within the last `minutes` minutes.
+   * Used by /api/admin/presence for the live online indicator on the users
+   * list. Returns id-only set; the caller already has the user details.
+   */
+  listOnlineUserIds(minutes = 2): string[] {
+    const cutoff = new Date(Date.now() - minutes * 60 * 1000).toISOString();
+    return (sqlite
+      .prepare("SELECT id FROM users WHERE last_seen_at >= ? AND deleted_at IS NULL")
+      .all(cutoff) as Array<{ id: string }>).map((r) => r.id);
   },
 
   toUserPublic(user: UserInternal): UserPublic {

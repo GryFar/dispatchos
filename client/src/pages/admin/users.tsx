@@ -223,21 +223,44 @@ function UsersTable({ rows, loading, error }: { rows: UserPublic[]; loading: boo
   const [resetPwUser, setResetPwUser] = useState<UserPublic | null>(null);
   const [resetTotpUser, setResetTotpUser] = useState<UserPublic | null>(null);
 
+  // Online presence — refetch every 30s so the 🟢 dot is near-realtime.
+  // We pull just the id set (cheap) and intersect it with the table rows.
+  const presenceQ = useQuery<{ minutes: number; onlineUserIds: string[] }>({
+    queryKey: ["/api/admin/presence"],
+    queryFn: () => apiJson("GET", "/api/admin/presence?minutes=2"),
+    refetchInterval: 30_000,
+  });
+  const onlineSet = useMemo(
+    () => new Set(presenceQ.data?.onlineUserIds ?? []),
+    [presenceQ.data?.onlineUserIds],
+  );
+
   const columns: DataTableColumn<UserPublic>[] = [
     {
       key: "name",
       header: "Пользователь",
-      cell: (u) => (
-        <div className="flex items-center gap-2.5">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
-            {u.fullName?.[0]?.toUpperCase() ?? "?"}
-          </span>
-          <div className="min-w-0">
-            <p className="truncate font-medium">{u.fullName}</p>
-            <p className="truncate text-xs text-muted-foreground">{u.email}</p>
+      cell: (u) => {
+        const online = onlineSet.has(u.id);
+        return (
+          <div className="flex items-center gap-2.5">
+            <div className="relative shrink-0">
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
+                {u.fullName?.[0]?.toUpperCase() ?? "?"}
+              </span>
+              {online && (
+                <span
+                  className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-success"
+                  title="Онлайн"
+                />
+              )}
+            </div>
+            <div className="min-w-0">
+              <p className="truncate font-medium">{u.fullName}</p>
+              <p className="truncate text-xs text-muted-foreground">{u.email}</p>
+            </div>
           </div>
-        </div>
-      ),
+        );
+      },
     },
     {
       key: "role",
@@ -273,17 +296,41 @@ function UsersTable({ rows, loading, error }: { rows: UserPublic[]; loading: boo
       hideOnMobile: true,
     },
     {
-      key: "lastLogin",
-      header: "Последний вход",
-      cell: (u) => (
-        <span
-          className="text-xs text-muted-foreground"
-          title={u.lastLoginAt ? formatDateFull(u.lastLoginAt) : undefined}
-        >
-          {u.lastLoginAt ? formatRelativeAgo(u.lastLoginAt) : "Никогда"}
-        </span>
-      ),
-      width: "140px",
+      key: "presence",
+      header: "Активность",
+      cell: (u) => {
+        const online = onlineSet.has(u.id);
+        if (online) {
+          return (
+            <span className="inline-flex items-center gap-1 text-xs text-success">
+              <span className="h-2 w-2 rounded-full bg-success" />
+              Онлайн
+            </span>
+          );
+        }
+        if (u.lastSeenAt) {
+          return (
+            <span
+              className="text-xs text-muted-foreground"
+              title={formatDateFull(u.lastSeenAt)}
+            >
+              {formatRelativeAgo(u.lastSeenAt)}
+            </span>
+          );
+        }
+        if (u.lastLoginAt) {
+          return (
+            <span
+              className="text-xs text-muted-foreground"
+              title={`Последний вход: ${formatDateFull(u.lastLoginAt)}`}
+            >
+              вход {formatRelativeAgo(u.lastLoginAt)}
+            </span>
+          );
+        }
+        return <span className="text-xs text-muted-foreground">Не заходил</span>;
+      },
+      width: "160px",
       hideOnMobile: true,
     },
     {

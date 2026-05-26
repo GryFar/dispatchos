@@ -278,6 +278,10 @@ export const userPublicSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   lastLoginAt: z.string().optional(),
+  // Phase 7 — online presence. Set by middleware on every authenticated
+  // /api request (throttled 30s/user). Frontend computes online status as
+  // (now - lastSeenAt) < 2 minutes.
+  lastSeenAt: z.string().optional(),
   // Soft-delete marker. null/absent = active. Set = user was removed by an
   // admin (distinct from `blocked`, which is a reversible suspension). The
   // row is kept for FK integrity (loads.driverId, audit_events, assignments).

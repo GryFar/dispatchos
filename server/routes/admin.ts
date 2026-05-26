@@ -671,6 +671,23 @@ export function registerAdminRoutes(app: Express): void {
   );
 
   // -------------------------------------------------------------------------
+  // GET /api/admin/presence?minutes=2 — list of currently-online user ids.
+  // -------------------------------------------------------------------------
+  // Used by the admin users list to render a 🟢 dot. Cheap query (one
+  // indexed timestamp scan), safe to poll every 30s on the page.
+  app.get(
+    "/api/admin/presence",
+    admin,
+    ah((req, res) => {
+      const minutesRaw = Number(req.query.minutes ?? 2);
+      // Clamp to a sensible range so a malformed query can't sweep the table.
+      const minutes = Number.isFinite(minutesRaw) ? Math.min(Math.max(minutesRaw, 1), 60) : 2;
+      const onlineUserIds = storage.listOnlineUserIds(minutes);
+      return res.json({ minutes, onlineUserIds });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
   // GET /api/admin/config/maps-key — отдаёт GOOGLE_MAPS_API_KEY только admin'у.
   // Используется фронтом для инициализации Google Maps Embed/Static в admin-only views
   // (user-detail track widget). Так безопаснее чем VITE_ env (в build) — dispatcher и driver не видят.
