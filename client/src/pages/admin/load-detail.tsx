@@ -47,11 +47,32 @@ interface ScoreRow {
   computedAt: string;
 }
 
+interface DetentionEventDto {
+  loadId: string;
+  leg: "pickup" | "delivery";
+  arrivedAt: string;
+  completedAt: string;
+  totalHours: number;
+  freeHours: number;
+  billableHours: number;
+  ratePerHourCents: number;
+  amountCents: number;
+  source: "auto" | "estimated";
+}
+
+interface DetentionSummary {
+  events: DetentionEventDto[];
+  totalCents: number;
+  freeHours: number;
+  ratePerHourCents: number;
+}
+
 interface AdminLoadResponse {
   load: AdminLoad;
   checkins: LoadCheckin[];
   events: AuditEvent[];
   scores: ScoreRow[];
+  detention?: DetentionSummary;
 }
 
 const CHECKIN_LABELS: Record<CheckinKind, string> = {
@@ -105,7 +126,7 @@ export default function AdminLoadDetailPage() {
     );
   }
 
-  const { load, checkins, events, scores } = data;
+  const { load, checkins, events, scores, detention } = data;
   const isBooked = Boolean(load.driverId && load.bookedAt);
 
   return (
@@ -225,6 +246,53 @@ export default function AdminLoadDetailPage() {
                     {s.dispatchScore}
                   </span>
                   <StatusBadge variant={verdictVariant(s.verdict)}>{s.verdict}</StatusBadge>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {/* Detention summary — killer feature #4 */}
+      {detention && detention.events.length > 0 && (
+        <Card className="p-4 border-amber-300/40 bg-amber-50/30 dark:bg-amber-950/10">
+          <div className="flex items-center justify-between">
+            <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
+              <Clock className="h-3.5 w-3.5" /> Detention — можно выставить счёт
+            </p>
+            <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+              ${(detention.totalCents / 100).toFixed(2)}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Free window: {detention.freeHours}h — ${(detention.ratePerHourCents / 100).toFixed(2)}/h. Настройки на carrier profile.
+          </p>
+          <ul className="mt-3 space-y-2 text-sm">
+            {detention.events.map((ev, idx) => (
+              <li key={`${ev.leg}-${idx}`} className="flex items-start justify-between gap-3 rounded-md border border-amber-200/60 bg-background/70 p-3 dark:border-amber-900/40">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">
+                      {ev.leg === "pickup" ? "Pickup" : "Delivery"}
+                    </span>
+                    {ev.source === "estimated" && (
+                      <span className="rounded bg-amber-200/40 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                        НА СТОПЕ СЕЙЧАС
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    {ev.totalHours.toFixed(2)}h на сайте, биллим за {ev.billableHours}h после {ev.freeHours}h free
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {new Date(ev.arrivedAt).toLocaleString()} → {new Date(ev.completedAt).toLocaleString()}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+                    ${(ev.amountCents / 100).toFixed(2)}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">{ev.billableHours}h × ${(ev.ratePerHourCents / 100).toFixed(0)}/h</div>
                 </div>
               </li>
             ))}
