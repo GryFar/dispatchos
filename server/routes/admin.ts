@@ -1571,6 +1571,102 @@ export function registerAdminRoutes(app: Express): void {
 
     return res.json(saved);
   });
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/clients/:id/fuel-summary?days=7
+  // -------------------------------------------------------------------------
+  // Aggregates fuel performance for a carrier over a rolling window:
+  //  - Distance traveled (from driver_location_pings, all drivers linked
+  //    to this client)
+  //  - Gallons + spend (from fuel_transactions)
+  //  - Computed real MPG vs the carrier's avg_mpg target
+  //  - Per-transaction overpay: for each fillup, find the cheapest diesel
+  //    within 5 mi observed within 6h of the fillup, calculate how much
+  //    cheaper that would have been.
+  app.get(
+    "/api/admin/clients/:id/fuel-summary",
+    admin,
+    ah((req, res) => {
+      const clientId = String(req.params.id);
+      const client = storage.getClient(clientId);
+      if (!client) return res.status(404).json({ message: "Client not found" });
+
+      const daysRaw = Number(req.query.days ?? 7);
+      const days = Number.isFinite(daysRaw) ? Math.min(Math.max(daysRaw, 1), 15) : 7;
+      const sinceIso = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
+
+      // Driver-scope: all drivers linked to this client, since we want fleet-level.
+      const drivers = storage.listUsers().filter(
+        (u) => u.role === "driver" && u.linkedClientId === clientId && !u.deletedAt,
+      );
+      const driverIds = drivers.map((d) => d.id);
+
+      // Distance (miles) — sum across all drivers.
+      let totalMiles = 0;
+      for (const dId of driverIds) {
+        totalMiles += storage.computeDriverDistanceMiles(dId, sinceIso);
+      }
+
+      const tx = storage.listFuelTransactionsForClient(clientId, sinceIso);
+      const gallons = tx.reduce((acc, t) => acc + (t.gallons as number), 0);
+      const spendCents = tx.reduce((acc, t) => acc + (t.total_cents as number), 0);
+
+      // MPG (only if we have enough data to be meaningful).
+      const actualMpg = gallons > 0.5 && totalMiles > 10 ? totalMiles / gallons : null;
+      // @ts-expect-error — avg_mpg added as a clients column (ALTER); client type doesn't yet expose it.
+      const expectedMpg = (client.avg_mpg as number | undefined) ?? null;
+
+      // Per-transaction overpay calculation. For each fillup, find cheapest
+      // diesel observed within ±6h of the fillup, within 8km. If the cheapest
+      // is materially lower (>5 cents/gal), record an overpay alert.
+      const overpayAlerts: Array<{
+        transactionId: string;
+        occurredAt: string;
+        stationName: string | null;
+        paidCentsPerGallon: number;
+        cheaperAtName: string | null;
+        cheaperCentsPerGallon: number;
+        cheaperDistanceKm: number;
+        savedDollars: number;
+      }> = [];
+      for (const t of tx) {
+        if (t.station_lat == null || t.station_lng == null) continue;
+        const cheaper = storage.findCheapestDieselNear(
+          t.station_lat as number,
+          t.station_lng as number,
+          { radiusKm: 8, maxAgeH: 6, limit: 1 },
+        )[0];
+        if (!cheaper) continue;
+        const paid = t.price_per_gallon_cents as number;
+        const cheapest = cheaper.price_cents as number;
+        if (cheapest >= paid - 5) continue; // <5 cents — not worth flagging
+        overpayAlerts.push({
+          transactionId: t.id as string,
+          occurredAt: t.occurred_at as string,
+          stationName: (t.station_name as string) ?? null,
+          paidCentsPerGallon: paid,
+          cheaperAtName: (cheaper.station_name as string) ?? null,
+          cheaperCentsPerGallon: cheapest,
+          cheaperDistanceKm: cheaper.distance_km as number,
+          savedDollars: ((paid - cheapest) * (t.gallons as number)) / 100,
+        });
+      }
+
+      return res.json({
+        clientId,
+        windowDays: days,
+        sinceIso,
+        totalMiles,
+        gallons,
+        spendCents,
+        actualMpg,
+        expectedMpg,
+        transactionCount: tx.length,
+        overpayAlerts,
+        overpayTotalDollars: overpayAlerts.reduce((acc, a) => acc + a.savedDollars, 0),
+      });
+    }),
+  );
 }
 
 // ===========================================================================
