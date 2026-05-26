@@ -251,3 +251,74 @@ requireRole.any = () => makeRoleMiddleware("any");
 
 // Backward-compat alias. Phase 3 will remove call sites.
 export const requireAuth = requireRole.any();
+
+// ===========================================================================
+// requireActiveBilling — read-only mode enforcement
+// ===========================================================================
+//
+// Returns 402 Payment Required on mutating /api endpoints when the caller's
+// carrier (client) has billingStatus='expired' OR 'past_due' (after a 7-day
+// grace). Read endpoints stay open so the user can see what they had and pay.
+//
+// Apply as: app.post("/api/loads", requireRole("admin","dispatcher"), requireActiveBilling, handler).
+// We don't blanket-apply it across /api because some mutating routes are
+// legitimately allowed in expired state (billing/checkout itself, logout,
+// document export-then-leave, etc.).
+const PAST_DUE_GRACE_DAYS = 7;
+
+export function requireActiveBilling(
+  req: import("express").Request,
+  res: import("express").Response,
+  next: import("express").NextFunction,
+) {
+  const user = getCurrentUser(req);
+  if (!user) return res.status(401).json({ message: "Authentication required" });
+
+  // Resolve which carrier this user represents — mirror of resolveCallerClientId
+  // from billing.ts but inline to avoid a circular import.
+  let clientId: string | null = null;
+  if (user.role === "driver") {
+    clientId = user.linkedClientId ?? null;
+  } else {
+    const q = typeof req.query.clientId === "string" ? req.query.clientId : null;
+    if (q) clientId = q;
+    else {
+      const clients = storage.listClients();
+      clientId = clients[0]?.id ?? null;
+    }
+  }
+  if (!clientId) return next(); // No carrier context — let through (bootstrap/onboarding)
+
+  const client = storage.getClient(clientId) as
+    | (Record<string, unknown> & {
+        billingStatus?: string;
+        trialEndsAt?: string;
+        stripeSubscriptionId?: string;
+      })
+    | undefined;
+  if (!client) return next();
+
+  const status = client.billingStatus;
+  if (status === "expired") {
+    return res.status(402).json({
+      message:
+        "Account is in read-only mode (trial expired or subscription canceled). Upgrade at /admin/billing.",
+      billingStatus: "expired",
+    });
+  }
+  if (status === "past_due") {
+    // Grace period: allow PAST_DUE_GRACE_DAYS after the most recent failed
+    // invoice (we approximate via trialEndsAt as the last known billing date).
+    // After grace, treat as expired.
+    const ref = client.trialEndsAt ? new Date(client.trialEndsAt).getTime() : Date.now();
+    const past = (Date.now() - ref) / (24 * 3600 * 1000);
+    if (past > PAST_DUE_GRACE_DAYS) {
+      return res.status(402).json({
+        message:
+          "Payment past due > 7 days. Account is read-only. Update card at /admin/billing.",
+        billingStatus: "past_due",
+      });
+    }
+  }
+  next();
+}

@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/dispatch/ThemeToggle";
 import { RoleBadge } from "@/components/dispatch/RoleBadge";
+import { BillingBanner } from "@/components/BillingBanner";
 import { cn } from "@/lib/utils";
 
 /**
@@ -117,6 +118,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
       {/* Main column */}
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar onMobileMenu={() => setMobileOpen(true)} />
+        <BillingBanner />
         <main className="flex-1 overflow-x-hidden">
           <div key={location} className="page-enter mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
             {children}

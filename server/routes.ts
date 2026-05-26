@@ -31,6 +31,7 @@ import {
   getCurrentUser,
   hashPassword,
   requireRole,
+  requireActiveBilling,
   verifyPassword,
   verifyTotp,
 } from "./auth";
@@ -1386,7 +1387,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(storage.listClients());
   });
 
-  app.post("/api/clients", requireRole("admin", "dispatcher"), (req, res) => {
+  app.post("/api/clients", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
     try {
       const client = storage.upsertClient(insertClientSchema.parse(req.body));
       res.status(201).json(client);
@@ -1410,7 +1411,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(storage.listLoads());
   });
 
-  app.post("/api/loads", requireRole("admin", "dispatcher"), (req, res) => {
+  app.post("/api/loads", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
     try {
       // Phase 3 P2 + Phase 4 P0: accept optional clientId/bookedAt for billing
       // linkage AND optional driverId for driver-portal scoping. Pre-Phase-3
