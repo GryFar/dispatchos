@@ -9,6 +9,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { RoleGate, defaultRouteForRole } from "@/components/role-gate";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { I18nProvider, useT, useSyncLangWithUser } from "@/lib/i18n";
 import LandingPage from "@/pages/landing";
 import LoginPage from "@/pages/login";
 import SignupPage from "@/pages/signup";
@@ -97,6 +98,8 @@ function useStrippedHashLocation(): [string, (to: string, opts?: { replace?: boo
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <I18nProvider>
+        <AuthLangBridge />
       <ThemeProvider>
         <TooltipProvider delayDuration={150}>
           <Router hook={useStrippedHashLocation}>
@@ -137,6 +140,7 @@ export default function App() {
           <Toaster />
         </TooltipProvider>
       </ThemeProvider>
+      </I18nProvider>
     </QueryClientProvider>
   );
 }
@@ -247,4 +251,23 @@ function PortalStub({ portalName, note }: { portalName: string; note: string }) 
       </div>
     </div>
   );
+}
+
+/**
+ * Bridges the i18n Context with the authenticated user — once `useAuth()`
+ * has a server-side `preferredLang`, we adopt it so the choice persists
+ * across devices and across logout/login on the same device.
+ *
+ * Rendered as a sibling to ThemeProvider inside <I18nProvider> so it has
+ * access to both useAuth and useT.
+ */
+function AuthLangBridge() {
+  const { user } = useAuth();
+  // The User type may not yet have preferredLang in shared schema; cast
+  // defensively. Server returns undefined for legacy users with no choice
+  // recorded — we leave the local language untouched in that case.
+  const serverLang = (user as unknown as { preferredLang?: "ru" | "en" } | null)
+    ?.preferredLang;
+  useSyncLangWithUser(serverLang ?? null);
+  return null;
 }

@@ -13,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
+import { useT } from "@/lib/i18n";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
 /**
@@ -211,6 +213,9 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
             <Truck className="relative h-5 w-5" />
           </span>
           <span className="text-lg font-semibold tracking-tight">DispatchOS</span>
+        </div>
+        <div className="mb-4 flex justify-center">
+          <LanguageSwitcher variant="inline" />
         </div>
         <Card className="shadow-pop">
           <CardContent className="p-6">{children}</CardContent>
