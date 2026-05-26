@@ -1152,6 +1152,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // hit them (== legacy v1.2.7 behavior).
   // -------------------------------------------------------------------------
 
+  // Presence ping middleware. Every authenticated /api request bumps the
+  // user's last_seen_at column. Throttled to once per 30s per user in-process
+  // to avoid SQLite write thrash (drivers can hit dashboard polls every 30s
+  // already; we only need 'within 2 min = online' resolution).
+  const lastSeenCache = new Map<string, number>();
+  app.use("/api", (req, _res, next) => {
+    const userId = req.session?.userId;
+    if (userId) {
+      const now = Date.now();
+      const prev = lastSeenCache.get(userId) ?? 0;
+      if (now - prev > 30_000) {
+        lastSeenCache.set(userId, now);
+        // Best-effort write — swallow errors so a transient DB hiccup never
+        // breaks the request.
+        try { storage.touchUserPresence(userId); } catch { /* ignore */ }
+      }
+    }
+    next();
+  });
+
   app.use("/api", (req, res, next) => {
     if (req.path.startsWith("/auth/") || req.path === "/me" || req.path === "/health") {
       return next();
