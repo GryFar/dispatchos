@@ -97,7 +97,7 @@ export const clientSchema = z.object({
   /** "trial" | "oo_basic" | "oo_premium" | "fleet_starter" | "fleet_growth" | "fleet_scale" | "enterprise" */
   planTier: z.string().optional(),
   trialEndsAt: z.string().optional(),
-  billingStatus: z.enum(["trial", "active", "past_due", "canceled"]).optional(),
+  billingStatus: z.enum(["trial", "active", "past_due", "canceled", "expired"]).optional(),
   stripeCustomerId: z.string().optional(),
   stripeSubscriptionId: z.string().optional(),
   /** Active seat counts — enforced by tier limits in feature gates. */

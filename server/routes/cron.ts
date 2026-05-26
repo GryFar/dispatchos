@@ -156,6 +156,31 @@ export function registerCronRoutes(app: Express): void {
     }
   });
 
+  // POST /api/cron/check-trial-expiry
+  // Daily check for trial expirations + reminders at T-7/3/1 days.
+  // Transitions billingStatus=trial → expired when trialEndsAt has passed
+  // AND no active Stripe subscription. Anti-spam via compliance_alerts_sent.
+  app.post("/api/cron/check-trial-expiry", async (req: Request, res: Response) => {
+    if (!requireCronSecret(req, res)) return;
+    const { runTrialExpiryCheck } = await import("../lib/trial-expiry");
+    try {
+      const outcomes = await runTrialExpiryCheck();
+      return res.json({
+        ok: true,
+        evaluated: outcomes.length,
+        reminders: outcomes.filter((o) => o.kind === "reminder").length,
+        expired: outcomes.filter((o) => o.kind === "expired").length,
+        outcomes,
+      });
+    } catch (err) {
+      console.error("[cron/check-trial-expiry] failed:", err);
+      return res.status(500).json({
+        message: "Trial expiry check failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
   // POST /api/cron/check-renewals
   // Killer feature #5 — UCR/IRP renewal alerts. Same anti-spam pattern as
   // insurance. Schedule alongside check-insurance (daily 09:00 ET via GH Actions).
