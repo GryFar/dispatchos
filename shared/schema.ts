@@ -852,6 +852,8 @@ export const signupLeadSchema = z.object({
   reviewedAt: z.string().nullable(),
   rejectReason: z.string().nullable(),
   createdAt: z.string(),
+  name: z.string().nullable().optional(),
+  note: z.string().nullable().optional(),
 });
 export type SignupLead = z.infer<typeof signupLeadSchema>;
 
@@ -859,6 +861,10 @@ export const subscribePublicSchema = z.object({
   email: z.string().email().max(254),
   lang: z.string().max(8).optional(),
   referer: z.string().max(500).optional(),
+  // Опциональные поля для «Contact us» варианта lead-formы на landing.
+  // При простой подписке не передаются — lead создаётся без них.
+  name: z.string().min(1).max(120).optional(),
+  note: z.string().min(1).max(2000).optional(),
 });
 
 export const approveLeadSchema = z.object({

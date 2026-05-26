@@ -115,6 +115,8 @@ export function registerLeadRoutes(app: Express): void {
       country,
       userAgent,
       referer: parsed.data.referer ?? null,
+      name: parsed.data.name ?? null,
+      note: parsed.data.note ?? null,
     });
 
     return res.status(isNew ? 201 : 200).json({
