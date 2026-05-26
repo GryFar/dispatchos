@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { QRCodeSVG } from "qrcode.react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -392,9 +393,7 @@ function TotpSetupDialog({ onClose }: { onClose: () => void }) {
     confirmMutation.mutate(clean);
   }
 
-  const qrUrl = setupData
-    ? `https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=0&data=${encodeURIComponent(setupData.otpauthUrl)}`
-    : null;
+
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -412,10 +411,10 @@ function TotpSetupDialog({ onClose }: { onClose: () => void }) {
           </div>
         )}
 
-        {stage === "scan" && setupData && qrUrl && (
+        {stage === "scan" && setupData && (
           <div className="space-y-4">
             <div className="flex justify-center rounded-md bg-white p-3">
-              <img src={qrUrl} alt="TOTP QR" className="h-48 w-48" />
+              <QRCodeSVG value={setupData.otpauthUrl} size={192} level="M" aria-label="TOTP QR" />
             </div>
             <div>
               <Label className="text-xs uppercase tracking-wider text-muted-foreground">

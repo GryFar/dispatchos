@@ -51,6 +51,7 @@ import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { enrichLoadSync } from "./lib/ai";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
+import { getIntegrationValue } from "./lib/integration-config";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -552,9 +553,19 @@ function normalizeMc(value: string) {
 
 async function checkBrokerRisk(brokerMc: string, brokerName = "Unknown Broker"): Promise<BrokerRecord> {
   const normalized = normalizeMc(brokerMc);
-  if (process.env.FMCSA_API_URL && process.env.FMCSA_WEBKEY) {
+  // Audit V2-3 — canonical env var is FMCSA_WEB_KEY (matches storage schema and
+  // carrier-safety-profile.ts). Legacy FMCSA_WEBKEY accepted as fallback for
+  // one release; warn so we can drop it cleanly.
+  const fmcsaWebKey =
+    getIntegrationValue("fmcsa", "FMCSA_WEB_KEY") ?? process.env.FMCSA_WEBKEY;
+  if (process.env.FMCSA_WEBKEY && !getIntegrationValue("fmcsa", "FMCSA_WEB_KEY")) {
+    console.warn(
+      "[fmcsa] Deprecated env FMCSA_WEBKEY in use — set FMCSA_WEB_KEY via /admin/integrations or env to silence.",
+    );
+  }
+  if (process.env.FMCSA_API_URL && fmcsaWebKey) {
     try {
-      const url = `${process.env.FMCSA_API_URL.replace(/\/$/, "")}?webKey=${encodeURIComponent(process.env.FMCSA_WEBKEY)}&mc=${encodeURIComponent(normalized.replace(/\D/g, ""))}`;
+      const url = `${process.env.FMCSA_API_URL.replace(/\/$/, "")}?webKey=${encodeURIComponent(fmcsaWebKey)}&mc=${encodeURIComponent(normalized.replace(/\D/g, ""))}`;
       const response = await fetch(url);
       const payload: any = await response.json().catch(() => ({}));
       const statusText = JSON.stringify(payload).toLowerCase();
@@ -719,8 +730,17 @@ function buildIntegrationStatus() {
       {
         key: "fmCSA",
         label: "FMCSA broker verification",
-        status: process.env.FMCSA_API_URL && process.env.FMCSA_WEBKEY ? "ready" : "needs_config",
-        missing: ["FMCSA_API_URL", "FMCSA_WEBKEY"].filter((key) => !process.env[key]),
+        status:
+          process.env.FMCSA_API_URL &&
+          (getIntegrationValue("fmcsa", "FMCSA_WEB_KEY") ?? process.env.FMCSA_WEBKEY)
+            ? "ready"
+            : "needs_config",
+        missing: [
+          ...(!process.env.FMCSA_API_URL ? ["FMCSA_API_URL"] : []),
+          ...((getIntegrationValue("fmcsa", "FMCSA_WEB_KEY") ?? process.env.FMCSA_WEBKEY)
+            ? []
+            : ["FMCSA_WEB_KEY"]),
+        ],
       },
       {
         key: "telegram",
@@ -1000,12 +1020,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       storage.setLastUsedTotpCounter(user.id, acceptedCounter);
     }
-    req.session.userId = user.id;
-    req.session.role = user.role;
-    req.session.authenticated = true; // legacy flag, kept for old frontend
-    storage.recordUserLogin(user.id);
-    storage.audit("auth.login", "user", user.id, { email: user.email, role: user.role });
-    res.json({ ok: true, role: user.role, redirect: `/${user.role === "admin" ? "admin" : user.role === "dispatcher" ? "dispatch" : "d"}` });
+    // Audit V2-2 — regenerate session id before binding userId to defeat
+    // session-fixation attacks (attacker plants a known session id, victim logs
+    // in, attacker rides into the authenticated session).
+    req.session.regenerate((regenErr) => {
+      if (regenErr) {
+        console.error("[auth] session regenerate failed:", regenErr);
+        return res.status(500).json({ message: "Login failed" });
+      }
+      req.session.userId = user.id;
+      req.session.role = user.role;
+      req.session.authenticated = true; // legacy flag, kept for old frontend
+      req.session.save((saveErr) => {
+        if (saveErr) {
+          console.error("[auth] session save failed:", saveErr);
+          return res.status(500).json({ message: "Login failed" });
+        }
+        storage.recordUserLogin(user.id);
+        storage.audit("auth.login", "user", user.id, { email: user.email, role: user.role });
+        res.json({ ok: true, role: user.role, redirect: `/${user.role === "admin" ? "admin" : user.role === "dispatcher" ? "dispatch" : "d"}` });
+      });
+    });
   });
 
   app.post("/api/auth/logout", (req, res) => {
@@ -1079,23 +1114,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
       role: created.role,
     });
 
-    // Auto-login: bind session so the frontend can call /api/me immediately.
-    req.session.userId = created.id;
-    req.session.role = created.role;
-    req.session.authenticated = true;
-    storage.recordUserLogin(created.id);
-    storage.audit("auth.signup_login", "user", created.id, { role: created.role });
+    // Audit V2-2 — regenerate session id before binding userId on signup auto-login.
+    // Done synchronously via a one-shot Promise so we can keep returning a typed
+    // response below without restructuring the whole handler.
+    req.session.regenerate((regenErr) => {
+      if (regenErr) {
+        console.error("[auth] signup regenerate failed:", regenErr);
+        return res.status(500).json({ message: "Signup failed after user create" });
+      }
+      req.session.userId = created.id;
+      req.session.role = created.role;
+      req.session.authenticated = true;
+      req.session.save((saveErr) => {
+        if (saveErr) {
+          console.error("[auth] signup save failed:", saveErr);
+          return res.status(500).json({ message: "Signup failed after user create" });
+        }
+        storage.recordUserLogin(created.id);
+        storage.audit("auth.signup_login", "user", created.id, { role: created.role });
 
-    const redirect =
-      created.role === "admin" ? "/admin" : created.role === "dispatcher" ? "/dispatch" : "/d";
+        const redirect =
+          created.role === "admin" ? "/admin" : created.role === "dispatcher" ? "/dispatch" : "/d";
 
-    return res.status(201).json({
-      id: created.id,
-      email: created.email,
-      role: created.role,
-      totpSecret,
-      otpauthUrl: buildOtpAuthUrl(created.email, totpSecret),
-      redirect,
+        return res.status(201).json({
+          id: created.id,
+          email: created.email,
+          role: created.role,
+          totpSecret,
+          otpauthUrl: buildOtpAuthUrl(created.email, totpSecret),
+          redirect,
+        });
+      });
     });
   });
 

@@ -5,6 +5,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import type { Client } from "@shared/schema";
 import { z } from "zod";
+import { QRCodeSVG } from "qrcode.react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -1087,7 +1088,7 @@ function ResetTotpQRView({
   copy: (s: string) => Promise<boolean>;
   copied: boolean;
 }) {
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=0&data=${encodeURIComponent(result.otpauthUrl)}`;
+
 
   return (
     <>
@@ -1103,7 +1104,7 @@ function ResetTotpQRView({
 
       <div className="space-y-3 py-4">
         <div className="flex justify-center rounded-md border border-border bg-card p-3">
-          <img src={qrUrl} alt="TOTP QR" className="h-44 w-44" />
+          <QRCodeSVG value={result.otpauthUrl} size={176} level="M" aria-label="TOTP QR" />
         </div>
         <div>
           <Label className="text-xs">Секрет (для ручного ввода)</Label>

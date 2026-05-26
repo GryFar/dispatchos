@@ -10,16 +10,93 @@
 // We pull subject from headers and extract the text body (or fall back to
 // the full raw MIME). No external deps — Workers runtime has TextDecoder
 // and standard streams.
+//
+// Audit V2-4 hardening:
+//   - Reject messages > MAX_RAW_BYTES (memory bomb / OOM defense).
+//   - Reject when SPF/DKIM authentication-results show "fail" (anti-spoof).
+//   - Trim body to MAX_BODY_BYTES so a malicious huge payload doesn't
+//     bloat `email_ingest` rows.
+//   - Per-sender rate-limit using a CF Workers KV namespace (if bound).
+
+const MAX_RAW_BYTES = 1 * 1024 * 1024; // 1 MB hard cap on inbound MIME
+const MAX_BODY_BYTES = 32 * 1024; // 32 KB persisted body
+const RATE_LIMIT_PER_HOUR = 30; // per sender address
+
+/**
+ * Inspect the Authentication-Results header CF/our forwarder adds.
+ * We REJECT only on an explicit `spf=fail` or `dkim=fail`. Missing
+ * results / softfail are allowed (forwarded mail often loses SPF).
+ *
+ * @param {Headers} headers
+ * @returns {{ ok: boolean, reason?: string }}
+ */
+function checkAuthResults(headers) {
+  const ar = (headers.get("authentication-results") || "").toLowerCase();
+  if (!ar) return { ok: true };
+  if (/\bspf=fail\b/.test(ar)) return { ok: false, reason: "spf=fail" };
+  if (/\bdkim=fail\b/.test(ar)) return { ok: false, reason: "dkim=fail" };
+  if (/\bdmarc=fail\b/.test(ar)) return { ok: false, reason: "dmarc=fail" };
+  return { ok: true };
+}
+
+/**
+ * Sliding-window-ish rate-limit using KV with a 1-hour expiry on the key.
+ * If KV isn't bound (local dev / not configured) we skip silently.
+ *
+ * @param {string|undefined} kvNamespace
+ * @param {string} sender
+ * @returns {Promise<boolean>} true if allowed
+ */
+async function checkRateLimit(kv, sender) {
+  if (!kv || !sender) return true;
+  const key = `rl:${sender.toLowerCase()}`;
+  try {
+    const raw = await kv.get(key);
+    const count = raw ? parseInt(raw, 10) || 0 : 0;
+    if (count >= RATE_LIMIT_PER_HOUR) return false;
+    // Don't bother resetting expiry on every hit; simple counter is fine
+    // for 30/hour granularity. expirationTtl is set on first put.
+    await kv.put(key, String(count + 1), { expirationTtl: 3600 });
+    return true;
+  } catch (err) {
+    console.error("[inbound-email] KV rate-limit check failed:", err);
+    return true; // fail-open — better deliver than drop legit mail
+  }
+}
 
 export default {
   /**
    * @param {import('@cloudflare/workers-types').ForwardableEmailMessage} message
-   * @param {{ INGEST_URL: string, DISPATCHOS_INBOUND_SECRET: string }} env
+   * @param {{ INGEST_URL: string, DISPATCHOS_INBOUND_SECRET: string, INBOUND_RL?: any }} env
    * @param {ExecutionContext} ctx
    */
   async email(message, env, ctx) {
     try {
-      // Read the entire raw MIME message
+      // V2-4(1): size cap BEFORE buffering the body.
+      if (typeof message.rawSize === "number" && message.rawSize > MAX_RAW_BYTES) {
+        console.warn(
+          `[inbound-email] rejected: rawSize=${message.rawSize} exceeds ${MAX_RAW_BYTES}`,
+        );
+        return; // drop silently — Worker accepts but doesn't forward
+      }
+
+      // V2-4(2): authentication-results check.
+      const auth = checkAuthResults(message.headers);
+      if (!auth.ok) {
+        console.warn(
+          `[inbound-email] rejected: auth ${auth.reason} from=${message.from}`,
+        );
+        return;
+      }
+
+      // V2-4(3): per-sender rate-limit (best-effort; KV optional).
+      const allowed = await checkRateLimit(env.INBOUND_RL, message.from);
+      if (!allowed) {
+        console.warn(`[inbound-email] rejected: rate-limit hit from=${message.from}`);
+        return;
+      }
+
+      // Read the entire raw MIME message (now bounded by size check above).
       const rawBuffer = await new Response(message.raw).arrayBuffer();
       const rawText = new TextDecoder("utf-8").decode(rawBuffer);
 
@@ -55,6 +132,11 @@ export default {
             }
           }
         }
+      }
+
+      // V2-4(4): cap the persisted body size.
+      if (body.length > MAX_BODY_BYTES) {
+        body = body.slice(0, MAX_BODY_BYTES) + "\n\n[...truncated by ingest worker]";
       }
 
       const payload = {
