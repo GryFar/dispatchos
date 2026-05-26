@@ -1,20 +1,33 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   CheckCircle2,
   CircleDashed,
+  Loader2,
   Lock,
   Plug,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
-import { apiJson } from "@/lib/queryClient";
+import { apiJson, ApiError } from "@/lib/queryClient";
 import { useAuth } from "@/lib/use-auth";
+import { useToast } from "@/hooks/use-toast";
 import { formatDateFull, formatRelativeAgo } from "@/lib/format";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { RoleBadge } from "@/components/dispatch/RoleBadge";
 import { cn } from "@/lib/utils";
 
@@ -254,26 +267,7 @@ function SecurityTab() {
                 Сейчас — попросите другого admin'а сбросить через раздел Пользователи.
               </p>
             </div>
-            <div>
-              <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                Two-Factor Authentication (TOTP)
-              </p>
-              <p className="mt-1 text-sm">
-                {user.twoFactorEnabled ? (
-                  <span className="inline-flex items-center gap-1.5 text-success">
-                    <CheckCircle2 className="h-4 w-4" /> Включено
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1.5 text-warning">
-                    <AlertCircle className="h-4 w-4" /> Не включено
-                  </span>
-                )}
-              </p>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                Перевыпуск TOTP self-service появится в Phase 3 (endpoint /api/me/totp).
-                Сейчас — через другого admin'а в разделе Пользователи.
-              </p>
-            </div>
+            <TwoFactorSection enabled={user.twoFactorEnabled} />
             <div>
               <p className="text-xs uppercase tracking-wider text-muted-foreground">
                 Сессия
@@ -295,5 +289,186 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
       <dt className="text-xs uppercase tracking-wider text-muted-foreground">{label}</dt>
       <dd className="text-sm">{value}</dd>
     </div>
+  );
+}
+
+// ===========================================================================
+// 2FA section — self-service setup / rotate / disable
+// ===========================================================================
+//
+// Three states (controlled by `enabled` + local dialog state):
+//   1. enabled=false → banner «Не включено» + [Настроить]
+//   2. enabled=true  → «Включено» + [Перевыпустить QR] [Отключить]
+//   3. dialogOpen → QR + secret + input для подтверждения
+//
+// API:
+//   POST /api/me/totp/setup   → { secret, otpauthUrl }   (stages secret in session)
+//   POST /api/me/totp/confirm { token } → { enabled: true } (commits to users.totp_secret)
+function TwoFactorSection({ enabled }: { enabled: boolean }) {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wider text-muted-foreground">
+        Two-Factor Authentication (TOTP)
+      </p>
+      <div className="mt-1 flex items-center justify-between gap-3">
+        <p className="text-sm">
+          {enabled ? (
+            <span className="inline-flex items-center gap-1.5 text-success">
+              <CheckCircle2 className="h-4 w-4" /> Включено
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 text-warning">
+              <AlertCircle className="h-4 w-4" /> Не включено
+            </span>
+          )}
+        </p>
+        <Button size="sm" variant={enabled ? "outline" : "default"} onClick={() => setDialogOpen(true)}>
+          {enabled ? "Перевыпустить QR" : "Настроить"}
+        </Button>
+      </div>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        Нужно для ролей admin / dispatcher. При перевыпуске старый QR перестаёт работать только после ввода кода из нового.
+      </p>
+      {dialogOpen && (
+        <TotpSetupDialog
+          onClose={() => setDialogOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function TotpSetupDialog({ onClose }: { onClose: () => void }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [stage, setStage] = useState<"loading" | "scan" | "done">("loading");
+  const [setupData, setSetupData] = useState<{ secret: string; otpauthUrl: string } | null>(null);
+  const [token, setToken] = useState("");
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+
+  // Kick off setup immediately on open.
+  const setupMutation = useMutation({
+    mutationFn: () => apiJson<{ secret: string; otpauthUrl: string }>("POST", "/api/me/totp/setup", {}),
+    onSuccess: (data) => {
+      setSetupData(data);
+      setStage("scan");
+    },
+    onError: (err) => {
+      toast({
+        variant: "destructive",
+        description: err instanceof ApiError ? err.message : "Не удалось запустить настройку.",
+      });
+      onClose();
+    },
+  });
+
+  // Auto-start on mount.
+  useEffect(() => {
+    setupMutation.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const confirmMutation = useMutation({
+    mutationFn: (code: string) =>
+      apiJson<{ enabled: true }>("POST", "/api/me/totp/confirm", { token: code }),
+    onSuccess: () => {
+      setStage("done");
+      qc.invalidateQueries({ queryKey: ["/api/me"] });
+      toast({ description: "2FA включена. При следующем входе потребуется код." });
+    },
+    onError: (err) => {
+      setConfirmError(err instanceof ApiError ? err.message : "Неверный код");
+    },
+  });
+
+  function handleConfirm() {
+    setConfirmError(null);
+    const clean = token.replace(/\D+/g, "");
+    if (clean.length !== 6) {
+      setConfirmError("Код должен быть из 6 цифр");
+      return;
+    }
+    confirmMutation.mutate(clean);
+  }
+
+  const qrUrl = setupData
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=0&data=${encodeURIComponent(setupData.otpauthUrl)}`
+    : null;
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Настройка 2FA</DialogTitle>
+          <DialogDescription>
+            Отсканируйте QR в Google Authenticator, 1Password или Authy, затем введите 6-значный код для подтверждения.
+          </DialogDescription>
+        </DialogHeader>
+
+        {stage === "loading" && (
+          <div className="flex h-48 items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        )}
+
+        {stage === "scan" && setupData && qrUrl && (
+          <div className="space-y-4">
+            <div className="flex justify-center rounded-md bg-white p-3">
+              <img src={qrUrl} alt="TOTP QR" className="h-48 w-48" />
+            </div>
+            <div>
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+                Не сканируется? Введите secret вручную:
+              </Label>
+              <div className="mt-1 break-all rounded-md bg-muted px-3 py-2 font-mono text-xs">
+                {setupData.secret}
+              </div>
+            </div>
+            <div>
+              <Label htmlFor="totp-confirm">Код из приложения</Label>
+              <Input
+                id="totp-confirm"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                placeholder="000000"
+                className="mt-1 font-mono tracking-widest text-center text-lg"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+              />
+              {confirmError && (
+                <p className="mt-1 text-xs text-destructive">{confirmError}</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {stage === "done" && (
+          <Alert>
+            <CheckCircle2 className="h-4 w-4" />
+            <AlertDescription>2FA включена и будет запрошена при следующем входе.</AlertDescription>
+          </Alert>
+        )}
+
+        <DialogFooter>
+          {stage === "scan" && (
+            <>
+              <Button variant="ghost" onClick={onClose} disabled={confirmMutation.isPending}>
+                Отмена
+              </Button>
+              <Button onClick={handleConfirm} disabled={confirmMutation.isPending || token.length < 6}>
+                {confirmMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Подтвердить
+              </Button>
+            </>
+          )}
+          {stage === "done" && (
+            <Button onClick={onClose}>Готово</Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

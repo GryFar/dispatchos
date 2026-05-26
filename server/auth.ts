@@ -15,6 +15,12 @@ declare module "express-session" {
     /** Kept for backward compat with v1.2.7 frontend that reads this flag
      *  from /api/auth/status. New code should consult userId / role. */
     authenticated?: boolean;
+    /** Set by POST /api/me/totp/setup. Holds a freshly generated TOTP
+     *  secret that has NOT yet been persisted to users.totp_secret.
+     *  POST /api/me/totp/confirm verifies a code against this pending
+     *  secret before committing it. We keep it in the session (not in DB)
+     *  so abandoning the setup flow leaves no orphan secret. */
+    pendingTotpSecret?: string;
   }
 }
 
