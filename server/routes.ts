@@ -1044,15 +1044,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
     if (user.totpSecret) {
+      const submittedToken = String(body.token || "").trim();
+
+      // 2026-05-27 hotfix: distinguish "need TOTP" from "bad TOTP" so the
+      // client can switch the form to the 2FA-code step. Without this the
+      // user lands in an infinite "Invalid credentials" loop — password is
+      // right, but they never see the token field.
+      //
+      // Note on the V2-17 trade-off: the original audit hardening folded
+      // "wrong password" and "missing/bad TOTP" into a single error so an
+      // attacker couldn't tell whether a given email had 2FA enabled. We
+      // are partially reverting that decision: when password verification
+      // passes but TOTP is missing/wrong, we now return a distinct
+      // `totp_required` error code. This DOES leak "2FA enabled" — but only
+      // to a caller who already supplied a valid email+password pair, i.e.
+      // someone past the brute-force threshold anyway. The audit log still
+      // records the granular reason for forensics.
+      if (submittedToken.length === 0) {
+        storage.audit("auth.login_failed", "user", user.id, { reason: "totp_required" });
+        return res.status(401).json({
+          message: "2FA token required",
+          code: "totp_required",
+        });
+      }
+
       // Audit High #11 — reject replays by passing the last accepted counter.
       const minCounter = storage.getLastUsedTotpCounter(user.id);
-      const acceptedCounter = verifyTotp(user.totpSecret, String(body.token || ""), minCounter);
+      const acceptedCounter = verifyTotp(user.totpSecret, submittedToken, minCounter);
       if (acceptedCounter === null) {
-        // Audit V2-17 — unified login error wording so attacker can't tell
-        // "valid email + 2FA enabled" from "wrong password". Differentiate
-        // in the audit event only.
         storage.audit("auth.login_failed", "user", user.id, { reason: "bad_totp" });
-        return res.status(401).json({ message: "Invalid credentials" });
+        return res.status(401).json({
+          message: "Invalid 2FA token",
+          code: "totp_invalid",
+        });
       }
       storage.setLastUsedTotpCounter(user.id, acceptedCounter);
     }
