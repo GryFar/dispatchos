@@ -9,6 +9,10 @@ import {
   Loader2,
   UserCircle2,
   UserX,
+  ThumbsUp,
+  TrendingDown,
+  PhoneOff,
+  ShieldAlert,
 } from "lucide-react";
 import type {
   CheckinKind,
@@ -16,6 +20,7 @@ import type {
   LoadFull,
 } from "@shared/schema";
 import { apiJson, ApiError } from "@/lib/queryClient";
+import { TrustBadge } from "@/components/dispatch/TrustBadge";
 import {
   formatMoney,
   formatDateFull,
@@ -60,10 +65,9 @@ const CHECKIN_LABELS: Record<CheckinKind, string> = {
 };
 
 /**
- * /dispatch/loads/:id — read-only load detail for the dispatcher. Same
- * layout as driver load-detail.tsx (route headline, pickup/delivery stops,
- * broker info, check-ins timeline) but without action buttons. P0 is
- * view-only; P1 will add reassign / book / cancel.
+ * /dispatch/loads/:id — load detail for the dispatcher. Route headline,
+ * pickup/delivery stops, broker info + trust score, broker quick-feedback,
+ * driver assignment (reassign), check-ins timeline.
  */
 export default function DispatchLoadDetailPage() {
   const [match, params] = useRoute("/loads/:id");
@@ -182,7 +186,13 @@ export default function DispatchLoadDetailPage() {
             {data.notes}
           </p>
         )}
+        <div className="mt-3">
+          <TrustBadge brokerMc={data.brokerMc} />
+        </div>
       </Card>
+
+      {/* Broker feedback — one-tap trust signals (Killer #1 stage 4) */}
+      <BrokerFeedbackCard brokerMc={data.brokerMc} loadId={data.id} />
 
       {/* Driver assignment (always shown — load can have or not have a driver) */}
       <DriverAssignmentCard load={data} />
@@ -258,6 +268,79 @@ function StopBlock({
       </p>
       <p className="mt-0.5 text-xs text-muted-foreground">{formatDateFull(iso)}</p>
     </div>
+  );
+}
+
+// Quick-tap broker trust signals. Each button POSTs one signal and refreshes
+// the TrustBadge (same query key). Killer #1 stage 4.
+const FEEDBACK_BUTTONS: {
+  signalType: string;
+  positive: boolean;
+  label: string;
+  icon: typeof ThumbsUp;
+  variant: "good" | "bad";
+}[] = [
+  { signalType: "paid_on_time", positive: true, label: "Заплатил вовремя", icon: ThumbsUp, variant: "good" },
+  { signalType: "ratecon_reduced_post_bol", positive: false, label: "Срезал ставку", icon: TrendingDown, variant: "bad" },
+  { signalType: "no_response", positive: false, label: "Не отвечает", icon: PhoneOff, variant: "bad" },
+  { signalType: "fraud_attempt", positive: false, label: "Мошенничество", icon: ShieldAlert, variant: "bad" },
+];
+
+function BrokerFeedbackCard({ brokerMc, loadId }: { brokerMc: string; loadId: string }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [pending, setPending] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: (input: { signalType: string; positive: boolean }) =>
+      apiJson("POST", "/api/broker-trust/signal", {
+        brokerMc,
+        loadId,
+        signalType: input.signalType,
+        positive: input.positive,
+      }),
+    onMutate: (input) => setPending(input.signalType),
+    onSuccess: () => {
+      toast({ title: "Оценка записана", description: "Спасибо — это улучшает данные о брокерах." });
+      qc.invalidateQueries({ queryKey: ["/api/broker-trust", brokerMc] });
+    },
+    onError: (err: Error) =>
+      toast({ title: "Не удалось записать", description: err.message, variant: "destructive" }),
+    onSettled: () => setPending(null),
+  });
+
+  return (
+    <Card className="p-4">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Оценить брокера
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Один тап — и сигнал идёт в Trust Score. Помогает всем диспетчерам.
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        {FEEDBACK_BUTTONS.map((b) => {
+          const Icon = b.icon;
+          const isPending = pending === b.signalType;
+          return (
+            <Button
+              key={b.signalType}
+              variant="outline"
+              size="sm"
+              disabled={mutation.isPending}
+              onClick={() => mutation.mutate({ signalType: b.signalType, positive: b.positive })}
+              className={
+                b.variant === "good"
+                  ? "justify-start border-success/30 text-success hover:bg-success/10"
+                  : "justify-start border-destructive/30 text-destructive hover:bg-destructive/10"
+              }
+            >
+              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
+              {b.label}
+            </Button>
+          );
+        })}
+      </div>
+    </Card>
   );
 }
 
