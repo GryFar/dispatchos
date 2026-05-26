@@ -1239,7 +1239,7 @@ export function registerAdminRoutes(app: Express): void {
   // window" tile; user counts and audit-last-24h are window-independent.
   //
   // MRR formula (current month, USD floats):
-  //   currentUsd = activeClients * FLAT_FEE_USD + monthToDatePercentFee
+  //   currentUsd = activeClients * (FLAT_FEE_CENTS / 100) + monthToDatePercentFee
   //   projectedUsd = currentUsd projected to a full 30-day month (linear
   //                  extrapolation by day-of-month). null if dayOfMonth < 3
   //                  — too noisy to project from one or two days.
