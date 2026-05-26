@@ -5,6 +5,7 @@ import {
   Briefcase,
   Inbox,
   LayoutDashboard,
+  LayoutGrid,
   LogOut,
   Menu,
   Truck,
@@ -42,6 +43,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { href: "/", label: "Дашборд", icon: LayoutDashboard },
+  { href: "/cockpit", label: "Кокпит", icon: LayoutGrid },
   { href: "/clients", label: "Клиенты", icon: Briefcase },
   { href: "/loads", label: "Грузы", icon: Truck },
   { href: "/queue", label: "Очередь", icon: Inbox, badgeKey: "queueCount" },

@@ -50,6 +50,7 @@ import DispatchClientsPage from "@/pages/dispatch/clients";
 import DispatchLoadsPage from "@/pages/dispatch/loads";
 import DispatchLoadDetailPage from "@/pages/dispatch/load-detail";
 import DispatchQueuePage from "@/pages/dispatch/queue";
+import DispatchCockpitPage from "@/pages/dispatch/cockpit";
 
 /**
  * Wrapped hash-location hook that strips any `?query` (and `#fragment`) from
@@ -206,6 +207,7 @@ function DispatchRouter() {
         <Route path="/clients" component={DispatchClientsPage} />
         <Route path="/loads" component={DispatchLoadsPage} />
         <Route path="/loads/:id" component={DispatchLoadDetailPage} />
+        <Route path="/cockpit" component={DispatchCockpitPage} />
         <Route path="/queue" component={DispatchQueuePage} />
         <Route component={NotFound} />
       </Switch>
