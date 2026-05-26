@@ -30,6 +30,7 @@ import QueuePage from "@/pages/admin/queue";
 import AuditPage from "@/pages/admin/audit";
 import BackupPage from "@/pages/admin/backup";
 import BillingPage from "@/pages/admin/billing";
+import BillingStripePage from "@/pages/admin/billing-stripe";
 import SettingsPage from "@/pages/admin/settings";
 import IntegrationsPage from "@/pages/admin/integrations";
 import EmailInboxPage from "@/pages/admin/email-inbox";
@@ -168,7 +169,8 @@ function AdminRouter() {
         <Route path="/queue" component={QueuePage} />
         <Route path="/audit" component={AuditPage} />
         <Route path="/backup" component={BackupPage} />
-        <Route path="/billing" component={BillingPage} />
+        <Route path="/billing" component={BillingStripePage} />
+        <Route path="/invoicing" component={BillingPage} />
         <Route path="/settings" component={SettingsPage} />
         <Route path="/legacy-dashboard" component={LegacyDashboardPage} />
         <Route path="/integrations" component={IntegrationsPage} />

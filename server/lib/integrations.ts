@@ -87,6 +87,37 @@ export const INTEGRATIONS: IntegrationDescriptor[] = [
     docsUrl: "https://core.telegram.org/bots#how-do-i-create-a-bot",
   },
   {
+    key: "stripe",
+    label: "Stripe (billing)",
+    kind: "messaging" as const,
+    envVars: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"],
+    envVarMeta: [
+      {
+        envVar: "STRIPE_SECRET_KEY",
+        label: "Secret key",
+        type: "secret" as const,
+        help: "dashboard.stripe.com → Developers → API keys (use restricted key)",
+      },
+      {
+        envVar: "STRIPE_WEBHOOK_SECRET",
+        label: "Webhook signing secret",
+        type: "secret" as const,
+        help: "dashboard.stripe.com → Webhooks → your endpoint → Signing secret (whsec_...)",
+      },
+    ],
+    activityEvents: [
+      "billing.checkout_created",
+      "billing.subscription_started",
+      "billing.subscription_updated",
+      "billing.subscription_canceled",
+      "billing.payment_succeeded",
+      "billing.payment_failed",
+    ],
+    notes:
+      "Trial 14 days on any tier. Webhook endpoint: /api/billing/webhook. Price IDs are env vars per tier (STRIPE_PRICE_OO_BASIC, etc).",
+    docsUrl: "https://dashboard.stripe.com/apikeys",
+  },
+  {
     key: "resend",
     label: "Resend (transactional email)",
     kind: "messaging",

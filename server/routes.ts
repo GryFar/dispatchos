@@ -51,6 +51,7 @@ import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerCronRoutes } from "./routes/cron";
 import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
+import { registerBillingRoutes } from "./routes/billing";
 import { enrichLoadSync } from "./lib/ai";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
@@ -1289,6 +1290,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // of double-gating through `requireRole.any()`. See server/routes/admin.ts.
   // -------------------------------------------------------------------------
   registerAdminRoutes(app);
+  registerBillingRoutes(app);
 
   // Admin integration live-test endpoints. POST /api/admin/integrations/test/:id
   // fires a real network probe at each connector (FMCSA, Resend, Telegram,
