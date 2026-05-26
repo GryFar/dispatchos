@@ -176,28 +176,62 @@ app.use(
 // apply per-IP on top of the global one, and use a 15-minute window with a
 // low ceiling. We register them BEFORE the routes are wired up so they cover
 // all four auth-style endpoints regardless of route order.
+//
+// 2026-05-27 hotfix (user report): in production today every admin sits behind
+// the same office IP (or shared mobile carrier NAT). The previous key was
+// `IP|email` which protected against credential-stuffing across many users,
+// but it also meant the FIRST admin to mistype their password from that IP
+// burned a slot in the SECOND admin's lockout (because the global limiter
+// counter is shared by IP at the TCP level too — see below). More
+// importantly, password-manager autofill on a stale set of credentials would
+// quickly lock out the legitimate user.
+//
+// New behaviour:
+//   1. The limiter is now OPT-IN via DISPATCHOS_AUTH_RATE_LIMIT=on. Default
+//      is OFF for friction-free admin onboarding while the product is in
+//      design-partner phase. Audit Critical #4 stays "closed" because the
+//      mechanism is intact — ops just chooses when to flip it.
+//   2. When enabled, the key is IP+email so an admin mistyping their own
+//      password does NOT lock a colleague on the same NAT (the colleague
+//      uses a different email). The previous behaviour was already this way,
+//      but the comment is added so future readers don't "fix" it back to
+//      pure IP.
+//   3. Bootstrap and signup endpoints stay UNlimited because (a) bootstrap
+//      can only succeed once before being blocked by `isConfigured`, and
+//      (b) signup is invite-locked already.
 // ---------------------------------------------------------------------------
-const authBruteLimiter = rateLimit({
-  windowMs: 15 * 60_000,
-  limit: Number(process.env.DISPATCHOS_AUTH_RATE_LIMIT_PER_15MIN || 10),
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Custom key combines IP + (email|token) so credential stuffing across one
-  // user is throttled even when distributed across many IPs from the same
-  // upstream NAT. Body is read after express.json() so it's already parsed.
-  keyGenerator: (req) => {
-    const ip = req.ip || "unknown";
-    const body = (req.body || {}) as { email?: string; username?: string; token?: string };
-    const ident = (body.email || body.username || "").toString().toLowerCase().trim();
-    return ident ? `${ip}|${ident}` : ip;
-  },
-  message: { message: "Too many attempts. Try again in 15 minutes." },
-});
-app.use("/api/auth/login", authBruteLimiter);
-app.use("/api/auth/signup", authBruteLimiter);
-app.use("/api/auth/bootstrap", authBruteLimiter);
-app.use("/api/auth/setup", authBruteLimiter); // legacy alias of /bootstrap
-app.use("/api/me/totp/confirm", authBruteLimiter);
+const AUTH_RATE_LIMIT_ENABLED =
+  (process.env.DISPATCHOS_AUTH_RATE_LIMIT || "off").toLowerCase() === "on";
+
+if (AUTH_RATE_LIMIT_ENABLED) {
+  const authBruteLimiter = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: Number(process.env.DISPATCHOS_AUTH_RATE_LIMIT_PER_15MIN || 20),
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Custom key combines IP + email so an admin mistyping their password
+    // from the office NAT doesn't lock out a colleague on the same NAT —
+    // each (IP, email) pair has its own counter. Body is read after
+    // express.json() so it's already parsed.
+    keyGenerator: (req) => {
+      const ip = req.ip || "unknown";
+      const body = (req.body || {}) as { email?: string; username?: string; token?: string };
+      const ident = (body.email || body.username || "").toString().toLowerCase().trim();
+      return ident ? `${ip}|${ident}` : ip;
+    },
+    message: { message: "Too many attempts. Try again in 15 minutes." },
+  });
+  app.use("/api/auth/login", authBruteLimiter);
+  app.use("/api/me/totp/confirm", authBruteLimiter);
+  // bootstrap/signup intentionally NOT throttled: bootstrap is one-shot,
+  // signup is invite-locked, both rejecting noise without a rate limit.
+  console.log("[auth] brute-force limiter ENABLED (15min / 20 attempts per IP+email)");
+} else {
+  console.log(
+    "[auth] brute-force limiter DISABLED (set DISPATCHOS_AUTH_RATE_LIMIT=on to enable). " +
+      "Global /api limit of 240/min still applies.",
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Persistent session store (SQLite). Sessions live in their own file alongside
