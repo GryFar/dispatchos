@@ -119,7 +119,8 @@ const ORIGIN_CHECK_EXEMPT = (path: string) =>
   path.startsWith("/api/inbound/") ||
   path.startsWith("/api/cron/") ||
   path.startsWith("/api/telegram/") ||
-  path.startsWith("/api/integrations/webhook/");
+  path.startsWith("/api/integrations/webhook/") ||
+  path === "/api/billing/webhook"; // Stripe webhook (HMAC-signed)
 
 app.use("/api", (req, res, next) => {
   // Read-only methods don't need CSRF protection.
