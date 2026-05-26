@@ -105,6 +105,11 @@ export interface CarrierSafetyProfile {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+// Audit V2-16 — module-level cache for FMCSA SAFER responses.
+// Keyed by normalized MC number; TTL 24h.
+const FMCSA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const fmcsaCache: Map<string, { value: FmcsaCarrier | null; expiresAt: number }> = new Map();
+
 function classifyExpiry(iso: string | null | undefined): InsuranceLine {
   if (!iso) {
     return { kind: "cargo", expiresAt: null, status: "missing", daysUntilExpiry: null };
@@ -303,11 +308,24 @@ export async function buildCarrierSafetyProfile(
   } else if (!webKey) {
     fmcsaError = "FMCSA_WEB_KEY not configured — set it in Integrations.";
   } else {
-    try {
-      fmcsa = await fetchByMc(normalizedMc, { webKey });
+    // Audit V2-16 — 24h cache per MC. SAFER snapshot doesn't change daily,
+    // and FMCSA's mobile API has a shared 10K/day quota. Without cache, a
+    // dispatcher refreshing a profile page 10x burns 10 quota units.
+    const cached = fmcsaCache.get(normalizedMc);
+    if (cached && cached.expiresAt > Date.now()) {
+      fmcsa = cached.value;
       fmcsaFetched = true;
-    } catch (err) {
-      fmcsaError = err instanceof Error ? err.message : String(err);
+    } else {
+      try {
+        fmcsa = await fetchByMc(normalizedMc, { webKey });
+        fmcsaFetched = true;
+        fmcsaCache.set(normalizedMc, {
+          value: fmcsa,
+          expiresAt: Date.now() + FMCSA_CACHE_TTL_MS,
+        });
+      } catch (err) {
+        fmcsaError = err instanceof Error ? err.message : String(err);
+      }
     }
   }
 

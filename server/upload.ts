@@ -24,13 +24,18 @@ import path from "node:path";
 import { uploadsRoot } from "./storage";
 
 const allowedUploadExtensions = new Set([".pdf", ".jpg", ".jpeg", ".png", ".txt", ".csv"]);
+// Audit V2-13 — dropped "application/octet-stream" from the whitelist; it's the
+// browser default for unknown types and effectively neutralised the MIME check.
+// The extension whitelist above is the real gate. If a future driver client
+// (esp. mobile) starts sending octet-stream for valid PDFs we'll add a
+// signature-byte (magic) sniff via the `file-type` npm instead of re-opening
+// the MIME wildcard.
 const allowedUploadMime = new Set([
   "application/pdf",
   "image/jpeg",
   "image/png",
   "text/plain",
   "text/csv",
-  "application/octet-stream",
 ]);
 
 export const upload = multer({

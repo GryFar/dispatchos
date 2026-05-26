@@ -1017,7 +1017,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const minCounter = storage.getLastUsedTotpCounter(user.id);
       const acceptedCounter = verifyTotp(user.totpSecret, String(body.token || ""), minCounter);
       if (acceptedCounter === null) {
-        return res.status(401).json({ message: "Invalid 2FA token" });
+        // Audit V2-17 — unified login error wording so attacker can't tell
+        // "valid email + 2FA enabled" from "wrong password". Differentiate
+        // in the audit event only.
+        storage.audit("auth.login_failed", "user", user.id, { reason: "bad_totp" });
+        return res.status(401).json({ message: "Invalid credentials" });
       }
       storage.setLastUsedTotpCounter(user.id, acceptedCounter);
     }
@@ -1593,15 +1597,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.get("/api/health", (_req, res) => {
+    // Audit V2-10 — lightweight counts via COUNT(*); avoids loading every row.
     res.json({
       ok: true,
       service: "dispatchos-location-aware",
       version: "1.2.7-vds-production",
-      clients: storage.listClients().length,
-      loads: storage.listLoads().length,
-      documents: storage.listDocuments().length,
-      brokers: storage.listBrokerRecords().length,
-      emailIngest: storage.listEmailIngest(1).length,
+      clients: storage.countClients(),
+      loads: storage.countLoads(),
+      documents: storage.countDocuments(),
+      brokers: storage.countBrokerRecords(),
+      emailIngest: storage.countEmailIngest() > 0 ? 1 : 0,
     });
   });
 

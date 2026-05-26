@@ -3107,6 +3107,24 @@ export const storage = {
   /**
    * Phase 3 P3 helper: count of loads created in a time window.
    */
+  /** Audit V2-10 — lightweight count helpers for /api/health.
+   * Avoids loading every row + parsing JSON just to read `.length`. */
+  countClients(): number {
+    return (sqlite.prepare("SELECT COUNT(*) as c FROM clients").get() as { c: number }).c;
+  },
+  countLoads(): number {
+    return (sqlite.prepare("SELECT COUNT(*) as c FROM loads").get() as { c: number }).c;
+  },
+  countDocuments(): number {
+    return (sqlite.prepare("SELECT COUNT(*) as c FROM documents").get() as { c: number }).c;
+  },
+  countBrokerRecords(): number {
+    return (sqlite.prepare("SELECT COUNT(*) as c FROM broker_records").get() as { c: number }).c;
+  },
+  countEmailIngest(): number {
+    return (sqlite.prepare("SELECT COUNT(*) as c FROM email_ingest").get() as { c: number }).c;
+  },
+
   countLoadsSince(since: string): number {
     return (
       sqlite
@@ -3670,6 +3688,41 @@ export const storage = {
   purgeOldLocationPings(retainDays = 15): number {
     const cutoff = new Date(Date.now() - retainDays * 24 * 3600 * 1000).toISOString();
     const r = sqlite.prepare("DELETE FROM driver_location_pings WHERE captured_at < ?").run(cutoff);
+    return r.changes ?? 0;
+  },
+
+  /**
+   * Audit V2-7 — GDPR/CCPA retention for audit_events. The table carries PII
+   * (emails, chatIds, lat/lng, broker MC) for telegram commands, lead form
+   * subscriptions, and safety profile views. Without retention there's no
+   * way to honour a "right to delete" request fully.
+   * Default: 180 days.
+   */
+  purgeOldAuditEvents(retainDays = 180): number {
+    const cutoff = new Date(Date.now() - retainDays * 24 * 3600 * 1000).toISOString();
+    const r = sqlite.prepare("DELETE FROM audit_events WHERE created_at < ?").run(cutoff);
+    return r.changes ?? 0;
+  },
+
+  /**
+   * Audit V2-7 / V2-21 — retention for inbound email payloads. CF forwarder
+   * already caps each body at 32 KB but rows still pile up.
+   * Default: 180 days.
+   */
+  purgeOldEmailIngest(retainDays = 180): number {
+    const cutoff = new Date(Date.now() - retainDays * 24 * 3600 * 1000).toISOString();
+    const r = sqlite.prepare("DELETE FROM email_ingest WHERE created_at < ?").run(cutoff);
+    return r.changes ?? 0;
+  },
+
+  /**
+   * Audit V2-29 — retention for fuel_price_observations. Schema comments
+   * promise 90-day rolling window but only GPS pings were actually being
+   * purged.
+   */
+  purgeOldFuelObservations(retainDays = 90): number {
+    const cutoff = new Date(Date.now() - retainDays * 24 * 3600 * 1000).toISOString();
+    const r = sqlite.prepare("DELETE FROM fuel_price_observations WHERE observed_at < ?").run(cutoff);
     return r.changes ?? 0;
   },
 

@@ -88,9 +88,14 @@ export async function parseReceipt(
   }
 
   let res: Response;
+  // Audit V2-15 — cap Anthropic call at 45s. Without it a stalled vendor hangs
+  // the cron / driver-bot path indefinitely (compare fmcsa.ts which uses 5s).
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45_000);
   try {
     res = await fetch(ANTHROPIC_API_URL, {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "content-type": "application/json",
         "x-api-key": apiKey,
@@ -115,8 +120,15 @@ export async function parseReceipt(
       }),
     });
   } catch (err) {
-    console.error("[receipt-ocr] fetch failed:", (err as Error).message);
+    const msg = (err as Error).message;
+    if ((err as Error).name === "AbortError") {
+      console.error("[receipt-ocr] fetch timed out after 45s");
+    } else {
+      console.error("[receipt-ocr] fetch failed:", msg);
+    }
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (!res.ok) {
