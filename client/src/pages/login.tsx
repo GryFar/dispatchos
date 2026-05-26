@@ -104,13 +104,24 @@ export default function LoginPage() {
           setGlobalError(t("login.errorRateLimit"));
           return;
         }
-        // TOTP fork — backend signals 2FA required by message containing
-        // "2fa" / "token". After Audit V2-17 the message is "Invalid
-        // credentials" for *both* wrong pw and bad 2fa, so we fork only
-        // when the second submit (with token) hits 401 — see below.
-        if (err.status === 401 && /2fa|token/i.test(err.message)) {
+        // TOTP fork — backend signals 2FA required via
+        // `body.code === 'totp_required'` (server hotfix 2026-05-27).
+        // The legacy substring match on the message is kept as a fallback
+        // for any in-flight deploys that haven't picked up the new code
+        // yet, so we don't strand a user on a half-rolled-out version.
+        const errBody = err.body as { code?: string } | null;
+        const isTotpRequired =
+          err.status === 401 &&
+          (errBody?.code === "totp_required" ||
+            errBody?.code === "totp_invalid" ||
+            /2fa|token/i.test(err.message));
+        if (isTotpRequired) {
           setNeedsTotp(true);
-          setGlobalError(t("login.totpAlert"));
+          setGlobalError(
+            errBody?.code === "totp_invalid"
+              ? t("login.errorInvalidTotp")
+              : t("login.totpAlert"),
+          );
           return;
         }
         if (err.status === 401) {
