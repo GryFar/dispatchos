@@ -51,6 +51,7 @@ import {
 } from "../auth";
 import { storage } from "../storage";
 import { computeInvoiceForWeek } from "../lib/billing";
+import { buildIftaQuarterly, renderIftaCsv } from "../lib/ifta";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1782,6 +1783,54 @@ export function registerAdminRoutes(app: Express): void {
       });
     }),
   );
+
+  // -------------------------------------------------------------------------
+  // IFTA quarterly report (paid feature — mileage + fuel by state)
+  //
+  // GET /api/admin/clients/:id/ifta?year=YYYY&quarter=N         → JSON
+  // GET /api/admin/clients/:id/ifta.csv?year=YYYY&quarter=N     → text/csv
+  //
+  // Aggregates GPS pings (miles per state) + fuel_transactions (gallons per
+  // state) for all drivers linked to this client in the given quarter.
+  // State lookup is offline bbox-based — approximate but signed-off by
+  // carrier at filing time. See server/lib/ifta.ts.
+  // -------------------------------------------------------------------------
+  function parseIftaQuery(req: Request): { year: number; quarter: 1 | 2 | 3 | 4 } | { error: string } {
+    const now = new Date();
+    const defaultYear = now.getUTCFullYear();
+    const defaultQuarter = (Math.floor(now.getUTCMonth() / 3) + 1) as 1 | 2 | 3 | 4;
+    const year = Number(req.query.year ?? defaultYear);
+    const quarter = Number(req.query.quarter ?? defaultQuarter);
+    if (!Number.isInteger(year) || year < 2020 || year > 2100) {
+      return { error: "year must be an integer between 2020 and 2100" };
+    }
+    if (![1, 2, 3, 4].includes(quarter)) {
+      return { error: "quarter must be 1, 2, 3, or 4" };
+    }
+    return { year, quarter: quarter as 1 | 2 | 3 | 4 };
+  }
+
+  app.get("/api/admin/clients/:id/ifta", admin, (req, res) => {
+    const client = storage.getClient(String(req.params.id));
+    if (!client) return res.status(404).json({ message: "Client not found" });
+    const q = parseIftaQuery(req);
+    if ("error" in q) return res.status(400).json({ message: q.error });
+    const report = buildIftaQuarterly(client.id, q.year, q.quarter);
+    return res.json(report);
+  });
+
+  app.get("/api/admin/clients/:id/ifta.csv", admin, (req, res) => {
+    const client = storage.getClient(String(req.params.id));
+    if (!client) return res.status(404).json({ message: "Client not found" });
+    const q = parseIftaQuery(req);
+    if ("error" in q) return res.status(400).json({ message: q.error });
+    const report = buildIftaQuarterly(client.id, q.year, q.quarter);
+    const csv = renderIftaCsv(report);
+    const filename = `ifta_${client.id}_${q.year}_Q${q.quarter}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(csv);
+  });
 }
 
 // ===========================================================================
