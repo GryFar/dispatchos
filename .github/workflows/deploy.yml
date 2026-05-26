@@ -62,7 +62,10 @@ jobs:
             echo "name=dispatchos-demo" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # Audit V3-17 — pin to a release tag instead of @master so a compromise
+      # of the flyctl-actions repo can't immediately exfil our FLY_API_TOKEN.
+      # Bump to a newer tag intentionally when needed.
+      - uses: superfly/flyctl-actions/setup-flyctl@1.5
 
       - name: Deploy to ${{ steps.app.outputs.name }}
         run: flyctl deploy --remote-only --app "${{ steps.app.outputs.name }}"
