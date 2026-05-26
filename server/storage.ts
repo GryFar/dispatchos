@@ -558,6 +558,31 @@ sqlite.exec(`
     ON broker_safety_audit_snapshots(client_id, captured_at DESC);
 `);
 
+// Broker Trust Score — Killer #1. Behavioural signals reported by dispatchers
+// (or auto-collected): pays on time, honours ratecon, responds, fraud, etc.
+// Distinct from broker_safety_audit_snapshots (FMCSA/legal). Append-mostly;
+// the score is computed on read via server/lib/ai/broker-trust.ts.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS broker_trust_signals (
+    id TEXT PRIMARY KEY,
+    broker_mc TEXT NOT NULL,
+    load_id TEXT,
+    client_id TEXT,
+    signal_type TEXT NOT NULL,
+    positive INTEGER NOT NULL,
+    value_json TEXT,
+    notes TEXT,
+    reported_by_user_id TEXT,
+    reported_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS broker_trust_signals_mc_idx
+    ON broker_trust_signals(broker_mc, reported_at DESC);
+  CREATE INDEX IF NOT EXISTS broker_trust_signals_load_idx
+    ON broker_trust_signals(load_id);
+`);
+
+
 
 function now() {
   return new Date().toISOString();
@@ -2860,6 +2885,66 @@ export const storage = {
     return sqlite.prepare(
       "SELECT * FROM broker_safety_audit_snapshots WHERE load_id = ? ORDER BY captured_at DESC"
     ).all(loadId) as Array<Record<string, unknown>>;
+  },
+
+  // -------------------------------------------------------------------------
+  // Broker Trust Score (Killer #1) — behavioural signals.
+  // -------------------------------------------------------------------------
+  recordBrokerTrustSignal(input: {
+    brokerMc: string;
+    loadId?: string | null;
+    clientId?: string | null;
+    signalType: string;
+    positive: boolean;
+    valueJson?: unknown;
+    notes?: string | null;
+    reportedByUserId?: string | null;
+  }): string {
+    const id = makeId("bts");
+    const ts = now();
+    sqlite.prepare(`
+      INSERT INTO broker_trust_signals (
+        id, broker_mc, load_id, client_id, signal_type, positive,
+        value_json, notes, reported_by_user_id, reported_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.brokerMc,
+      input.loadId ?? null,
+      input.clientId ?? null,
+      input.signalType,
+      input.positive ? 1 : 0,
+      input.valueJson !== undefined ? JSON.stringify(input.valueJson) : null,
+      input.notes ?? null,
+      input.reportedByUserId ?? null,
+      ts,
+      ts,
+    );
+    return id;
+  },
+
+  listBrokerTrustSignalsByMc(mc: string, limit = 500): Array<Record<string, unknown>> {
+    return sqlite.prepare(
+      "SELECT * FROM broker_trust_signals WHERE broker_mc = ? ORDER BY reported_at DESC LIMIT ?"
+    ).all(mc, limit) as Array<Record<string, unknown>>;
+  },
+
+  listBrokerTrustSignalsByLoad(loadId: string): Array<Record<string, unknown>> {
+    return sqlite.prepare(
+      "SELECT * FROM broker_trust_signals WHERE load_id = ? ORDER BY reported_at DESC"
+    ).all(loadId) as Array<Record<string, unknown>>;
+  },
+
+  // Distinct MC#s that have at least one signal, with aggregate counts —
+  // powers the top/bottom leaderboard without loading every signal.
+  listBrokerTrustMcSummaries(): Array<{ broker_mc: string; total: number; positives: number }> {
+    return sqlite.prepare(`
+      SELECT broker_mc,
+             COUNT(*) as total,
+             SUM(positive) as positives
+      FROM broker_trust_signals
+      GROUP BY broker_mc
+    `).all() as Array<{ broker_mc: string; total: number; positives: number }>;
   },
 
   recordLaneObservation(originState: string, destState: string, rate: number, miles: number) {

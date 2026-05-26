@@ -132,6 +132,7 @@ const proc = spawn(process.execPath, ["dist/index.cjs"], {
     PORT: String(port),
     DISPATCHOS_DB_PATH: `smoke-${Date.now()}.db`,
     DISPATCHOS_DATA_ROOT: `smoke-data-${Date.now()}`,
+    DISPATCHOS_RATE_LIMIT_PER_MINUTE: "5000",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -2948,6 +2949,74 @@ try {
     throw new Error(`admin load detail unknown returned ${adminLoadNotFound}, expected 404`);
   }
   console.log("[OK] GET /api/admin/loads/:id 404 on unknown");
+
+  // ===========================================================================
+  // Killer #1 — Broker Trust Score (POST signal, GET :mc, GET top)
+  // ===========================================================================
+  cookieHeader = adminCookieHeader; // admin is allowed (dispatcher|admin)
+
+  const trustMc = "MC-TRUST-001";
+
+  // Unknown MC returns neutral score 50 with empty breakdown.
+  const trustEmpty = await request(`/api/broker-trust/${trustMc}`);
+  if (trustEmpty.score !== 50 || trustEmpty.totalSignals !== 0) {
+    throw new Error(`empty broker trust expected score=50/total=0, got ${trustEmpty.score}/${trustEmpty.totalSignals}`);
+  }
+  console.log("[OK] GET /api/broker-trust/:mc (empty => neutral 50)");
+
+  // Report a few positive signals.
+  for (const t of ["paid_on_time", "ratecon_honored", "fast_response"]) {
+    const r = await request("/api/broker-trust/signal", {
+      method: "POST",
+      body: { brokerMc: trustMc, signalType: t, positive: true },
+    });
+    if (!r.id) throw new Error(`signal ${t} did not return id`);
+  }
+  console.log("[OK] POST /api/broker-trust/signal (positive signals)");
+
+  // Score should now be above neutral, breakdown should reflect counts.
+  const trustPos = await request(`/api/broker-trust/${trustMc}`);
+  if (trustPos.score <= 50) throw new Error(`expected score > 50 after positives, got ${trustPos.score}`);
+  if (trustPos.totalSignals !== 3 || trustPos.positiveCount !== 3) {
+    throw new Error(`expected 3 positive signals, got total=${trustPos.totalSignals} pos=${trustPos.positiveCount}`);
+  }
+  if (trustPos.breakdown.payment.onTime !== 1 || trustPos.breakdown.ratecon.honored !== 1) {
+    throw new Error("breakdown did not reflect reported signals");
+  }
+  if (!Array.isArray(trustPos.recentSignals) || trustPos.recentSignals.length !== 3) {
+    throw new Error("recentSignals should list the 3 signals");
+  }
+  console.log("[OK] GET /api/broker-trust/:mc (score + breakdown + recentSignals)");
+
+  // A fraud signal should crater the score.
+  await request("/api/broker-trust/signal", {
+    method: "POST",
+    body: { brokerMc: trustMc, signalType: "fraud_attempt", positive: false },
+  });
+  const trustFraud = await request(`/api/broker-trust/${trustMc}`);
+  if (trustFraud.score >= 50) throw new Error(`fraud should drop score below 50, got ${trustFraud.score}`);
+  if (trustFraud.breakdown.fraud.count !== 1) throw new Error("fraud breakdown count should be 1");
+  console.log("[OK] POST /api/broker-trust/signal (fraud craters score)");
+
+  // Leaderboard includes our MC.
+  const trustTop = await request("/api/broker-trust/top?direction=negative&limit=20");
+  if (!Array.isArray(trustTop.items) || !trustTop.items.some((i) => i.mc === trustMc)) {
+    throw new Error("leaderboard should include the reported MC");
+  }
+  console.log("[OK] GET /api/broker-trust/top (leaderboard)");
+
+  // Invalid signal type rejected (400).
+  let trustBadStatus = 0;
+  try {
+    await request("/api/broker-trust/signal", {
+      method: "POST",
+      body: { brokerMc: trustMc, signalType: "not_a_real_signal", positive: true },
+    });
+  } catch (err) {
+    trustBadStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (trustBadStatus !== 400) throw new Error(`bad signal type returned ${trustBadStatus}, expected 400`);
+  console.log("[OK] POST /api/broker-trust/signal (invalid type => 400)");
 
 
 } catch (error) {
