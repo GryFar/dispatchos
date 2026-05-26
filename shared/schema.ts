@@ -976,6 +976,14 @@ export const driverDocumentTypeSchema = z.enum([
   "irp_cab_card",
   "mcs150",
   "dq_file",
+  // Killer feature #3 — DQ file per FMCSA §391.51 (per-driver).
+  // "medical" + "cdl" + "dq_file" уже есть выше; эти дополняют
+  // полный набор для compliance audit.
+  "dq_application",         // §391.21 — driver employment application
+  "dq_inquiry_prev_employer", // §391.23 — prior employer inquiries
+  "dq_mvr",                 // §391.25 — motor vehicle record (annual)
+  "dq_road_test",           // §391.31 — road test cert or CDL equivalent
+  "dq_annual_review",       // §391.25(c) — annual driving record review
 ]);
 export type DriverDocumentType = z.infer<typeof driverDocumentTypeSchema>;
 

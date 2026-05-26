@@ -63,6 +63,11 @@ import {
   type DetentionEvent,
 } from "../lib/detention";
 import { listUpcomingRenewals } from "../lib/compliance-renewals";
+import {
+  computeDqStatusForDriver,
+  computeFleetDqSummary,
+  DQ_REQUIREMENTS,
+} from "../lib/dq-files";
 import { buildIftaQuarterly, renderIftaCsv } from "../lib/ifta";
 import {
   buildCarrierSafetyProfile,
@@ -1844,6 +1849,40 @@ export function registerAdminRoutes(app: Express): void {
     });
 
     return res.status(201).json(doc);
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/users/:id/dq-status
+  //
+  // Killer feature #3 — FMCSA §391 Driver Qualification file compliance per
+  // driver. Returns line-by-line status (present / expiring_soon / expired /
+  // missing) for every required document type.
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/users/:id/dq-status", admin, (req, res) => {
+    const id = String(req.params.id);
+    const user = storage.getUserById(id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (user.role !== "driver") {
+      return res.status(400).json({ message: "DQ files apply to drivers only" });
+    }
+    return res.json({
+      status: computeDqStatusForDriver(id),
+      requirements: DQ_REQUIREMENTS,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/clients/:id/dq-summary
+  //
+  // Fleet-level roll-up of DQ compliance across all drivers linked to a
+  // carrier. Used by /admin/clients/:id 'DQ files' tab and the next-renewal
+  // dashboard widget.
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/clients/:id/dq-summary", admin, (req, res) => {
+    const id = String(req.params.id);
+    const summary = computeFleetDqSummary(id);
+    if (!summary) return res.status(404).json({ message: "Client not found" });
+    return res.json(summary);
   });
 
   // DELETE /api/admin/clients/:id/documents/:docId

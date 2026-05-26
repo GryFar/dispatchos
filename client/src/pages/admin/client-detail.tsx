@@ -1700,6 +1700,8 @@ interface ComplianceDoc {
   type:
     | "cargo_insurance" | "auto_liability" | "general_liability"
     | "ucr_certificate" | "irp_cab_card" | "mcs150" | "dq_file"
+    | "dq_application" | "dq_inquiry_prev_employer" | "dq_mvr"
+    | "dq_road_test" | "dq_annual_review"
     | "cdl" | "medical" | "coi" | "w9" | "ifta" | "other";
   fileName: string;
   storagePath: string;
@@ -1715,7 +1717,16 @@ const COMPLIANCE_DOC_TYPES = [
   { value: "ucr_certificate", label: "UCR certificate" },
   { value: "irp_cab_card", label: "IRP cab card" },
   { value: "mcs150", label: "MCS-150" },
-  { value: "dq_file", label: "DQ file" },
+  { value: "dq_file", label: "DQ file (general)" },
+  // FMCSA §391 per-driver — эти виды чаще живут на driver,
+  // но компания тоже может загрузить за них.
+  { value: "dq_application", label: "DQ — анкета водителя" },
+  { value: "dq_inquiry_prev_employer", label: "DQ — запрос пред. работодателю" },
+  { value: "dq_mvr", label: "DQ — MVR (ежегодно)" },
+  { value: "dq_road_test", label: "DQ — road test cert" },
+  { value: "dq_annual_review", label: "DQ — annual driving review" },
+  { value: "medical", label: "Medical certificate (§391.43)" },
+  { value: "cdl", label: "CDL copy (§391.11)" },
   { value: "other", label: "Другое" },
 ] as const;
 

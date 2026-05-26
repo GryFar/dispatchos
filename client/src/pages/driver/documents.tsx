@@ -53,6 +53,11 @@ const DOC_TYPE_LABELS: Record<DriverDocumentType, string> = {
   irp_cab_card: "IRP cab card",
   mcs150: "MCS-150",
   dq_file: "DQ file",
+  dq_application: "Анкета водителя (§391.21)",
+  dq_inquiry_prev_employer: "Запрос пред. работодателю (§391.23)",
+  dq_mvr: "MVR — motor vehicle record (§391.25)",
+  dq_road_test: "Road test (§391.31)",
+  dq_annual_review: "Annual driving review (§391.25c)",
 };
 
 function fmtExpiry(expiresAt: string | null): { label: string; tone: "ok" | "soon" | "expired" } {
