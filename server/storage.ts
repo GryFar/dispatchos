@@ -51,6 +51,8 @@ function rowToSignupLead(row: Record<string, unknown>): SignupLead {
     reviewedAt: (row.reviewed_at as string | null) ?? null,
     rejectReason: (row.reject_reason as string | null) ?? null,
     createdAt: row.created_at as string,
+    name: (row.name as string | null) ?? null,
+    note: (row.note as string | null) ?? null,
   };
 }
 
@@ -439,6 +441,18 @@ sqlite.exec(`
   );
 `);
 ensureUserDriverColumns();
+
+// signup_leads: добавлены note и name для «Contact us» варианта lead-formы на landing.
+{
+  const cols = sqlite.prepare("PRAGMA table_info(signup_leads)").all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("note")) {
+    sqlite.exec("ALTER TABLE signup_leads ADD COLUMN note TEXT");
+  }
+  if (!names.has("name")) {
+    sqlite.exec("ALTER TABLE signup_leads ADD COLUMN name TEXT");
+  }
+}
 
 sqlite.exec(
   "CREATE INDEX IF NOT EXISTS users_telegram_chat_id_idx ON users(telegram_chat_id)",
@@ -1797,19 +1811,38 @@ export const storage = {
     country?: string | null;
     userAgent?: string | null;
     referer?: string | null;
+    name?: string | null;
+    note?: string | null;
   }): { lead: SignupLead; isNew: boolean } {
     const email = input.email.trim().toLowerCase();
     const existing = sqlite
       .prepare("SELECT * FROM signup_leads WHERE email = ? AND status = 'pending' LIMIT 1")
       .get(email) as Record<string, unknown> | undefined;
     if (existing) {
+      // Дописываем новую note / name в существующий lead если юзер вернулся
+      // и ввёл подробности (приоритетнее «Связаться» форма).
+      if (input.note || input.name) {
+        sqlite.prepare(
+          `UPDATE signup_leads SET
+             note = COALESCE(?, note),
+             name = COALESCE(?, name)
+           WHERE id = ?`,
+        ).run(input.note ?? null, input.name ?? null, existing.id);
+        this.audit("lead.note_updated", "signup_lead", String(existing.id), {
+          email,
+          hasNote: !!input.note,
+          hasName: !!input.name,
+        });
+        const refreshed = this.getSignupLead(String(existing.id))!;
+        return { lead: refreshed, isNew: false };
+      }
       return { lead: rowToSignupLead(existing), isNew: false };
     }
     const id = `lead_${cryptoRandomId()}`;
     const createdAt = new Date().toISOString();
     sqlite.prepare(
-      `INSERT INTO signup_leads (id, email, lang, country, user_agent, referer, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+      `INSERT INTO signup_leads (id, email, lang, country, user_agent, referer, status, created_at, name, note)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
     ).run(
       id,
       email,
@@ -1818,8 +1851,15 @@ export const storage = {
       input.userAgent ?? null,
       input.referer ?? null,
       createdAt,
+      input.name ?? null,
+      input.note ?? null,
     );
-    this.audit("lead.subscribed", "signup_lead", id, { email, lang: input.lang });
+    this.audit("lead.subscribed", "signup_lead", id, {
+      email,
+      lang: input.lang,
+      hasNote: !!input.note,
+      hasName: !!input.name,
+    });
     const lead = this.getSignupLead(id)!;
     return { lead, isNew: true };
   },

@@ -1,13 +1,15 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import {
   ArrowRight,
   CheckCircle2,
   Gauge,
-  MapPin,
+  Loader2,
   Mail,
+  MapPin,
   Shield,
   Truck,
+  X,
   Zap,
 } from "lucide-react";
 import { useAuth } from "@/lib/use-auth";
@@ -16,27 +18,36 @@ import { defaultRouteForRole } from "@/components/role-gate";
 /**
  * Public landing page rendered at "/" for unauthenticated visitors.
  *
- * Logged-in users get auto-redirected to their portal — keeps the URL clean
- * (`https://dispatchos.co/` always shows the right thing for whoever is on it).
- *
- * Design notes:
- * - Same palette as the dispatchos-coming-soon page (deep navy + amber).
- *   We re-implement it with tailwind here so the React app is a single bundle
- *   and we don't have to keep the standalone HTML in sync.
- * - Above-the-fold has the prominent «Войти» CTA — main thing the user asked
- *   us to expose on the landing.
+ * Notes:
+ * - Logged-in visitors are auto-redirected to their portal — keeps "/" doing
+ *   the right thing for whoever is on it.
+ * - The router is hash-based (see App.tsx + main.tsx). That means `<a href="#features">`
+ *   would change the route, NOT scroll — so all in-page navigation uses
+ *   scrollIntoView via refs.
+ * - "Связаться" + "Подписаться на рассылку" both POST to /api/public/subscribe,
+ *   the difference is just whether we attach name/note (Contact) or only
+ *   email (Subscribe). Backend dedupes by pending-email and upgrades the
+ *   existing lead row with the new note/name.
  */
 export default function LandingPage() {
   const { user, isLoading } = useAuth();
   const [, setLocation] = useLocation();
 
-  // If the visitor is already authenticated, bounce them into their portal
-  // straight from "/". This preserves the prior RootRedirect behaviour for
-  // returning users while exposing a public landing to everyone else.
+  // Scroll targets — refs instead of #anchors because we use hash routing.
+  const featuresRef = useRef<HTMLDivElement | null>(null);
+  const contactRef = useRef<HTMLDivElement | null>(null);
+
+  // Contact-form modal state
+  const [contactOpen, setContactOpen] = useState(false);
+
   useEffect(() => {
     if (isLoading) return;
     if (user) setLocation(defaultRouteForRole(user.role));
   }, [user, isLoading, setLocation]);
+
+  const scrollTo = (ref: React.RefObject<HTMLDivElement | null>) => {
+    ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-[#0a0e1a] text-[#e8ecf5]">
@@ -76,7 +87,12 @@ export default function LandingPage() {
       <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col px-6 py-8">
         {/* Header */}
         <header className="flex items-center justify-between">
-          <a href="/" className="flex items-center gap-3 font-bold tracking-tight text-white">
+          <button
+            type="button"
+            onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+            className="flex items-center gap-3 font-bold tracking-tight text-white"
+            aria-label="DispatchOS — на главную"
+          >
             <svg width="36" height="36" viewBox="0 0 32 32" fill="none">
               <rect width="32" height="32" rx="6" fill="#0a0e1a" />
               <path
@@ -89,21 +105,23 @@ export default function LandingPage() {
               <line x1="6" y1="16" x2="26" y2="16" stroke="#f59e0b" strokeWidth={2} />
             </svg>
             <span className="text-lg">DispatchOS</span>
-          </a>
+          </button>
 
           <div className="flex items-center gap-3">
-            <a
-              href="#features"
+            <button
+              type="button"
+              onClick={() => scrollTo(featuresRef)}
               className="hidden text-sm text-[#9aa3ba] transition-colors hover:text-white sm:block"
             >
               Возможности
-            </a>
-            <a
-              href="mailto:hello@dispatchos.co"
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollTo(contactRef)}
               className="hidden text-sm text-[#9aa3ba] transition-colors hover:text-white sm:block"
             >
               Связаться
-            </a>
+            </button>
             <button
               type="button"
               onClick={() => setLocation("/login")}
@@ -142,18 +160,19 @@ export default function LandingPage() {
               Войти в систему
               <ArrowRight className="h-5 w-5" />
             </button>
-            <a
-              href="mailto:hello@dispatchos.co?subject=DispatchOS%20demo"
+            <button
+              type="button"
+              onClick={() => setContactOpen(true)}
               className="inline-flex items-center gap-2 rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#161c2e] px-6 py-3 text-base font-semibold text-white transition-colors hover:border-[#f59e0b] hover:text-[#f59e0b]"
             >
               <Mail className="h-5 w-5" />
               Запросить демо
-            </a>
+            </button>
           </div>
         </section>
 
         {/* Feature grid */}
-        <section id="features" className="mt-24 grid gap-4 md:grid-cols-3">
+        <section ref={featuresRef} className="mt-24 grid scroll-mt-8 gap-4 md:grid-cols-3">
           <FeatureCard
             icon={<Mail className="h-5 w-5" />}
             title="Inbound из всех источников"
@@ -186,7 +205,7 @@ export default function LandingPage() {
           />
         </section>
 
-        {/* Mini "what's new" / trust strip */}
+        {/* Trust strip */}
         <section className="mt-20 rounded-xl border border-[rgba(255,255,255,0.08)] bg-gradient-to-b from-[#161c2e] to-[#0f1424] p-6 md:p-8">
           <div className="grid gap-4 md:grid-cols-3">
             <TrustItem
@@ -207,27 +226,33 @@ export default function LandingPage() {
           </div>
         </section>
 
+        {/* Newsletter + Contact */}
+        <section ref={contactRef} className="mt-20 grid scroll-mt-8 gap-6 md:grid-cols-2">
+          <SubscribeForm />
+          <ContactInline onOpenFullForm={() => setContactOpen(true)} />
+        </section>
+
         {/* Footer */}
         <footer className="mt-auto flex flex-col items-start justify-between gap-3 border-t border-[rgba(255,255,255,0.08)] pt-8 text-xs text-[#6b7390] md:flex-row md:items-center">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="h-3.5 w-3.5 text-[#34d399]" />
-            <span>© {new Date().getFullYear()} DispatchOS. Создано для дальнобойщиков, дисптчеров и owner-operators в US.</span>
+            <span>© {new Date().getFullYear()} DispatchOS. Создано для дальнобойщиков, диспетчеров и owner-operators в US.</span>
           </div>
           <div className="flex items-center gap-4">
-            <a href="mailto:hello@dispatchos.co" className="hover:text-white">hello@dispatchos.co</a>
-            <button
-              type="button"
-              onClick={() => setLocation("/login")}
-              className="hover:text-white"
-            >
-              Войти
-            </button>
+            <button type="button" onClick={() => setContactOpen(true)} className="hover:text-white">Связаться</button>
+            <button type="button" onClick={() => setLocation("/login")} className="hover:text-white">Войти</button>
           </div>
         </footer>
       </div>
+
+      {contactOpen && <ContactModal onClose={() => setContactOpen(false)} />}
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Reusable bits
+// ---------------------------------------------------------------------------
 
 function FeatureCard({
   icon, title, text,
@@ -251,6 +276,269 @@ function TrustItem({
       <p className="text-[10px] font-medium uppercase tracking-wider text-[#6b7390]">{label}</p>
       <p className="mt-1 text-base font-semibold text-white">{value}</p>
       <p className="mt-0.5 text-xs text-[#9aa3ba]">{hint}</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Newsletter / subscribe form (email-only)
+// ---------------------------------------------------------------------------
+
+function SubscribeForm() {
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState<
+    | { kind: "idle" }
+    | { kind: "submitting" }
+    | { kind: "ok"; duplicate: boolean }
+    | { kind: "err"; message: string }
+  >({ kind: "idle" });
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email || state.kind === "submitting") return;
+    setState({ kind: "submitting" });
+    try {
+      const res = await fetch("/api/public/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          lang: typeof navigator !== "undefined" ? navigator.language?.slice(0, 8) : undefined,
+          referer: typeof document !== "undefined" ? document.referrer?.slice(0, 500) || undefined : undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { message?: string } | null;
+        setState({ kind: "err", message: data?.message || `Ошибка ${res.status}` });
+        return;
+      }
+      const data = (await res.json()) as { duplicate?: boolean };
+      setState({ kind: "ok", duplicate: !!data.duplicate });
+    } catch (err) {
+      setState({ kind: "err", message: (err as Error).message });
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-[#161c2e]/60 p-6">
+      <h3 className="text-base font-semibold text-white">Подписаться на рассылку</h3>
+      <p className="mt-1 text-sm text-[#9aa3ba]">
+        Свежие апдейты продукта и индустриальные сигналы. Без спама.
+      </p>
+
+      {state.kind === "ok" ? (
+        <div className="mt-4 flex items-start gap-2 rounded-lg border border-[rgba(52,211,153,0.25)] bg-[rgba(52,211,153,0.06)] p-3 text-sm text-[#34d399]">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" />
+          <div>
+            {state.duplicate
+              ? "Этот email уже подписан — спасибо что вернулся."
+              : "Готово, подписали. Жди апдейтов."}
+          </div>
+        </div>
+      ) : (
+        <form onSubmit={submit} className="mt-4 flex flex-col gap-2 sm:flex-row">
+          <input
+            type="email"
+            required
+            autoComplete="email"
+            placeholder="you@trucking.co"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            disabled={state.kind === "submitting"}
+            className="flex-1 rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] px-4 py-2.5 text-sm text-white placeholder:text-[#6b7390] outline-none transition-colors focus:border-[#f59e0b] disabled:opacity-60"
+          />
+          <button
+            type="submit"
+            disabled={state.kind === "submitting" || !email}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#f59e0b] px-4 py-2.5 text-sm font-semibold text-[#0a0e1a] transition-all hover:bg-[#fbbf24] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {state.kind === "submitting" ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" /> Отправляем
+              </>
+            ) : (
+              <>Подписаться <ArrowRight className="h-4 w-4" /></>
+            )}
+          </button>
+        </form>
+      )}
+
+      {state.kind === "err" && (
+        <p className="mt-3 text-xs text-[#f87171]">{state.message}</p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Contact inline block (CTA) — opens full modal
+// ---------------------------------------------------------------------------
+
+function ContactInline({ onOpenFullForm }: { onOpenFullForm: () => void }) {
+  return (
+    <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-[#161c2e]/60 p-6">
+      <h3 className="text-base font-semibold text-white">Связаться с нами</h3>
+      <p className="mt-1 text-sm text-[#9aa3ba]">
+        Расскажите чем занимаетесь — мы перезвоним и покажем как DispatchOS закрывает вашу боль.
+      </p>
+      <button
+        type="button"
+        onClick={onOpenFullForm}
+        className="mt-4 inline-flex items-center gap-2 rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:border-[#f59e0b] hover:text-[#f59e0b]"
+      >
+        <Mail className="h-4 w-4" />
+        Открыть форму
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Contact modal (full form: name + email + note)
+// ---------------------------------------------------------------------------
+
+function ContactModal({ onClose }: { onClose: () => void }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [note, setNote] = useState("");
+  const [state, setState] = useState<
+    | { kind: "idle" }
+    | { kind: "submitting" }
+    | { kind: "ok"; duplicate: boolean }
+    | { kind: "err"; message: string }
+  >({ kind: "idle" });
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (state.kind === "submitting") return;
+    setState({ kind: "submitting" });
+    try {
+      const res = await fetch("/api/public/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          name: name || undefined,
+          note: note || undefined,
+          lang: typeof navigator !== "undefined" ? navigator.language?.slice(0, 8) : undefined,
+          referer: typeof document !== "undefined" ? document.referrer?.slice(0, 500) || undefined : undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { message?: string } | null;
+        setState({ kind: "err", message: data?.message || `Ошибка ${res.status}` });
+        return;
+      }
+      const data = (await res.json()) as { duplicate?: boolean };
+      setState({ kind: "ok", duplicate: !!data.duplicate });
+    } catch (err) {
+      setState({ kind: "err", message: (err as Error).message });
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(10,14,26,0.85)] p-4 backdrop-blur-sm">
+      <div className="relative w-full max-w-md rounded-xl border border-[rgba(255,255,255,0.12)] bg-[#161c2e] p-6 shadow-2xl">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Закрыть"
+          className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-md text-[#9aa3ba] hover:bg-[#0f1424] hover:text-white"
+        >
+          <X className="h-4 w-4" />
+        </button>
+
+        <h3 className="text-lg font-semibold text-white">Связаться с DispatchOS</h3>
+        <p className="mt-1 text-sm text-[#9aa3ba]">
+          Заполните форму — мы свяжемся в течение рабочего дня.
+        </p>
+
+        {state.kind === "ok" ? (
+          <div className="mt-5 flex flex-col items-start gap-3 rounded-lg border border-[rgba(52,211,153,0.25)] bg-[rgba(52,211,153,0.06)] p-4 text-sm text-[#34d399]">
+            <CheckCircle2 className="h-5 w-5" />
+            <div>
+              {state.duplicate
+                ? "Запрос принят. Этот email уже есть у нас — обновили заметку."
+                : "Спасибо. Команда свяжется с вами в течение рабочего дня."}
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="ml-auto inline-flex items-center gap-2 rounded-md border border-[rgba(52,211,153,0.3)] px-3 py-1.5 text-xs font-medium text-[#34d399] hover:bg-[rgba(52,211,153,0.1)]"
+            >
+              Закрыть
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={submit} className="mt-5 space-y-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[#9aa3ba]">Имя</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={120}
+                placeholder="Никита"
+                disabled={state.kind === "submitting"}
+                className="w-full rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] px-3 py-2 text-sm text-white placeholder:text-[#6b7390] outline-none focus:border-[#f59e0b]"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[#9aa3ba]">Email *</label>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                placeholder="you@trucking.co"
+                disabled={state.kind === "submitting"}
+                className="w-full rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] px-3 py-2 text-sm text-white placeholder:text-[#6b7390] outline-none focus:border-[#f59e0b]"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[#9aa3ba]">Сообщение</label>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                rows={4}
+                maxLength={2000}
+                placeholder="Расскажите про вашу команду и текущую TMS / процесс"
+                disabled={state.kind === "submitting"}
+                className="w-full resize-none rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] px-3 py-2 text-sm text-white placeholder:text-[#6b7390] outline-none focus:border-[#f59e0b]"
+              />
+            </div>
+
+            {state.kind === "err" && (
+              <p className="text-xs text-[#f87171]">{state.message}</p>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={state.kind === "submitting"}
+                className="rounded-lg border border-[rgba(255,255,255,0.14)] bg-transparent px-4 py-2 text-sm font-medium text-[#9aa3ba] hover:text-white"
+              >
+                Отмена
+              </button>
+              <button
+                type="submit"
+                disabled={state.kind === "submitting" || !email}
+                className="inline-flex items-center gap-2 rounded-lg bg-[#f59e0b] px-4 py-2 text-sm font-semibold text-[#0a0e1a] transition-all hover:bg-[#fbbf24] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {state.kind === "submitting" ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" /> Отправляем
+                  </>
+                ) : (
+                  <>Отправить <ArrowRight className="h-4 w-4" /></>
+                )}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
     </div>
   );
 }
