@@ -55,7 +55,7 @@ const US_STATES = [
   "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
 ];
 
-type TabKey = "profile" | "location" | "stats";
+type TabKey = "profile" | "location" | "stats" | "fuel";
 
 export default function ClientDetailPage() {
   const [, params] = useRoute("/clients/:id");
@@ -141,6 +141,9 @@ export default function ClientDetailPage() {
         <TabButton active={tab === "location"} onClick={() => setTab("location")}>
           Локация
         </TabButton>
+        <TabButton active={tab === "fuel"} onClick={() => setTab("fuel")}>
+          Топливо
+        </TabButton>
         <TabButton active={tab === "stats"} onClick={() => setTab("stats")}>
           Статистика
         </TabButton>
@@ -148,6 +151,7 @@ export default function ClientDetailPage() {
 
       {tab === "profile" && <ProfileTab client={client} />}
       {tab === "location" && <LocationTab client={client} />}
+      {tab === "fuel" && <FuelTab client={client} />}
       {tab === "stats" && <StatsTab client={client} />}
     </div>
   );
@@ -655,6 +659,178 @@ function StatsTab({ client: _client }: { client: Client }) {
         <p className="text-xs">
           Планируется: история score breakdown, top broker MCs, lane history.
         </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FuelTab — Phase 7 fuel performance + overpay alerts.
+// ---------------------------------------------------------------------------
+//
+// Pulls GET /api/admin/clients/:id/fuel-summary?days=N which aggregates:
+//   - totalMiles (haversine over driver_location_pings, all linked drivers)
+//   - gallons + spendCents (sum fuel_transactions in window)
+//   - actualMpg (totalMiles / gallons) vs expectedMpg (clients.avg_mpg)
+//   - overpayAlerts: per-fillup «diesel was cheaper by $X at <station>, Y mi away»
+//
+// Empty-state: when there are no fuel_transactions yet, we show a helpful
+// placeholder telling the user to set up tracking + the receipt OCR flow.
+
+type FuelSummary = {
+  clientId: string;
+  windowDays: number;
+  sinceIso: string;
+  totalMiles: number;
+  gallons: number;
+  spendCents: number;
+  actualMpg: number | null;
+  expectedMpg: number | null;
+  transactionCount: number;
+  overpayTotalDollars: number;
+  overpayAlerts: Array<{
+    transactionId: string;
+    occurredAt: string;
+    stationName: string | null;
+    paidCentsPerGallon: number;
+    cheaperAtName: string | null;
+    cheaperCentsPerGallon: number;
+    cheaperDistanceKm: number;
+    savedDollars: number;
+  }>;
+};
+
+function FuelTab({ client }: { client: Client }) {
+  const [days, setDays] = useState<1 | 7 | 15>(7);
+  const q = useQuery<FuelSummary>({
+    queryKey: ["/api/admin/clients", client.id, "fuel-summary", days],
+    queryFn: () => apiJson<FuelSummary>("GET", `/api/admin/clients/${client.id}/fuel-summary?days=${days}`),
+  });
+
+  if (q.isLoading) {
+    return (
+      <Card>
+        <CardContent className="flex h-32 items-center justify-center">
+          …
+        </CardContent>
+      </Card>
+    );
+  }
+  if (!q.data) return null;
+
+  const s = q.data;
+  const hasData = s.transactionCount > 0 || s.totalMiles > 0;
+
+  const actualMpgFmt = s.actualMpg != null ? s.actualMpg.toFixed(2) : "—";
+  const expectedMpgFmt = s.expectedMpg != null ? s.expectedMpg.toFixed(1) : "—";
+  const mpgDelta = s.actualMpg != null && s.expectedMpg != null ? s.actualMpg - s.expectedMpg : null;
+  const mpgDeltaPct = mpgDelta != null && s.expectedMpg ? (mpgDelta / s.expectedMpg) * 100 : null;
+
+  return (
+    <div className="space-y-4">
+      {/* Period switcher */}
+      <div className="inline-flex rounded-md border border-border bg-muted/30 p-1">
+        {([1, 7, 15] as const).map((d) => (
+          <button
+            key={d}
+            type="button"
+            onClick={() => setDays(d)}
+            className={`rounded px-3 py-1 text-xs font-medium transition ${
+              days === d ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {d === 1 ? "Сутки" : `${d} дней`}
+          </button>
+        ))}
+      </div>
+
+      {!hasData && (
+        <Card>
+          <CardContent className="py-10 text-center text-sm text-muted-foreground">
+            <p className="font-medium">Пока нет данных</p>
+            <p className="mt-1 text-xs">
+              Чтобы эта вкладка заработала, нужны две вещи:
+            </p>
+            <ul className="mt-2 inline-block text-left text-xs">
+              <li>1. Включите GPS трекинг водителям этого клиента (Пользователи → :id → Геолокация)</li>
+              <li>2. Попросите водителей фоткать чеки в TG-бота — OCR распарсит и запишет</li>
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
+      {hasData && (
+        <>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <Stat label="Пройдено" value={`${s.totalMiles.toFixed(0)} mi`} />
+            <Stat label="Расход" value={`${s.gallons.toFixed(1)} gal`} />
+            <Stat label="Сумма" value={`$${(s.spendCents / 100).toFixed(2)}`} />
+            <Stat
+              label="Реальный MPG"
+              value={actualMpgFmt}
+              hint={s.expectedMpg != null ? `target ${expectedMpgFmt}` : undefined}
+              tone={mpgDeltaPct == null ? "neutral" : mpgDeltaPct < -5 ? "bad" : mpgDeltaPct > 5 ? "good" : "neutral"}
+            />
+          </div>
+
+          {/* Overpay alerts */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                <span>Переплаты по заправкам</span>
+                {s.overpayAlerts.length > 0 && (
+                  <span className="text-sm font-normal text-warning">
+                    Можно было сэкономить ${s.overpayTotalDollars.toFixed(2)}
+                  </span>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {s.overpayAlerts.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Переплат не обнаружен. Водители заправляются по рыночным ценам.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {s.overpayAlerts.map((a) => (
+                    <div key={a.transactionId} className="flex items-start justify-between gap-3 rounded-md border border-warning/30 bg-warning/5 p-3 text-sm">
+                      <div className="min-w-0">
+                        <p className="font-medium">
+                          {a.stationName ?? "Станция"} — водитель заплатил ${(a.paidCentsPerGallon / 100).toFixed(2)}/gal
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Рядом ({a.cheaperDistanceKm.toFixed(1)} km) было {a.cheaperAtName ?? "другое место"} по $
+                          {(a.cheaperCentsPerGallon / 100).toFixed(2)}/gal — {new Date(a.occurredAt).toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className="text-sm font-semibold text-warning">+${a.savedDollars.toFixed(2)}</p>
+                        <p className="text-[10px] text-muted-foreground">переплатил</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Stat({
+  label, value, hint, tone = "neutral",
+}: {
+  label: string; value: string; hint?: string; tone?: "good" | "bad" | "neutral";
+}) {
+  const toneCls = tone === "good" ? "text-success" : tone === "bad" ? "text-destructive" : "text-foreground";
+  return (
+    <Card>
+      <CardContent className="p-3">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
+        <p className={`mt-1 text-lg font-semibold ${toneCls}`}>{value}</p>
+        {hint && <p className="text-[10px] text-muted-foreground">{hint}</p>}
       </CardContent>
     </Card>
   );

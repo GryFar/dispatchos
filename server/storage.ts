@@ -3272,6 +3272,26 @@ export const storage = {
     `).all(userId, since, limit) as Array<Record<string, unknown>>;
   },
 
+  /**
+   * Phase 7 — вычисляем пройденные мили по пингам водителя в окне
+   * от sinceIso. Haversine попарно между последовательными пингами. Игнорируем
+   * скачки > 200km (водитель отправился самолётом в другой штат — GPS noise).
+   */
+  computeDriverDistanceMiles(userId: string, sinceIso: string): number {
+    const pings = sqlite.prepare(`
+      SELECT lat, lng, captured_at FROM driver_location_pings
+      WHERE user_id = ? AND captured_at >= ?
+      ORDER BY captured_at ASC
+    `).all(userId, sinceIso) as Array<{ lat: number; lng: number; captured_at: string }>;
+    if (pings.length < 2) return 0;
+    let km = 0;
+    for (let i = 1; i < pings.length; i++) {
+      const step = haversineKm(pings[i - 1].lat, pings[i - 1].lng, pings[i].lat, pings[i].lng);
+      if (step <= 200) km += step;
+    }
+    return km * 0.621371;
+  },
+
   /** Cron hook: drop pings older than the retention window (15 days). */
   purgeOldLocationPings(retainDays = 15): number {
     const cutoff = new Date(Date.now() - retainDays * 24 * 3600 * 1000).toISOString();
@@ -3317,6 +3337,24 @@ export const storage = {
     return id;
   },
 
+  /** Recent fuel transactions for a client (carrier) in the given window. */
+  listFuelTransactionsForClient(clientId: string, sinceIso: string) {
+    return sqlite.prepare(`
+      SELECT * FROM fuel_transactions
+      WHERE client_id = ? AND occurred_at >= ?
+      ORDER BY occurred_at DESC
+    `).all(clientId, sinceIso) as Array<Record<string, unknown>>;
+  },
+
+  /** Recent fuel transactions for a single driver. */
+  listFuelTransactionsForDriver(userId: string, sinceIso: string) {
+    return sqlite.prepare(`
+      SELECT * FROM fuel_transactions
+      WHERE user_id = ? AND occurred_at >= ?
+      ORDER BY occurred_at DESC
+    `).all(userId, sinceIso) as Array<Record<string, unknown>>;
+  },
+
   /** Cheapest diesel within `radiusKm` of (lat,lng), observed within `maxAgeH`. */
   findCheapestDieselNear(
     lat: number, lng: number,
@@ -3353,7 +3391,7 @@ export const storage = {
     return Array.from(byStation.values())
       .sort((a, b) => (a.row.price_cents as number) - (b.row.price_cents as number))
       .slice(0, limit)
-      .map((e) => ({ ...e.row, distance_km: e.distanceKm }));
+      .map((e) => ({ ...e.row, distance_km: e.distanceKm })) as Array<Record<string, unknown> & { distance_km: number }>;
   },
 
   recordLaneObservation(originState: string, destState: string, rate: number, miles: number) {
