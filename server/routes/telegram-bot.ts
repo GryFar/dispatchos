@@ -437,7 +437,8 @@ export function registerTelegramBotRoutes(app: Express): void {
   // We always 200 OK to TG so it doesn't keep retrying — error reporting
   // (if any) happens via tgSend back to the chat itself.
   app.post("/api/telegram/webhook/:token", async (req: Request, res: Response) => {
-    const expected = process.env.TELEGRAM_DRIVER_BOT_TOKEN;
+    const { getIntegrationValue } = await import("../lib/integration-config");
+    const expected = getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN");
     if (!expected) {
       // Misconfigured — silently 404 so we don't leak that the route exists.
       return res.status(404).end();

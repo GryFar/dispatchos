@@ -24,7 +24,9 @@
 import crypto from "node:crypto";
 import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
-import { getEnrichedIntegrationStatus } from "../lib/integrations";
+import { getEnrichedIntegrationStatus, INTEGRATIONS } from "../lib/integrations";
+import { encryptSecret, isPrimaryConfigured } from "../lib/crypto/keyring";
+import { invalidateIntegrationConfigCache } from "../lib/integration-config";
 import {
   approvalTaskListFiltersSchema,
   createAssignmentSchema,
@@ -1409,6 +1411,88 @@ export function registerAdminRoutes(app: Express): void {
   app.get("/api/admin/integrations", admin, (_req, res) => {
     res.json(getEnrichedIntegrationStatus());
   });
+
+  // -------------------------------------------------------------------------
+  // POST /api/admin/integrations/:key/config
+  //   body: { values: { ENV_VAR: "plaintext", ... } }
+  // -------------------------------------------------------------------------
+  // Upsert one or more encrypted env-var overrides for an integration. The
+  // plaintext value is encrypted with DISPATCHOS_KEYRING_PRIMARY before
+  // hitting disk, and never echoed back to the client.
+  //
+  // Pass an empty string for any var to CLEAR (delete) it instead.
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/admin/integrations/:key/config",
+    admin,
+    ah((req, res) => {
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+
+      const key = String(req.params.key);
+      const desc = INTEGRATIONS.find((d) => d.key === key);
+      if (!desc) return res.status(404).json({ message: "Unknown integration" });
+
+      if (!isPrimaryConfigured()) {
+        return res.status(503).json({
+          message: "DISPATCHOS_KEYRING_PRIMARY не настроен — без него нельзя хранить секреты",
+        });
+      }
+
+      const body = (req.body ?? {}) as { values?: Record<string, unknown> };
+      const values = body.values;
+      if (!values || typeof values !== "object") {
+        return res.status(400).json({ message: "body.values is required" });
+      }
+
+      const allowed = new Set(desc.envVars);
+      const set: string[] = [];
+      const cleared: string[] = [];
+      for (const [envVar, raw] of Object.entries(values)) {
+        if (!allowed.has(envVar)) continue; // reject unknown vars silently
+        const v = typeof raw === "string" ? raw : "";
+        if (v === "") {
+          storage.clearIntegrationConfig(key, envVar, actor.id);
+          invalidateIntegrationConfigCache(key, envVar);
+          cleared.push(envVar);
+        } else {
+          const enc = encryptSecret(v);
+          storage.setIntegrationConfig(key, envVar, enc, actor.id);
+          invalidateIntegrationConfigCache(key, envVar);
+          set.push(envVar);
+        }
+      }
+
+      // Return the re-enriched status so the UI flips badges immediately.
+      const status = getEnrichedIntegrationStatus().integrations.find((i) => i.key === key);
+      return res.json({ key, set, cleared, status });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // DELETE /api/admin/integrations/:key/config
+  // -------------------------------------------------------------------------
+  // Clears every UI-managed override for this integration. Env vars (Fly
+  // secrets) are untouched; if they were the source, the integration stays
+  // ready.
+  app.delete(
+    "/api/admin/integrations/:key/config",
+    admin,
+    ah((req, res) => {
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+      const key = String(req.params.key);
+      const desc = INTEGRATIONS.find((d) => d.key === key);
+      if (!desc) return res.status(404).json({ message: "Unknown integration" });
+
+      for (const envVar of desc.envVars) {
+        storage.clearIntegrationConfig(key, envVar, actor.id);
+      }
+      invalidateIntegrationConfigCache(key);
+      const status = getEnrichedIntegrationStatus().integrations.find((i) => i.key === key);
+      return res.json({ key, cleared: desc.envVars, status });
+    }),
+  );
 
   // -------------------------------------------------------------------------
   // GET /api/admin/email-ingest?limit=20

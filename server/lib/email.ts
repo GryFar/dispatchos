@@ -27,7 +27,10 @@ const DEFAULT_FROM = "DispatchOS <noreply@talk.dispatchos.co>";
 const DEFAULT_REPLY_TO = "dispatch@dispatchos.co";
 
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
-  const key = process.env.RESEND_API_KEY;
+  // Read via integration-config so admins can override the Fly secret
+  // from the UI without redeploying.
+  const { getIntegrationValue } = await import("./integration-config");
+  const key = getIntegrationValue("resend", "RESEND_API_KEY");
   if (!key) {
     console.warn("[email] RESEND_API_KEY missing — skipping send", { to: input.to, subject: input.subject });
     return { ok: false, error: "no_api_key" };
