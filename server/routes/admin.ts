@@ -58,6 +58,7 @@ import {
   DEFAULT_FREE_HOURS,
   type DetentionEvent,
 } from "../lib/detention";
+import { listUpcomingRenewals } from "../lib/compliance-renewals";
 import { buildIftaQuarterly, renderIftaCsv } from "../lib/ifta";
 import {
   buildCarrierSafetyProfile,
@@ -1719,6 +1720,18 @@ export function registerAdminRoutes(app: Express): void {
     // Sort: highest dollar opportunities first.
     rows.sort((a, b) => b.totalCents - a.totalCents);
     return res.json({ rows, generatedAt: now });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/compliance/renewals?withinDays=90
+  //
+  // Killer feature #5 — UCR/IRP renewal calendar. Returns all renewal lines
+  // that are either expired or due within `withinDays` (default 90).
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/compliance/renewals", admin, (req, res) => {
+    const w = Math.max(0, Math.min(365, Number(req.query.withinDays ?? 90) || 90));
+    const rows = listUpcomingRenewals(w);
+    return res.json({ rows, withinDays: w, generatedAt: new Date().toISOString() });
   });
 
   // -------------------------------------------------------------------------

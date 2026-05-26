@@ -245,6 +245,11 @@ function ProfileTab({ client }: { client: Client }) {
     cargoInsuranceExpiresAt: (client as any).cargoInsuranceExpiresAt ?? "",
     autoLiabilityExpiresAt: (client as any).autoLiabilityExpiresAt ?? "",
     generalLiabilityExpiresAt: (client as any).generalLiabilityExpiresAt ?? "",
+    // Killer feature #5 — UCR/IRP renewal calendar.
+    ucrExpiresAt: (client as any).ucrExpiresAt ?? "",
+    ucrBaseState: (client as any).ucrBaseState ?? "",
+    irpExpiresAt: (client as any).irpExpiresAt ?? "",
+    irpBaseJurisdiction: (client as any).irpBaseJurisdiction ?? "",
   });
 
   // Reset form when client refetches (e.g. after save)
@@ -279,6 +284,10 @@ function ProfileTab({ client }: { client: Client }) {
       cargoInsuranceExpiresAt: (client as any).cargoInsuranceExpiresAt ?? "",
       autoLiabilityExpiresAt: (client as any).autoLiabilityExpiresAt ?? "",
       generalLiabilityExpiresAt: (client as any).generalLiabilityExpiresAt ?? "",
+      ucrExpiresAt: (client as any).ucrExpiresAt ?? "",
+      ucrBaseState: (client as any).ucrBaseState ?? "",
+      irpExpiresAt: (client as any).irpExpiresAt ?? "",
+      irpBaseJurisdiction: (client as any).irpBaseJurisdiction ?? "",
     });
   }, [client]);
 
@@ -340,6 +349,10 @@ function ProfileTab({ client }: { client: Client }) {
     }
     // Insurance expiries — отправляем всегда (пустая строка = снять).
     (patch as any).cargoInsuranceExpiresAt = form.cargoInsuranceExpiresAt || undefined;
+    (patch as any).ucrExpiresAt = form.ucrExpiresAt || undefined;
+    (patch as any).ucrBaseState = form.ucrBaseState || undefined;
+    (patch as any).irpExpiresAt = form.irpExpiresAt || undefined;
+    (patch as any).irpBaseJurisdiction = form.irpBaseJurisdiction || undefined;
     (patch as any).autoLiabilityExpiresAt = form.autoLiabilityExpiresAt || undefined;
     (patch as any).generalLiabilityExpiresAt = form.generalLiabilityExpiresAt || undefined;
 
@@ -651,6 +664,48 @@ function ProfileTab({ client }: { client: Client }) {
               value={form.generalLiabilityExpiresAt}
               onChange={(v) => setForm({ ...form, generalLiabilityExpiresAt: v })}
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Killer feature #5 — UCR / IRP renewal calendar */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">UCR / IRP renewals</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            Напоминалки в Telegram + email за 60 / 30 / 14 / 7 / 1 день до UCR и IRP renewals. Пропущенный deadline = $500–2000 штрафы и OOS на дороге.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <InsuranceDateField
+                label="UCR expires"
+                value={form.ucrExpiresAt}
+                onChange={(v) => setForm({ ...form, ucrExpiresAt: v })}
+              />
+              <Input
+                className="mt-2"
+                placeholder="Base state (e.g. FL)"
+                maxLength={2}
+                value={form.ucrBaseState}
+                onChange={(e) => setForm({ ...form, ucrBaseState: e.target.value.toUpperCase() })}
+              />
+            </div>
+            <div>
+              <InsuranceDateField
+                label="IRP plates expire"
+                value={form.irpExpiresAt}
+                onChange={(v) => setForm({ ...form, irpExpiresAt: v })}
+              />
+              <Input
+                className="mt-2"
+                placeholder="Base jurisdiction (e.g. FL)"
+                maxLength={2}
+                value={form.irpBaseJurisdiction}
+                onChange={(e) => setForm({ ...form, irpBaseJurisdiction: e.target.value.toUpperCase() })}
+              />
+            </div>
           </div>
         </CardContent>
       </Card>
