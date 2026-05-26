@@ -671,6 +671,20 @@ export function registerAdminRoutes(app: Express): void {
   );
 
   // -------------------------------------------------------------------------
+  // GET /api/admin/config/maps-key — отдаёт GOOGLE_MAPS_API_KEY только admin'у.
+  // Используется фронтом для инициализации Google Maps Embed/Static в admin-only views
+  // (user-detail track widget). Так безопаснее чем VITE_ env (в build) — dispatcher и driver не видят.
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/admin/config/maps-key",
+    admin,
+    ah((_req, res) => {
+      const key = process.env.GOOGLE_MAPS_API_KEY ?? null;
+      return res.json({ key });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
   // POST /api/admin/users/:id/tracking-token
   // -------------------------------------------------------------------------
   // Generates (or rotates) a per-driver tracking token. The token is the

@@ -47,6 +47,7 @@ import { RoleBadge } from "@/components/dispatch/RoleBadge";
 import { formatDateFull } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { ResetTotpDialog } from "@/pages/admin/users";
+import { DriverLocationCard } from "@/components/tracking/DriverLocationCard";
 
 /**
  * Admin / User detail — /admin/users/:id
@@ -375,6 +376,11 @@ export default function UserDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Driver location card (GPS tracking via Traccar/Owntracks) */}
+      {!isDeleted && data.role === "driver" && (
+        <DriverLocationCard userId={data.id} userName={data.fullName || data.email} />
+      )}
 
       {/* Security card — 2FA reset / disable */}
       {!isDeleted && (
