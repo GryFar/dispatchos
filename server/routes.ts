@@ -1373,7 +1373,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return requireRole.any()(req, res, next);
   });
 
-  app.get("/api/dispatch-board", (req, res) => {
+  // Audit V3-13 — dispatch board is operational data (loads, drivers,
+  // statuses). Restrict to admin + dispatcher; drivers/anonymous should
+  // not see fleet-wide load assignments.
+  app.get("/api/dispatch-board", requireRole("admin", "dispatcher"), (req, res) => {
     res.json(buildDispatchBoard(String(req.query.clientId ?? "")));
   });
 
@@ -1564,15 +1567,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(storage.listEmailIngest(limit));
   });
 
-  app.get("/api/integrations/status", (_req, res) => {
-    res.json(buildIntegrationStatus());
-  });
+  // Audit V3-14/15/16 — status / introspection endpoints reveal which
+  // integrations are configured (FMCSA key set? Resend connected?) and
+  // total user counts. This is recon-grade info that helps an attacker
+  // tailor phishing. Restrict to authenticated staff.
+  app.get(
+    "/api/integrations/status",
+    requireRole("admin", "dispatcher"),
+    (_req, res) => {
+      res.json(buildIntegrationStatus());
+    },
+  );
 
-  app.get("/api/system/status", (_req, res) => {
-    res.json(buildSystemStatus());
-  });
+  app.get(
+    "/api/system/status",
+    requireRole("admin", "dispatcher"),
+    (_req, res) => {
+      res.json(buildSystemStatus());
+    },
+  );
 
-  app.get("/api/portal/status", (_req, res) => {
+  app.get("/api/portal/status", requireRole("admin"), (_req, res) => {
     const adminCount = storage.listUsers({ role: "admin" }).length;
     const dispatcherCount = storage.listUsers({ role: "dispatcher" }).length;
     const driverCount = storage.listUsers({ role: "driver" }).length;
@@ -1611,7 +1626,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   });
 
-  app.get("/api/reports/weekly", (req, res) => {
+  // Audit V3-13 — weekly report carries revenue, broker mix, lane stats
+  // — strategic data not for drivers/anonymous.
+  app.get("/api/reports/weekly", requireRole("admin", "dispatcher"), (req, res) => {
     const report = buildWeeklyReport(String(req.query.clientId || ""));
     if (!report) return res.status(404).json({ message: "Client not found" });
     res.json(report);

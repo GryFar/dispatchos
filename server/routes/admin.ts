@@ -1874,12 +1874,19 @@ export function registerAdminRoutes(app: Express): void {
     };
     const field = expiryFieldByType[meta.type];
     if (field && meta.expiresAt) {
-      const existing = (client as Record<string, unknown>)[field];
-      // Don't clobber a date that's later than the new doc's expiry.
-      if (!existing || String(existing) < meta.expiresAt) {
+      // Audit V3-8 — normalize both to YYYY-MM-DD before comparison.
+      // Lexicographic string compare only works when both sides are the same
+      // format; mixing 'YYYY-MM-DD' with full ISO 'YYYY-MM-DDTHH:mm:ssZ' makes
+      // 'existing < new' flip (T > empty suffix). Auto-fill could then
+      // clobber a future date with a stale one.
+      const existingRaw = (client as Record<string, unknown>)[field];
+      const existingNorm =
+        typeof existingRaw === "string" ? existingRaw.slice(0, 10) : null;
+      const newNorm = meta.expiresAt.slice(0, 10);
+      if (!existingNorm || existingNorm < newNorm) {
         storage.upsertClient({
           ...(client as unknown as Parameters<typeof storage.upsertClient>[0]),
-          [field]: meta.expiresAt,
+          [field]: newNorm,
         } as Parameters<typeof storage.upsertClient>[0]);
       }
     }
@@ -2235,9 +2242,33 @@ export function registerAdminRoutes(app: Express): void {
         message: "result must be one of: clear, prohibited, pending, consent_revoked",
       });
     }
-    const queriedAt = String(body.queriedAt ?? new Date().toISOString());
-    if (Number.isNaN(new Date(queriedAt).getTime())) {
+    // Audit V3-6 — prevent fabrication of regulatory compliance. The admin
+    // can't enter a future date (claim a query that hasn't happened yet) or a
+    // very old date (backfilling years of fake records). The 13-month window
+    // matches the FMCSA Clearinghouse annual-query rule.
+    const queriedAt = String(body.queriedAt ?? new Date().toISOString().slice(0, 10));
+    // V3-8 — strict YYYY-MM-DD or full ISO; reject everything else.
+    if (!/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?Z?)?$/.test(queriedAt)) {
+      return res.status(400).json({
+        message: "queriedAt must be YYYY-MM-DD or full ISO format",
+      });
+    }
+    const queriedAtMs = new Date(queriedAt).getTime();
+    if (Number.isNaN(queriedAtMs)) {
       return res.status(400).json({ message: "queriedAt must be a valid ISO date" });
+    }
+    const nowMs = Date.now();
+    const thirteenMonthsAgoMs = nowMs - 13 * 30 * 24 * 3600 * 1000;
+    if (queriedAtMs > nowMs + 60 * 60 * 1000) {
+      // Allow 1 hour clock skew for client/server drift
+      return res.status(400).json({
+        message: "queriedAt cannot be in the future (regulatory compliance — 49 CFR §382.701)",
+      });
+    }
+    if (queriedAtMs < thirteenMonthsAgoMs) {
+      return res.status(400).json({
+        message: "queriedAt cannot be more than 13 months ago (annual query rule)",
+      });
     }
     const me = getCurrentUser(req);
     if (!me) return res.status(401).json({ message: "Unauthorized" });
