@@ -51,6 +51,13 @@ import {
 } from "../auth";
 import { storage } from "../storage";
 import { computeInvoiceForWeek } from "../lib/billing";
+import {
+  computeDetentionForLoad,
+  totalDetentionCents,
+  DEFAULT_DETENTION_RATE_PER_HOUR_CENTS,
+  DEFAULT_FREE_HOURS,
+  type DetentionEvent,
+} from "../lib/detention";
 import { buildIftaQuarterly, renderIftaCsv } from "../lib/ifta";
 import {
   buildCarrierSafetyProfile,
@@ -1627,6 +1634,21 @@ export function registerAdminRoutes(app: Express): void {
       return acc;
     }, []);
 
+    // Killer feature #4 — detention auto-detection. Pure compute on checkins,
+    // no DB writes. UI shows events + suggested accessorial; admin clicks
+    // "Bill detention" to issue invoice line (separate endpoint below).
+    const clientPayload = (client ?? {}) as unknown as {
+      detentionFreeHours?: number;
+      detentionRatePerHourCents?: number;
+    };
+    const detentionEvents = computeDetentionForLoad({
+      load: { id: load.id },
+      checkins,
+      freeHours: clientPayload.detentionFreeHours ?? DEFAULT_FREE_HOURS,
+      ratePerHourCents:
+        clientPayload.detentionRatePerHourCents ?? DEFAULT_DETENTION_RATE_PER_HOUR_CENTS,
+    });
+
     return res.json({
       load: {
         ...load,
@@ -1636,7 +1658,67 @@ export function registerAdminRoutes(app: Express): void {
       checkins,
       events,
       scores,
+      detention: {
+        events: detentionEvents,
+        totalCents: totalDetentionCents(detentionEvents),
+        freeHours: clientPayload.detentionFreeHours ?? DEFAULT_FREE_HOURS,
+        ratePerHourCents:
+          clientPayload.detentionRatePerHourCents ?? DEFAULT_DETENTION_RATE_PER_HOUR_CENTS,
+      },
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/detention/upcoming
+  //
+  // Returns loads that currently have a pickup_arrived or delivery_arrived
+  // check-in WITHOUT a completion (loaded / delivered) AND the elapsed time
+  // already exceeds the free window. These are billable-now opportunities
+  // and should be surfaced on the dispatcher dashboard so they can be
+  // claimed before paperwork closes.
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/detention/upcoming", admin, (_req, res) => {
+    const all = storage.listLoads();
+    const now = new Date().toISOString();
+    const rows: Array<{
+      loadId: string;
+      clientName: string | null;
+      driverName: string | null;
+      events: DetentionEvent[];
+      totalCents: number;
+    }> = [];
+
+    for (const load of all) {
+      const checkins = storage.listCheckinsForLoad(load.id);
+      if (!checkins.length) continue;
+      const lid = (load as unknown as { clientId?: string; driverId?: string });
+      const client = lid.clientId ? storage.getClient(lid.clientId) : undefined;
+      const driver = lid.driverId ? storage.getUserById(lid.driverId) : undefined;
+      const payload = (client ?? {}) as unknown as {
+        detentionFreeHours?: number;
+        detentionRatePerHourCents?: number;
+      };
+      const events = computeDetentionForLoad({
+        load: { id: load.id },
+        checkins,
+        freeHours: payload.detentionFreeHours ?? DEFAULT_FREE_HOURS,
+        ratePerHourCents:
+          payload.detentionRatePerHourCents ?? DEFAULT_DETENTION_RATE_PER_HOUR_CENTS,
+        nowIso: now,
+      });
+      if (events.length === 0) continue;
+      rows.push({
+        loadId: load.id,
+        clientName: client?.name ?? null,
+        driverName: driver?.fullName ?? null,
+        events,
+        totalCents: totalDetentionCents(events),
+      });
+    }
+
+    // Sort: highest dollar opportunities first.
+    rows.sort((a, b) => b.totalCents - a.totalCents);
+    return res.json({ rows, generatedAt: now });
   });
 
   // -------------------------------------------------------------------------
