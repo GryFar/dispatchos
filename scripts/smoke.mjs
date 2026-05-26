@@ -3018,6 +3018,42 @@ try {
   if (trustBadStatus !== 400) throw new Error(`bad signal type returned ${trustBadStatus}, expected 400`);
   console.log("[OK] POST /api/broker-trust/signal (invalid type => 400)");
 
+  // ===========================================================================
+  // Killer #6 — Multi-Driver Cockpit (GET /api/dispatch/cockpit)
+  // ===========================================================================
+  // dispCookie = smoke.dispatcher, assigned to ivan-enclosed-01 (with loads).
+  cookieHeader = dispCookie;
+
+  const cockpit = await request("/api/dispatch/cockpit");
+  if (!Array.isArray(cockpit.carriers)) throw new Error("cockpit: carriers not array");
+  if (!Array.isArray(cockpit.topLoads)) throw new Error("cockpit: topLoads not array");
+  if (!Array.isArray(cockpit.suggestions)) throw new Error("cockpit: suggestions not array");
+  if (!cockpit.carriers.some((c) => c.id === "ivan-enclosed-01")) {
+    throw new Error("cockpit: expected assigned carrier ivan-enclosed-01");
+  }
+  const cockpitCarrier = cockpit.carriers.find((c) => c.id === "ivan-enclosed-01");
+  if (
+    !("locationState" in cockpitCarrier) ||
+    !("hoursAvailable" in cockpitCarrier) ||
+    !("alerts" in cockpitCarrier)
+  ) {
+    throw new Error("cockpit: carrier missing expected fields");
+  }
+  console.log("[OK] GET /api/dispatch/cockpit (carriers + topLoads + suggestions)");
+
+  // Admin is blocked — cockpit is a dispatcher-only surface.
+  cookieHeader = adminCookieHeader;
+  let cockpitForbidden = 0;
+  try {
+    await request("/api/dispatch/cockpit");
+  } catch (err) {
+    cockpitForbidden = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (cockpitForbidden !== 403) {
+    throw new Error(`cockpit should block admin with 403, got ${cockpitForbidden}`);
+  }
+  console.log("[OK] GET /api/dispatch/cockpit blocks admin (403)");
+
 
 } catch (error) {
   console.error("[FAIL]", error.message);

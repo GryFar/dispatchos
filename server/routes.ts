@@ -40,6 +40,7 @@ import { registerAdminLoadSourcesRoutes } from "./routes/admin-load-sources";
 import { registerMeRoutes } from "./routes/me";
 import { registerDispatchRoutes } from "./routes/dispatch";
 import { registerBrokerTrustRoutes } from "./routes/broker-trust";
+import { registerCockpitRoutes } from "./routes/cockpit";
 import { registerLeadRoutes } from "./routes/leads";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerCronRoutes } from "./routes/cron";
@@ -315,7 +316,7 @@ function calculatePickupFeasibility(client: Client, load: Load, deadheadMiles: n
   return { pickupFeasibility: "not_feasible" as const, bufferMinutes };
 }
 
-function scoreLoadForClient(client: Client, load: Load): ScoredLoad | null {
+export function scoreLoadForClient(client: Client, load: Load): ScoredLoad | null {
   // -------------------------------------------------------------------------
   // Phase 5 hard filters — these reject before scoring even starts. Skipping
   // means the load never appears in dispatcher view (different from verdict
@@ -1136,6 +1137,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // -------------------------------------------------------------------------
   registerDispatchRoutes(app);
   registerBrokerTrustRoutes(app);
+  registerCockpitRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The
