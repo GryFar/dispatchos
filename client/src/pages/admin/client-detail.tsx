@@ -55,7 +55,7 @@ const US_STATES = [
   "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
 ];
 
-type TabKey = "profile" | "location" | "stats" | "fuel";
+type TabKey = "profile" | "location" | "stats" | "fuel" | "ifta";
 
 export default function ClientDetailPage() {
   const [, params] = useRoute("/clients/:id");
@@ -144,6 +144,9 @@ export default function ClientDetailPage() {
         <TabButton active={tab === "fuel"} onClick={() => setTab("fuel")}>
           Топливо
         </TabButton>
+        <TabButton active={tab === "ifta"} onClick={() => setTab("ifta")}>
+          IFTA
+        </TabButton>
         <TabButton active={tab === "stats"} onClick={() => setTab("stats")}>
           Статистика
         </TabButton>
@@ -152,6 +155,7 @@ export default function ClientDetailPage() {
       {tab === "profile" && <ProfileTab client={client} />}
       {tab === "location" && <LocationTab client={client} />}
       {tab === "fuel" && <FuelTab client={client} />}
+      {tab === "ifta" && <IftaTab client={client} />}
       {tab === "stats" && <StatsTab client={client} />}
     </div>
   );
@@ -905,6 +909,187 @@ function FuelTab({ client }: { client: Client }) {
               )}
             </CardContent>
           </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// IftaTab — quarterly mileage + fuel by state report (paid feature)
+// Backend: GET /api/admin/clients/:id/ifta?year=YYYY&quarter=N
+//          GET /api/admin/clients/:id/ifta.csv?… (download)
+// ---------------------------------------------------------------------------
+
+interface IftaStateRow {
+  state: string;
+  miles: number;
+  gallons: number;
+  fuelCostUsd: number;
+}
+
+interface IftaQuarterReport {
+  clientId: string;
+  year: number;
+  quarter: 1 | 2 | 3 | 4;
+  periodStart: string;
+  periodEnd: string;
+  rows: IftaStateRow[];
+  totals: {
+    miles: number;
+    gallons: number;
+    fuelCostUsd: number;
+    avgMpg: number | null;
+  };
+  unknownStateMiles: number;
+  unknownStateGallons: number;
+  generatedAt: string;
+}
+
+function IftaTab({ client }: { client: Client }) {
+  const now = new Date();
+  const currentYear = now.getUTCFullYear();
+  const currentQuarter = (Math.floor(now.getUTCMonth() / 3) + 1) as 1 | 2 | 3 | 4;
+  const [year, setYear] = useState<number>(currentYear);
+  const [quarter, setQuarter] = useState<1 | 2 | 3 | 4>(currentQuarter);
+
+  const q = useQuery<IftaQuarterReport>({
+    queryKey: ["/api/admin/clients", client.id, "ifta", year, quarter],
+    queryFn: () =>
+      apiJson<IftaQuarterReport>(
+        "GET",
+        `/api/admin/clients/${client.id}/ifta?year=${year}&quarter=${quarter}`,
+      ),
+  });
+
+  const yearOptions = [currentYear, currentYear - 1, currentYear - 2];
+  const csvUrl = `/api/admin/clients/${client.id}/ifta.csv?year=${year}&quarter=${quarter}`;
+
+  return (
+    <div className="space-y-4">
+      {/* Header card — selectors + download */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between gap-3">
+            <span>IFTA квартальный отчёт</span>
+            <a
+              href={csvUrl}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+              download
+            >
+              ↓ Скачать CSV
+            </a>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground">Год</Label>
+              <Select value={String(year)} onValueChange={(v) => setYear(Number(v))}>
+                <SelectTrigger className="h-8 w-24">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {yearOptions.map((y) => (
+                    <SelectItem key={y} value={String(y)}>{y}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground">Квартал</Label>
+              <div className="inline-flex rounded-md border border-border bg-muted/30 p-1">
+                {([1, 2, 3, 4] as const).map((qq) => (
+                  <button
+                    key={qq}
+                    type="button"
+                    onClick={() => setQuarter(qq)}
+                    className={`rounded px-3 py-1 text-xs font-medium transition ${
+                      quarter === qq
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Q{qq}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Отчёт агрегирует пройденные мили (из GPS-трека) и купленное топливо (из чеков) по каждому штату
+            для всех водителей работающих на этого перевозчика. CSV можно загружать в IFTA-портал штата регистрации.
+          </p>
+        </CardContent>
+      </Card>
+
+      {q.isLoading && (
+        <Card>
+          <CardContent className="flex h-32 items-center justify-center text-sm text-muted-foreground">
+            Считаем…
+          </CardContent>
+        </Card>
+      )}
+
+      {q.data && (
+        <>
+          {/* Totals */}
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <Stat label="Мили всего" value={`${q.data.totals.miles.toLocaleString()} mi`} />
+            <Stat label="Галлоны всего" value={`${q.data.totals.gallons.toLocaleString()} gal`} />
+            <Stat label="Расход на топливо" value={`$${q.data.totals.fuelCostUsd.toLocaleString()}`} />
+            <Stat
+              label="Средний MPG"
+              value={q.data.totals.avgMpg != null ? q.data.totals.avgMpg.toFixed(2) : "—"}
+            />
+          </div>
+
+          {/* State breakdown */}
+          <Card>
+            <CardHeader>
+              <CardTitle>По штатам</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {q.data.rows.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  Нет данных за этот квартал. Включите GPS трекинг водителям и записывайте чеки на топливо.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                        <th className="py-2 pr-3">Штат</th>
+                        <th className="py-2 pr-3 text-right">Мили</th>
+                        <th className="py-2 pr-3 text-right">Галлоны</th>
+                        <th className="py-2 pr-3 text-right">Стоимость</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {q.data.rows.map((r) => (
+                        <tr key={r.state} className="border-b border-border/50">
+                          <td className="py-2 pr-3 font-medium">{r.state}</td>
+                          <td className="py-2 pr-3 text-right tabular-nums">{r.miles.toLocaleString()}</td>
+                          <td className="py-2 pr-3 text-right tabular-nums">{r.gallons.toLocaleString()}</td>
+                          <td className="py-2 pr-3 text-right tabular-nums">${r.fuelCostUsd.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {(q.data.unknownStateMiles > 0 || q.data.unknownStateGallons > 0) && (
+            <Card>
+              <CardContent className="py-3 text-xs text-muted-foreground">
+                Не удалось отнести к штату: <span className="font-medium">{q.data.unknownStateMiles} mi</span>{" "}
+                и <span className="font-medium">{q.data.unknownStateGallons} gal</span>{" "}
+                (пинги/транзакции вне границ или без координат станции)
+              </CardContent>
+            </Card>
+          )}
         </>
       )}
     </div>
