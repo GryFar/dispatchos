@@ -98,6 +98,65 @@ app.use((req, res, next) => {
   next();
 });
 
+// Audit V3-4 — Origin / Referer check on every mutating /api request.
+// Defense-in-depth on top of SameSite=Strict cookies: even if SameSite is
+// bypassed (CRLF, header smuggling, browser bug), the Origin must match an
+// allowlist or we reject. GET / HEAD / OPTIONS bypass.
+const ALLOWED_ORIGINS = new Set([
+  "https://dispatchos.co",
+  "https://www.dispatchos.co",
+  "https://demo.dispatchos.co",
+  "https://app.dispatchos.co",
+]);
+// Exempt paths that legitimately accept cross-origin POSTs:
+//   /api/public/* — landing CTA forms (CORS-controlled in leads.ts)
+//   /api/inbound/* — CF email worker forwards (HMAC-protected separately)
+//   /api/cron/* — GitHub Actions / external cron (secret-protected)
+//   /api/telegram/* — Telegram webhook (signature-protected)
+//   /api/integrations/webhook/* — external 3rd-party webhooks
+const ORIGIN_CHECK_EXEMPT = (path: string) =>
+  path.startsWith("/api/public/") ||
+  path.startsWith("/api/inbound/") ||
+  path.startsWith("/api/cron/") ||
+  path.startsWith("/api/telegram/") ||
+  path.startsWith("/api/integrations/webhook/");
+
+app.use("/api", (req, res, next) => {
+  // Read-only methods don't need CSRF protection.
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+    return next();
+  }
+  if (ORIGIN_CHECK_EXEMPT(req.path)) return next();
+
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+
+  // Prefer Origin (set by all modern browsers on cross-origin). Fall back
+  // to Referer for legacy clients. If both missing AND not a browser (curl/
+  // server-to-server), we let it through — the session cookie wouldn't ship
+  // from a non-browser origin anyway.
+  const candidate = typeof origin === "string" ? origin : typeof referer === "string" ? new URL(referer).origin : null;
+
+  // No origin header at all + no session cookie = treat as legit server-side or curl.
+  // No origin + session cookie present = suspicious (browser dropped Origin); reject.
+  const hasSessionCookie = req.headers.cookie?.includes("dispatchos.sid");
+  if (!candidate) {
+    if (hasSessionCookie) {
+      return res.status(403).json({ message: "Missing Origin header for authenticated request" });
+    }
+    return next();
+  }
+
+  // Localhost dev passes (any port).
+  if (candidate.startsWith("http://localhost") || candidate.startsWith("http://127.")) return next();
+
+  if (!ALLOWED_ORIGINS.has(candidate)) {
+    console.warn(`[csrf] rejected Origin="${candidate}" on ${req.method} ${req.path}`);
+    return res.status(403).json({ message: "Cross-origin request rejected" });
+  }
+  next();
+});
+
 app.use(
   "/api",
   rateLimit({
@@ -162,7 +221,12 @@ app.use(
     }),
     cookie: {
       httpOnly: true,
-      sameSite: "lax",
+      // Audit V3-4 — SameSite=Strict for the session cookie. We don't have
+      // a cross-site auth flow (signup is same-site), so this is safe. Strict
+      // is significantly stronger than Lax against CSRF: form-POSTs from
+      // attacker sites won't ship the cookie at all (Lax only protects POST,
+      // not GET; and not sibling subdomains).
+      sameSite: "strict",
       // Default to secure cookies in any production-like deployment. Explicit
       // opt-out only via DISPATCHOS_COOKIE_SECURE=false (e.g. local HTTPS proxy).
       secure:

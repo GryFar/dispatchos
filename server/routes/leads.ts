@@ -47,12 +47,36 @@ function clientIp(req: Request): string {
   return req.socket.remoteAddress ?? "unknown";
 }
 
+// Audit V3-3 — hardened against Host-header injection. We never trust
+// X-Forwarded-Host or Host headers for outbound URLs embedded in email or
+// Telegram messages. Production *always* sets DISPATCHOS_PUBLIC_URL; we
+// fall back to a hard-coded allowlist only when it's missing (dev).
+const PUBLIC_URL_ALLOWLIST = new Set([
+  "https://dispatchos.co",
+  "https://www.dispatchos.co",
+  "https://demo.dispatchos.co",
+  "https://app.dispatchos.co",
+]);
 function hostFromReq(req: Request): string {
+  // Source of truth: explicit env var. This is the safe path.
+  const envUrl = process.env.DISPATCHOS_PUBLIC_URL;
+  if (envUrl) {
+    // Strip trailing slash for clean concat at call sites.
+    return envUrl.replace(/\/$/, "");
+  }
+  // Fall back only if env not set (local dev). Even then we check Host
+  // against an allowlist; an unknown host means we return the safe default.
   const xfHost = req.headers["x-forwarded-host"];
-  const host = (typeof xfHost === "string" ? xfHost : req.headers.host) ?? "dispatchos.co";
+  const rawHost = typeof xfHost === "string" ? xfHost : req.headers.host;
+  if (!rawHost) return "https://dispatchos.co";
   const xfProto = req.headers["x-forwarded-proto"];
   const proto = (typeof xfProto === "string" ? xfProto : req.protocol) ?? "https";
-  return `${proto}://${host}`;
+  const candidate = `${proto}://${rawHost}`;
+  if (PUBLIC_URL_ALLOWLIST.has(candidate)) return candidate;
+  // Unknown host — audit and fall back to the canonical landing URL so
+  // emails never carry an attacker-controlled link.
+  console.warn(`[hostFromReq] rejected unknown host "${rawHost}" — falling back to dispatchos.co`);
+  return "https://dispatchos.co";
 }
 
 function generateInviteCode(): string {
