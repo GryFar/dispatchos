@@ -427,12 +427,13 @@ export function registerMeRoutes(app: Express): void {
       // storage_path is server-relative; resolution to absolute happens at read.
       const storagePath = path.relative(uploadsRoot, finalPath);
 
-      // Compliance documents: if the driver is linked to a carrier (linked_client_id),
-      // attach the doc to that carrier so the admin dashboard picks it up.
-      // Owner-operator uploads (no carrier linkage) stay user-scoped — the
-      // admin still sees them on the user-detail page but per-client compliance
-      // pulls are empty for owner-operators (expected).
-      const isComplianceDoc = [
+      // Audit V3-2 — carrier-level compliance docs (insurance, UCR, IRP,
+      // MCS-150, DQ file generic) MUST NOT be driver-writable. A driver who
+      // uploads a forged cargo_insurance with expiresAt=2030 would silence
+      // the alert calendar and feed Montgomery defense pack with garbage.
+      // Drivers can still self-upload PERSONAL compliance docs (CDL, medical,
+      // their own §391 paperwork) which are required for THEIR DQ file.
+      const CARRIER_LEVEL_DOC_TYPES = new Set([
         "cargo_insurance",
         "auto_liability",
         "general_liability",
@@ -440,9 +441,19 @@ export function registerMeRoutes(app: Express): void {
         "irp_cab_card",
         "mcs150",
         "dq_file",
-      ].includes(meta.type);
-      const inferredClientId =
-        isComplianceDoc && user.linkedClientId ? user.linkedClientId : null;
+      ]);
+      if (CARRIER_LEVEL_DOC_TYPES.has(meta.type)) {
+        // Cleanup multer temp file before bailing.
+        try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+        return res.status(403).json({
+          message:
+            "This document type is carrier-level and must be uploaded by an admin or dispatcher via /admin/clients/:id/documents.",
+        });
+      }
+      // Driver-uploaded personal compliance docs (cdl, medical, dq_*) stay
+      // attached to the user. Linkage to the carrier is via the user.id;
+      // computeDqStatusForDriver picks them up there.
+      const inferredClientId: string | null = null;
 
       const doc = storage.insertDriverDocument({
         ownerUserId: user.id,

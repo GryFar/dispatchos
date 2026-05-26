@@ -47,15 +47,27 @@ export interface DetentionEvent {
   /** billableHours * ratePerHourCents, rounded half-away-from-zero. */
   amountCents: number;
   /**
-   * "auto" if both arrival + completion check-ins were captured by the
-   * driver/geofence; "estimated" if only arrival is recorded and we used
-   * `now` as a placeholder (driver still on-site). UI should show pending.
+   * "verified" — both checkins corroborated by GPS pings in the on-site window
+   * "auto" — both checkins present, GPS not provided to the caller (callers
+   *           that want fraud-safe billing should pass gpsPings; otherwise we
+   *           fall back to this legacy label)
+   * "estimated" — only arrival recorded, no completion yet (driver on-site)
+   * "unverified" — GPS pings were provided but did NOT corroborate the
+   *           claimed on-site window. UI shows red; production billing
+   *           should NOT auto-bill these (Audit V3-5).
    */
-  source: "auto" | "estimated";
+  source: "verified" | "auto" | "estimated" | "unverified";
+  /** Count of GPS pings observed in radius during the window, when checked. */
+  pingCount?: number;
 }
 
 export interface DetentionInput {
-  load: Pick<Load, "id">;
+  load: Pick<Load, "id"> & {
+    originLat?: number | null;
+    originLng?: number | null;
+    destinationLat?: number | null;
+    destinationLng?: number | null;
+  };
   checkins: LoadCheckin[];
   /** Per-client override of free hours; falls back to DEFAULT_FREE_HOURS. */
   freeHours?: number;
@@ -63,6 +75,55 @@ export interface DetentionInput {
   ratePerHourCents?: number;
   /** "now" injection for testability + for legs still in progress. */
   nowIso?: string;
+  /**
+   * Audit V3-5 — GPS pings during the on-site window. When supplied, an
+   * event is marked source='unverified' if no pings within ARRIVAL_RADIUS_KM
+   * of origin/destination exist during the claimed window. Callers that
+   * want strict billing (production) should pass this and only bill events
+   * with source='auto' or 'verified'. Pure-compute callers (preview, tests)
+   * can omit it and accept self-reported data.
+   */
+  gpsPings?: Array<{ lat: number; lng: number; capturedAt: string }>;
+}
+
+/** 1 mile — same radius the geofence module uses. */
+const VERIFICATION_RADIUS_KM = 1.6;
+
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/**
+ * V3-5 corroboration helper. Counts how many GPS pings within radius of the
+ * given lat/lng fall inside [startIso, endIso]. Returns 0 when no pings
+ * (caller decides whether to trust the checkin).
+ */
+function countPingsInRadius(
+  pings: Array<{ lat: number; lng: number; capturedAt: string }> | undefined,
+  lat: number | null | undefined,
+  lng: number | null | undefined,
+  startIso: string,
+  endIso: string,
+): number {
+  if (!pings || !pings.length || lat == null || lng == null) return 0;
+  const startMs = new Date(startIso).getTime();
+  const endMs = new Date(endIso).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return 0;
+  let count = 0;
+  for (const p of pings) {
+    const pMs = new Date(p.capturedAt).getTime();
+    if (!Number.isFinite(pMs) || pMs < startMs || pMs > endMs) continue;
+    if (haversineKm(lat, lng, p.lat, p.lng) <= VERIFICATION_RADIUS_KM) count++;
+  }
+  return count;
 }
 
 /**
@@ -103,6 +164,25 @@ export function computeDetentionForLoad(input: DetentionInput): DetentionEvent[]
   const now = input.nowIso ?? new Date().toISOString();
   const events: DetentionEvent[] = [];
 
+  /**
+   * Classify the source of a leg given (a) whether completion checkin
+   * exists and (b) whether GPS pings corroborate. Caller controls strictness
+   * by passing gpsPings or not (V3-5).
+   */
+  const classify = (
+    hasCompletion: boolean,
+    pingCount: number,
+    gpsChecked: boolean,
+  ): DetentionEvent["source"] => {
+    if (!hasCompletion) return "estimated";
+    if (!gpsChecked) return "auto";
+    // Heuristic: at least 2 pings in the on-site window = verified.
+    // 0 pings AND a window > 30 min = unverified (driver claimed on-site but
+    // GPS says otherwise — likely fraud or off device).
+    if (pingCount >= 2) return "verified";
+    return "unverified";
+  };
+
   const pickupArrived = lastByKind(input.checkins, "pickup_arrived");
   const loaded = lastByKind(input.checkins, "loaded");
   if (pickupArrived) {
@@ -111,6 +191,13 @@ export function computeDetentionForLoad(input: DetentionInput): DetentionEvent[]
     if (totalHours > freeHours) {
       const billableHours = ceilQuarterHour(totalHours - freeHours);
       const amountCents = Math.round(billableHours * rate);
+      const pingCount = countPingsInRadius(
+        input.gpsPings,
+        input.load.originLat,
+        input.load.originLng,
+        pickupArrived.createdAt,
+        completedAt,
+      );
       events.push({
         loadId: input.load.id,
         leg: "pickup",
@@ -121,7 +208,8 @@ export function computeDetentionForLoad(input: DetentionInput): DetentionEvent[]
         billableHours,
         ratePerHourCents: rate,
         amountCents,
-        source: loaded ? "auto" : "estimated",
+        source: classify(Boolean(loaded), pingCount, Array.isArray(input.gpsPings)),
+        pingCount: Array.isArray(input.gpsPings) ? pingCount : undefined,
       });
     }
   }
@@ -134,6 +222,13 @@ export function computeDetentionForLoad(input: DetentionInput): DetentionEvent[]
     if (totalHours > freeHours) {
       const billableHours = ceilQuarterHour(totalHours - freeHours);
       const amountCents = Math.round(billableHours * rate);
+      const pingCount = countPingsInRadius(
+        input.gpsPings,
+        input.load.destinationLat,
+        input.load.destinationLng,
+        deliveryArrived.createdAt,
+        completedAt,
+      );
       events.push({
         loadId: input.load.id,
         leg: "delivery",
@@ -144,12 +239,21 @@ export function computeDetentionForLoad(input: DetentionInput): DetentionEvent[]
         billableHours,
         ratePerHourCents: rate,
         amountCents,
-        source: delivered ? "auto" : "estimated",
+        source: classify(Boolean(delivered), pingCount, Array.isArray(input.gpsPings)),
+        pingCount: Array.isArray(input.gpsPings) ? pingCount : undefined,
       });
     }
   }
 
   return events;
+}
+
+/** Sum only billable (verified or auto-without-GPS-check) events. Excludes
+ *  unverified events from totals — production billing must use this. */
+export function billableDetentionCents(events: DetentionEvent[]): number {
+  return events
+    .filter((e) => e.source === "verified" || e.source === "auto")
+    .reduce((sum, e) => sum + e.amountCents, 0);
 }
 
 /** Sum amount across multiple events. Convenience for invoice totals. */

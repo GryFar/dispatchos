@@ -54,6 +54,7 @@ import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { enrichLoadSync } from "./lib/ai";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
+import crypto from "node:crypto";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -945,6 +946,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Shared bootstrap handler (used by both /setup legacy alias and new /bootstrap).
   function handleBootstrap(req: any, res: any) {
+    // Audit V3-1 — require an out-of-band bootstrap token when running in
+    // a non-local environment. Operator sets DISPATCHOS_BOOTSTRAP_TOKEN as a
+    // Fly secret right before calling /api/auth/bootstrap, passes it in the
+    // X-Bootstrap-Token header, then unsets the secret. Without it, an
+    // attacker who races us after a fresh deploy can claim admin.
+    //
+    // Skip the check when no public URL is set (= local dev / first-run on
+    // localhost). Production always sets DISPATCHOS_PUBLIC_URL.
+    const isProduction = Boolean(process.env.DISPATCHOS_PUBLIC_URL);
+    if (isProduction) {
+      const expected = process.env.DISPATCHOS_BOOTSTRAP_TOKEN;
+      if (!expected) {
+        return res.status(503).json({
+          message:
+            "Bootstrap is disabled. Operator must set DISPATCHOS_BOOTSTRAP_TOKEN before first-run.",
+        });
+      }
+      const provided = String(req.headers["x-bootstrap-token"] || "");
+      // Constant-time compare to defeat timing.
+      const a = Buffer.from(expected);
+      const b = Buffer.from(provided.padEnd(a.length, "\0").slice(0, a.length));
+      if (a.length !== provided.length || !crypto.timingSafeEqual(a, b)) {
+        storage.audit("auth.bootstrap_token_invalid", "system", "bootstrap", {});
+        return res.status(401).json({ message: "Invalid bootstrap token" });
+      }
+    }
+
     if (storage.getAuthState().isConfigured) {
       return res.status(409).json({ message: "Auth is already configured" });
     }

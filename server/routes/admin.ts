@@ -108,15 +108,28 @@ function ah(
   };
 }
 
-/** Compute the public base URL we embed in `signupUrl`. */
+// Audit V3-3 — host header injection defense. Same allowlist as leads.ts.
+const PUBLIC_URL_ALLOWLIST = new Set([
+  "https://dispatchos.co",
+  "https://www.dispatchos.co",
+  "https://demo.dispatchos.co",
+  "https://app.dispatchos.co",
+]);
+
+/** Compute the public base URL we embed in `signupUrl`. Hardened against
+ *  Host-header injection: prefers env, falls back to allowlist, never to
+ *  attacker-controlled headers. */
 function publicBaseUrl(req: Request): string {
   const envUrl = (process.env.DISPATCHOS_PUBLIC_URL || "").trim();
   if (envUrl) return envUrl.replace(/\/+$/, "");
-  // Fallback — Express respects `trust proxy` for protocol when configured
-  // (see server/index.ts in VDS mode).
   const host = req.get("host") || "localhost:5000";
   const proto = req.protocol || "http";
-  return `${proto}://${host}`;
+  const candidate = `${proto}://${host}`;
+  if (PUBLIC_URL_ALLOWLIST.has(candidate)) return candidate;
+  // Local dev (localhost) gets through; unknown hosts get the safe default.
+  if (host.startsWith("localhost") || host.startsWith("127.")) return candidate;
+  console.warn(`[publicBaseUrl] rejected unknown host "${host}" — falling back to canonical URL`);
+  return "https://dispatchos.co";
 }
 
 /**
@@ -1651,9 +1664,41 @@ export function registerAdminRoutes(app: Express): void {
       detentionFreeHours?: number;
       detentionRatePerHourCents?: number;
     };
+    // Audit V3-5 — pass GPS pings so detention helper can mark events as
+    // verified / unverified. We pull pings for the load's driver only,
+    // bounded by the load's lifetime.
+    const driverId = (load as { driverId?: string }).driverId;
+    const gpsPings: Array<{ lat: number; lng: number; capturedAt: string }> = [];
+    if (driverId) {
+      // Bound pings to a reasonable window — 30 days back from now is enough
+      // for any active load. Load.createdAt isn't on the narrow type.
+      const sinceIso = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+      const rawPings = storage.listLocationPings(driverId, { sinceIso, limit: 5000 });
+      for (const p of rawPings) {
+        const lat = p.lat;
+        const lng = p.lng;
+        const ca = p.captured_at;
+        if (typeof lat === "number" && typeof lng === "number" && typeof ca === "string") {
+          gpsPings.push({ lat, lng, capturedAt: ca });
+        }
+      }
+    }
+    const loadWithCoords = load as typeof load & {
+      originLat?: number | null;
+      originLng?: number | null;
+      destinationLat?: number | null;
+      destinationLng?: number | null;
+    };
     const detentionEvents = computeDetentionForLoad({
-      load: { id: load.id },
+      load: {
+        id: load.id,
+        originLat: loadWithCoords.originLat,
+        originLng: loadWithCoords.originLng,
+        destinationLat: loadWithCoords.destinationLat,
+        destinationLng: loadWithCoords.destinationLng,
+      },
       checkins,
+      gpsPings,
       freeHours: clientPayload.detentionFreeHours ?? DEFAULT_FREE_HOURS,
       ratePerHourCents:
         clientPayload.detentionRatePerHourCents ?? DEFAULT_DETENTION_RATE_PER_HOUR_CENTS,
