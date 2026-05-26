@@ -9,6 +9,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { RoleGate, defaultRouteForRole } from "@/components/role-gate";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import LandingPage from "@/pages/landing";
 import LoginPage from "@/pages/login";
 import SignupPage from "@/pages/signup";
 import ForgotPasswordPage from "@/pages/forgot-password";
@@ -127,7 +128,7 @@ export default function App() {
               </Route>
 
               {/* Root redirect */}
-              <Route path="/" component={RootRedirect} />
+              <Route path="/" component={LandingPage} />
 
               {/* 404 */}
               <Route component={NotFound} />
