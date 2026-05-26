@@ -392,6 +392,25 @@ function ensureUserDriverColumns() {
     sqlite.exec("ALTER TABLE users ADD COLUMN last_seen_at TEXT");
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 7.1 — Integration configs (UI-editable secrets, encrypted at rest)
+// ---------------------------------------------------------------------------
+// One row per env-var-equivalent. Plain text NEVER stored. Values are read
+// at runtime via getIntegrationValue() (server/lib/integration-config.ts)
+// which falls back to process.env if the DB row is absent.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS integration_configs (
+    integration_key TEXT NOT NULL,    -- 'fmcsa', 'twilio', etc — matches INTEGRATIONS registry
+    env_var TEXT NOT NULL,            -- 'FMCSA_WEB_KEY', 'TWILIO_AUTH_TOKEN', ...
+    value_enc TEXT NOT NULL,          -- ciphertext (base64)
+    value_iv TEXT NOT NULL,           -- IV (base64)
+    value_key_id TEXT NOT NULL,       -- which keyring slot used
+    updated_at TEXT NOT NULL,
+    updated_by_user_id TEXT,
+    PRIMARY KEY (integration_key, env_var)
+  );
+`);
 ensureUserDriverColumns();
 
 sqlite.exec(
@@ -1280,6 +1299,68 @@ export const storage = {
 
   recordUserLogin(id: string) {
     sqlite.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(now(), id);
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 7.1 — Integration configs (encrypted secrets editable from UI)
+  // -------------------------------------------------------------------------
+
+  /** Returns the raw encrypted row for one (integrationKey, envVar). */
+  getIntegrationConfigRaw(integrationKey: string, envVar: string):
+    | { value_enc: string; value_iv: string; value_key_id: string; updated_at: string; updated_by_user_id: string | null }
+    | undefined {
+    return sqlite.prepare(`
+      SELECT value_enc, value_iv, value_key_id, updated_at, updated_by_user_id
+      FROM integration_configs WHERE integration_key = ? AND env_var = ?
+    `).get(integrationKey, envVar) as
+      | { value_enc: string; value_iv: string; value_key_id: string; updated_at: string; updated_by_user_id: string | null }
+      | undefined;
+  },
+
+  /** Lists all env vars that are populated for a given integration. */
+  listConfiguredIntegrationVars(integrationKey: string): Array<{ envVar: string; updatedAt: string; updatedBy: string | null }> {
+    return (sqlite.prepare(`
+      SELECT env_var as envVar, updated_at as updatedAt, updated_by_user_id as updatedBy
+      FROM integration_configs WHERE integration_key = ?
+      ORDER BY env_var ASC
+    `).all(integrationKey)) as Array<{ envVar: string; updatedAt: string; updatedBy: string | null }>;
+  },
+
+  /** Upsert an encrypted integration secret. */
+  setIntegrationConfig(
+    integrationKey: string,
+    envVar: string,
+    enc: { ciphertext: string; iv: string; keyId: string },
+    actorUserId?: string,
+  ): void {
+    sqlite.prepare(`
+      INSERT INTO integration_configs (
+        integration_key, env_var, value_enc, value_iv, value_key_id, updated_at, updated_by_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(integration_key, env_var) DO UPDATE SET
+        value_enc = excluded.value_enc,
+        value_iv = excluded.value_iv,
+        value_key_id = excluded.value_key_id,
+        updated_at = excluded.updated_at,
+        updated_by_user_id = excluded.updated_by_user_id
+    `).run(
+      integrationKey, envVar,
+      enc.ciphertext, enc.iv, enc.keyId,
+      now(), actorUserId ?? null,
+    );
+    this.audit("integration.config_set", "integration", integrationKey, {
+      envVar, actorUserId,
+    });
+  },
+
+  /** Remove a single env var override. */
+  clearIntegrationConfig(integrationKey: string, envVar: string, actorUserId?: string) {
+    sqlite.prepare(
+      "DELETE FROM integration_configs WHERE integration_key = ? AND env_var = ?"
+    ).run(integrationKey, envVar);
+    this.audit("integration.config_cleared", "integration", integrationKey, {
+      envVar, actorUserId,
+    });
   },
 
   /**

@@ -10,6 +10,7 @@
 
 import type { Express, Request, Response as ExpressResponse } from "express";
 import { INTEGRATIONS, type IntegrationDescriptor } from "../lib/integrations";
+import { getIntegrationValue } from "../lib/integration-config";
 import { storage } from "../storage";
 
 // Alias the global Response (undici/fetch) — keeps it visually distinct from
@@ -66,8 +67,8 @@ async function timedFetch(
 // ---------------------------------------------------------------------------
 
 async function testFmcsa(): Promise<TestResult> {
-  const key = process.env.FMCSA_WEB_KEY;
-  const base = process.env.FMCSA_API_URL ?? "https://mobile.fmcsa.dot.gov/qc/services";
+  const key = getIntegrationValue("fmcsa", "FMCSA_WEB_KEY");
+  const base = getIntegrationValue("fmcsa", "FMCSA_API_URL") ?? "https://mobile.fmcsa.dot.gov/qc/services";
   if (!key) return mkSkip("FMCSA_WEB_KEY not set");
   // 123456 is a known valid carrier returning a stable response shape.
   const { res, ms, err } = await timedFetch(`${base}/carriers/123456?webKey=${key}`);
@@ -80,7 +81,7 @@ async function testFmcsa(): Promise<TestResult> {
 }
 
 async function testTelegramBot(): Promise<TestResult> {
-  const token = process.env.TELEGRAM_DRIVER_BOT_TOKEN;
+  const token = getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN");
   if (!token) return mkSkip("TELEGRAM_DRIVER_BOT_TOKEN not set");
   const start = Date.now();
   try {
@@ -111,7 +112,7 @@ async function testTelegramBot(): Promise<TestResult> {
 }
 
 async function testResend(): Promise<TestResult> {
-  const key = process.env.RESEND_API_KEY;
+  const key = getIntegrationValue("resend", "RESEND_API_KEY");
   if (!key) return mkSkip("RESEND_API_KEY not set");
   const { res, ms, err } = await timedFetch("https://api.resend.com/domains", {
     headers: { Authorization: `Bearer ${key}` },
@@ -132,7 +133,7 @@ async function testResend(): Promise<TestResult> {
 }
 
 async function testEia(): Promise<TestResult> {
-  const key = process.env.EIA_API_KEY;
+  const key = getIntegrationValue("eia_fuel", "EIA_API_KEY");
   if (!key) return mkSkip("EIA_API_KEY not set");
   const url = `https://api.eia.gov/v2/petroleum/pri/gnd/data/?api_key=${key}&frequency=weekly&data[]=value&length=1`;
   const { res, ms, err } = await timedFetch(url);
@@ -164,7 +165,7 @@ async function testGoogleMaps(): Promise<TestResult> {
 }
 
 function testSentry(): TestResult {
-  const dsn = process.env.SENTRY_DSN;
+  const dsn = getIntegrationValue("sentry", "SENTRY_DSN");
   if (!dsn) return mkSkip("SENTRY_DSN not set");
   // No network call — Sentry treats every POST as a real event and burns
   // quota. We just validate the DSN shape locally.

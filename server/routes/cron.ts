@@ -149,7 +149,8 @@ export function registerCronRoutes(app: Express): void {
   app.post("/api/cron/refresh-fuel", async (req: Request, res: Response) => {
     if (!requireCronSecret(req, res)) return;
 
-    const apiKey = process.env.EIA_API_KEY;
+    const { getIntegrationValue } = await import("../lib/integration-config");
+    const apiKey = getIntegrationValue("eia_fuel", "EIA_API_KEY");
     if (!apiKey) {
       return res.status(503).json({ message: "EIA_API_KEY not configured" });
     }
