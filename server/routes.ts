@@ -39,6 +39,7 @@ import { registerAdminIntegrationTestsRoutes } from "./routes/admin-integrations
 import { registerAdminLoadSourcesRoutes } from "./routes/admin-load-sources";
 import { registerMeRoutes } from "./routes/me";
 import { registerDispatchRoutes } from "./routes/dispatch";
+import { registerBrokerTrustRoutes } from "./routes/broker-trust";
 import { registerLeadRoutes } from "./routes/leads";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerCronRoutes } from "./routes/cron";
@@ -1134,6 +1135,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // pattern. See server/routes/dispatch.ts.
   // -------------------------------------------------------------------------
   registerDispatchRoutes(app);
+  registerBrokerTrustRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The
