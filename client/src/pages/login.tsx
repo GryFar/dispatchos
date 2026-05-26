@@ -52,7 +52,10 @@ export default function LoginPage() {
   // Read query params from hash (after `?`).
   const params = parseHashSearch();
   const reason = params.get("reason");
-  const redirectTo = params.get("redirect");
+  // Audit High #18 — open-redirect hardening: redirect must be a local app
+  // path (starts with `/`, NOT `//` or `/\` which are protocol-relative).
+  // Any non-conforming value is silently dropped to default-for-role.
+  const redirectTo = sanitizeRedirect(params.get("redirect"));
 
   // If user is already authenticated, send them to their default portal.
   useEffect(() => {
@@ -224,4 +227,25 @@ function parseHashSearch(): URLSearchParams {
   const hash = window.location.hash || "";
   const qIndex = hash.indexOf("?");
   return new URLSearchParams(qIndex >= 0 ? hash.slice(qIndex) : "");
+}
+
+/**
+ * Validate `?redirect=...` query against an allowlist (Audit High #18).
+ *
+ * Acceptable: local absolute paths starting with `/`, optionally followed by
+ * any non-backslash character. We reject:
+ *  - `//evil.com/...`              — protocol-relative external URL
+ *  - `/\\evil.com/...`             — backslash-prefixed (browser quirks)
+ *  - `http://...`, `https://...`   — absolute external URL
+ *  - empty / null
+ * Returns the path verbatim on success, or null on rejection.
+ */
+function sanitizeRedirect(raw: string | null): string | null {
+  if (!raw) return null;
+  if (!raw.startsWith("/")) return null;
+  if (raw.startsWith("//") || raw.startsWith("/\\")) return null;
+  // Disallow any whitespace / control chars (HTTP header injection paranoia).
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\s]/.test(raw)) return null;
+  return raw;
 }

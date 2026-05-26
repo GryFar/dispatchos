@@ -972,8 +972,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (user.blocked) return res.status(403).json({ message: "Account is blocked" });
 
     const password = String(body.password || "");
-    if (!verifyPassword(password, user.passwordSalt, user.passwordHash)) {
+    const pwResult = verifyPassword(password, user.passwordSalt, user.passwordHash);
+    if (!pwResult.ok) {
       return res.status(401).json({ message: "Invalid credentials" });
+    }
+    // Audit High #10 — прозрачная миграция legacy 210k → 600k хешей
+    // при следующем успешном логине. Best-effort: если рехеш не прошёл —
+    // юзер всё равно прошёл auth, пробуем в следующий раз.
+    if (pwResult.needsRehash) {
+      try {
+        const fresh = hashPassword(password);
+        storage.updateUser(
+          user.id,
+          { passwordSalt: fresh.salt, passwordHash: fresh.hash },
+          user.id,
+        );
+      } catch (err) {
+        console.error("[auth] password rehash upgrade failed:", err);
+      }
     }
     if (user.totpSecret) {
       // Audit High #11 — reject replays by passing the last accepted counter.

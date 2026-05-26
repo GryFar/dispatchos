@@ -250,6 +250,56 @@ app.use((req, res, next) => {
   const host = process.env.DISPATCHOS_HOST || "127.0.0.1";
   // reusePort removed: not supported on Windows under Node 20+ and Node 24
   // throws ENOTSUP on listen. Single-process production runs don't need it.
+  // -------------------------------------------------------------------------
+  // Audit High #16 — graceful shutdown + global error guards.
+  //
+  // Fly.io rolling deploys send SIGTERM and then SIGKILL ~5s later. Without
+  // a handler in-flight HTTP responses are silently dropped, and any unhandled
+  // promise rejection (e.g. a cron failure) kills the process. We:
+  //   • forward unhandledRejection/uncaughtException to Sentry + log
+  //   • on SIGTERM/SIGINT, stop accepting new connections, drain existing
+  //     requests for up to 10s, then exit. Sessions live in SQLite (WAL),
+  //     so we don't need to flush an in-process store.
+  // -------------------------------------------------------------------------
+  process.on("unhandledRejection", (reason: unknown) => {
+    console.error("[fatal] unhandledRejection:", reason);
+    try {
+      Sentry.captureException(reason);
+    } catch {
+      /* sentry unavailable */
+    }
+  });
+  process.on("uncaughtException", (err: Error) => {
+    console.error("[fatal] uncaughtException:", err);
+    try {
+      Sentry.captureException(err);
+    } catch {
+      /* sentry unavailable */
+    }
+    // Keep the process alive — a single bad cron path shouldn't take down
+    // everything. Node will still surface the original error on the stack.
+  });
+
+  let shuttingDown = false;
+  function gracefulShutdown(signal: NodeJS.Signals): void {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`shutting down on ${signal} — draining in-flight requests`);
+    httpServer.close((err) => {
+      if (err) console.error("[shutdown] httpServer.close error:", err);
+      log("shutdown complete");
+      process.exit(0);
+    });
+    // Hard exit if drain takes too long. 10s is well within Fly's 30s SIGKILL
+    // grace period.
+    setTimeout(() => {
+      console.error("[shutdown] drain timed out after 10s — forcing exit");
+      process.exit(1);
+    }, 10_000).unref();
+  }
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
   httpServer.listen(
     {
       port,
