@@ -41,6 +41,7 @@ import { registerMeRoutes } from "./routes/me";
 import { registerDispatchRoutes } from "./routes/dispatch";
 import { registerBrokerTrustRoutes } from "./routes/broker-trust";
 import { registerCockpitRoutes } from "./routes/cockpit";
+import { registerPredictiveRoutes } from "./routes/predictive";
 import { registerLeadRoutes } from "./routes/leads";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerCronRoutes } from "./routes/cron";
@@ -1138,6 +1139,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerDispatchRoutes(app);
   registerBrokerTrustRoutes(app);
   registerCockpitRoutes(app);
+  registerPredictiveRoutes(app);
 
   // -------------------------------------------------------------------------
   // All API endpoints below this gate require an authenticated user. The
@@ -1198,6 +1200,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const parsed = insertLoadFullSchema.parse(req.body);
       const enriched = enrichLoadSync(parsed);
       const load = storage.upsertLoad(enriched);
+      // Killer #4: match this new load against active lane watches.
+      try {
+        storage.matchLoadAgainstWatches({
+          id: load.id,
+          originState: load.originState,
+          destinationState: load.destinationState,
+          rate: load.rate,
+          loadedMiles: load.loadedMiles,
+          equipment: load.equipment,
+        });
+      } catch (err) {
+        console.error("[watchlist] match failed:", err);
+      }
       res.status(201).json(load);
     } catch (error) {
       handleZodError(error, res);

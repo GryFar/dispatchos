@@ -3244,6 +3244,45 @@ export const storage = {
       .run(now(), id);
   },
 
+  // Match a freshly-created load against active watches. State must match;
+  // optional min_ppm / equipment filters narrow further. Bumps match_count +
+  // emits an audit event per hit. Returns the watches that matched.
+  matchLoadAgainstWatches(load: {
+    id: string;
+    originState: string;
+    destinationState: string;
+    rate: number;
+    loadedMiles: number;
+    equipment?: string | null;
+  }): Array<{ id: string; clientId: string }> {
+    const watches = this.listActiveLaneWatches() as Array<{
+      id: string;
+      client_id: string;
+      origin_state: string;
+      destination_state: string;
+      min_ppm: number | null;
+      equipment: string | null;
+    }>;
+    const o = load.originState.toUpperCase();
+    const d = load.destinationState.toUpperCase();
+    const ppm = load.loadedMiles > 0 ? load.rate / load.loadedMiles : 0;
+    const matched: Array<{ id: string; clientId: string }> = [];
+    for (const w of watches) {
+      if (w.origin_state !== o || w.destination_state !== d) continue;
+      if (typeof w.min_ppm === "number" && ppm < w.min_ppm) continue;
+      if (w.equipment && load.equipment && w.equipment !== load.equipment) continue;
+      this.bumpLaneWatchMatch(w.id);
+      this.audit("watchlist.matched", "lane_watchlist", w.id, {
+        loadId: load.id,
+        clientId: w.client_id,
+        lane: `${o}->${d}`,
+        ppm: Math.round(ppm * 100) / 100,
+      });
+      matched.push({ id: w.id, clientId: w.client_id });
+    }
+    return matched;
+  },
+
   getLanePrediction(originState: string, destState: string): {
     loadsSeen: number;
     avgPpm: number;

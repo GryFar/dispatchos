@@ -3016,7 +3016,7 @@ try {
     trustBadStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
   }
   if (trustBadStatus !== 400) throw new Error(`bad signal type returned ${trustBadStatus}, expected 400`);
-  console.log("[OK] POST /api/broker-trust/signal (invalid type => 400)");
+ console.log("[OK] POST /api/broker-trust/signal (invalid type => 400)");
 
   // ===========================================================================
   // Killer #6 — Multi-Driver Cockpit (GET /api/dispatch/cockpit)
@@ -3054,6 +3054,93 @@ try {
   }
   console.log("[OK] GET /api/dispatch/cockpit blocks admin (403)");
 
+  // ===========================================================================
+  // Killer #4 — Predictive Load Hunting: lane watchlist + predictions
+  // ===========================================================================
+  // dispCookie = smoke.dispatcher, assigned to ivan-enclosed-01.
+  cookieHeader = dispCookie;
+
+  // Create a watch on an unusual lane so seed loads don't pollute match_count.
+  const watchCreate = await request("/api/dispatch/watchlist", {
+    method: "POST",
+    body: {
+      clientId: "ivan-enclosed-01",
+      originState: "WY",
+      destinationState: "VT",
+      minPpm: 1.5,
+    },
+  });
+  if (!watchCreate.id) throw new Error("watchlist: create returned no id");
+  console.log("[OK] POST /api/dispatch/watchlist (create)");
+
+  // List shows it, matchCount 0.
+  const watchList = await request("/api/dispatch/watchlist?clientId=ivan-enclosed-01");
+  const theWatch = watchList.items.find((w) => w.id === watchCreate.id);
+  if (!theWatch) throw new Error("watchlist: created watch not in list");
+  if (theWatch.matchCount !== 0) throw new Error("watchlist: fresh watch should have matchCount 0");
+  console.log("[OK] GET /api/dispatch/watchlist (list)");
+
+  // Admin creating a load on WY->VT above the min ppm should trigger a match.
+  cookieHeader = adminCookieHeader;
+  await request("/api/loads", {
+    method: "POST",
+    body: {
+      source: "manual",
+      originCity: "Cheyenne",
+      originState: "WY",
+      originLat: 41.14,
+      originLng: -104.82,
+      destinationCity: "Burlington",
+      destinationState: "VT",
+      destinationLat: 44.48,
+      destinationLng: -73.21,
+      rate: 5000,
+      loadedMiles: 2000, // 2.5 ppm > 1.5 min
+      equipment: "open_car_hauler",
+      brokerName: "Watch Test Broker",
+      brokerMc: "MC-WATCH-1",
+      brokerScore: 80,
+      fraudRisk: 10,
+      marketQuality: 70,
+      pickupAt: new Date(Date.now() + 86400000).toISOString(),
+      deliveryAt: new Date(Date.now() + 3 * 86400000).toISOString(),
+    },
+  });
+
+  // Back to dispatcher: the watch should now show matchCount 1.
+  cookieHeader = dispCookie;
+  const watchAfter = await request("/api/dispatch/watchlist?clientId=ivan-enclosed-01");
+  const matchedWatch = watchAfter.items.find((w) => w.id === watchCreate.id);
+  if (!matchedWatch || matchedWatch.matchCount !== 1) {
+    throw new Error(`watchlist: expected matchCount 1 after matching load, got ${matchedWatch?.matchCount}`);
+  }
+  console.log("[OK] watchlist match bumps match_count on new load");
+
+  // Predictions endpoint returns the watched lane with accumulated stats.
+  const preds = await request("/api/dispatch/predictions?clientId=ivan-enclosed-01");
+  if (!Array.isArray(preds.predictions)) throw new Error("predictions: not an array");
+  if (!preds.predictions.some((p) => p.originState === "WY" && p.destinationState === "VT")) {
+    throw new Error("predictions: watched lane WY->VT missing");
+  }
+  console.log("[OK] GET /api/dispatch/predictions (dow stats for watched lanes)");
+
+  // Delete the watch.
+  const del = await request(`/api/dispatch/watchlist/${watchCreate.id}`, { method: "DELETE" });
+  if (!del.deleted) throw new Error("watchlist: delete did not report deleted");
+  console.log("[OK] DELETE /api/dispatch/watchlist/:id");
+
+  // Admin is blocked from the dispatcher-only watchlist surface.
+  cookieHeader = adminCookieHeader;
+  let watchForbidden = 0;
+  try {
+    await request("/api/dispatch/watchlist?clientId=ivan-enclosed-01");
+  } catch (err) {
+    watchForbidden = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (watchForbidden !== 403) {
+    throw new Error(`watchlist should block admin with 403, got ${watchForbidden}`);
+  }
+  console.log("[OK] GET /api/dispatch/watchlist blocks admin (403)");
 
 } catch (error) {
   console.error("[FAIL]", error.message);
