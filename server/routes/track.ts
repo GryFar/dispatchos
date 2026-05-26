@@ -26,6 +26,7 @@
 
 import type { Express, Request, Response, NextFunction } from "express";
 import { storage } from "../storage";
+import { maybeAutoCheckin } from "../lib/geofence";
 
 function ah(
   handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown> | unknown,
@@ -89,6 +90,8 @@ export function registerTrackRoutes(app: Express): void {
         source: "osmand",
         capturedAt: parseTimestamp(req.query.timestamp),
       });
+      // Auto-arrival checkins (Phase 7.3). Best-effort; never blocks the ping.
+      maybeAutoCheckin(user.id, lat, lng);
       return res.status(200).end();
     }),
   );
@@ -137,6 +140,8 @@ export function registerTrackRoutes(app: Express): void {
         source: "owntracks",
         capturedAt: parseTimestamp(body.tst),
       });
+      // Auto-arrival checkins (Phase 7.3). Best-effort; never blocks the ping.
+      maybeAutoCheckin(user.id, lat, lng);
 
       // Owntracks expects a JSON array (it parses each element as a
       // server-issued command, empty array = no-op).
