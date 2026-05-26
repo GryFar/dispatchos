@@ -1,4 +1,5 @@
 import { useRoute, useLocation } from "wouter";
+import { TrustBadge } from "@/components/dispatch/TrustBadge";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -170,6 +171,9 @@ export default function AdminLoadDetailPage() {
           </p>
           <p className="mt-2 text-sm font-medium">{load.brokerName}</p>
           <p className="mt-0.5 font-mono text-xs text-muted-foreground">{formatMc(load.brokerMc)}</p>
+          <div className="mt-2">
+            <TrustBadge brokerMc={load.brokerMc} />
+          </div>
         </Card>
       </div>
 

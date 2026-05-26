@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
 import { EmptyState } from "@/components/dispatch/EmptyState";
+import { TrustBadge } from "@/components/dispatch/TrustBadge";
 
 type Status = "all" | "available" | "booked";
 
@@ -140,6 +141,9 @@ export default function DispatchLoadsPage() {
                         {load.brokerName} · {formatMiles(load.loadedMiles)} mi ·{" "}
                         {load.equipment.replace(/_/g, " ")}
                       </p>
+                      <div className="mt-1.5">
+                        <TrustBadge brokerMc={load.brokerMc} size="sm" />
+                      </div>
                       {load.clientName && (
                         <p className="mt-1 text-xs font-medium text-foreground">
                           Клиент: {load.clientName}
