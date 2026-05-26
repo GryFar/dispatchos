@@ -88,7 +88,55 @@ export const clientSchema = z.object({
   // Killer feature #4 — detention billing overrides.
   detentionFreeHours: z.number().min(0).max(24).optional(),
   detentionRatePerHourCents: z.number().int().min(0).max(50_000).optional(),
+  // ==========================================================================
+  // Onboarding + billing tier (per user request 2026-05-26).
+  // Персона определяет ветку онбординга и default tier.
+  // ==========================================================================
+  persona: z.enum(["owner_operator", "fleet", "enterprise"]).optional(),
+  onboardingCompletedAt: z.string().optional(),
+  /** "trial" | "oo_basic" | "oo_premium" | "fleet_starter" | "fleet_growth" | "fleet_scale" | "enterprise" */
+  planTier: z.string().optional(),
+  trialEndsAt: z.string().optional(),
+  billingStatus: z.enum(["trial", "active", "past_due", "canceled"]).optional(),
+  stripeCustomerId: z.string().optional(),
+  stripeSubscriptionId: z.string().optional(),
+  /** Active seat counts — enforced by tier limits in feature gates. */
+  driverSeatCount: z.number().int().min(0).optional(),
+  dispatcherSeatCount: z.number().int().min(0).optional(),
 });
+
+// Onboarding step machine — server-tracked progress so the wizard can
+// resume on reload, switch device, or return after a TG bot link.
+export const onboardingProgressSchema = z.object({
+  userId: z.string(),
+  step: z.number().int().min(0).max(10),
+  data: z.record(z.string(), z.unknown()),
+  startedAt: z.string(),
+  updatedAt: z.string(),
+  completedAt: z.string().nullable(),
+});
+export type OnboardingProgress = z.infer<typeof onboardingProgressSchema>;
+
+export const ONBOARDING_STEPS = [
+  "persona",
+  "credentials",
+  "company",
+  "documents",
+  "plan",
+  "telegram",
+  "done",
+] as const;
+export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
+
+export const updateOnboardingProgressSchema = z.object({
+  step: z.number().int().min(0).max(10),
+  data: z.record(z.string(), z.unknown()).optional(),
+  /** Mark the user as completed (transitions billing to trial). */
+  completed: z.boolean().optional(),
+});
+export type UpdateOnboardingProgressInput = z.infer<
+  typeof updateOnboardingProgressSchema
+>;
 
 export const insertClientSchema = clientSchema.partial({ id: true }).extend({
   id: z.string().optional(),

@@ -16,6 +16,7 @@ import {
   telegramCommandSchema,
   updateLocationSchema,
   updateMyPreferencesSchema,
+  updateOnboardingProgressSchema,
   type BrokerRecord,
   type Client,
   type DispatchBoard,
@@ -1161,6 +1162,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const user = getCurrentUser(req);
     if (!user) return res.status(401).json({ message: "Authentication required" });
     res.json(storage.toUserPublic(user));
+  });
+
+  // -------------------------------------------------------------------------
+  // Public pricing catalogue — used by landing /pricing section and the
+  // onboarding wizard plan step. No secrets exposed (Stripe price ids stay
+  // on the server; client only sees label + monthlyCents + features).
+  // -------------------------------------------------------------------------
+  app.get("/api/public/pricing", async (_req, res) => {
+    const { PLANS } = await import("./lib/plans");
+    const plans = Object.values(PLANS)
+      .filter((p) => p.tier !== "trial")
+      .map((p) => ({
+        tier: p.tier,
+        label: p.label,
+        persona: p.persona,
+        monthlyCents: p.monthlyCents,
+        includedDriverSeats: p.includedDriverSeats,
+        additionalDriverCents: p.additionalDriverCents,
+        includedDispatcherSeats: p.includedDispatcherSeats,
+        maxMcCount: p.maxMcCount === Infinity ? null : p.maxMcCount,
+        auditRetentionDays: p.auditRetentionDays,
+        features: p.features,
+      }));
+    return res.json({ plans, trialDays: 14 });
+  });
+
+  // -------------------------------------------------------------------------
+  // Onboarding wizard — server-tracked state machine.
+  // GET  /api/me/onboarding         — read current progress
+  // PATCH /api/me/onboarding        — advance / save data / mark completed
+  // -------------------------------------------------------------------------
+  app.get("/api/me/onboarding", (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Authentication required" });
+    const progress = storage.getOnboardingProgress(user.id);
+    return res.json({
+      progress: progress ?? {
+        userId: user.id,
+        step: 0,
+        data: {},
+        startedAt: null,
+        updatedAt: null,
+        completedAt: null,
+      },
+      hasStarted: Boolean(progress),
+      hasCompleted: Boolean(progress?.completedAt),
+    });
+  });
+
+  app.patch("/api/me/onboarding", (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Authentication required" });
+    let body: ReturnType<typeof updateOnboardingProgressSchema.parse>;
+    try {
+      body = updateOnboardingProgressSchema.parse(req.body);
+    } catch (err) {
+      return handleZodError(err, res);
+    }
+    storage.upsertOnboardingProgress(user.id, {
+      step: body.step,
+      data: body.data,
+      completed: body.completed,
+    });
+    if (body.completed) {
+      storage.audit("onboarding.completed", "user", user.id, {
+        userId: user.id,
+        persona: (body.data as { persona?: string } | undefined)?.persona,
+        planTier: (body.data as { planTier?: string } | undefined)?.planTier,
+      });
+    }
+    const progress = storage.getOnboardingProgress(user.id);
+    return res.json({ progress });
   });
 
   // i18n — PATCH /api/me/preferences. Accepts a partial preferences body and
