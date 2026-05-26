@@ -157,12 +157,25 @@ export function registerCronRoutes(app: Express): void {
   });
 
   // POST /api/cron/purge-old-data
-  // Purges GPS pings older than 15 days and fuel price observations older
-  // than 90 days. Safe to call hourly; idempotent and bounded.
+  // Audit V2-7 / V2-29 — expanded purge:
+  //   • GPS pings older than 15 days (existing).
+  //   • Fuel observations older than 90 days (was promised by schema, never run).
+  //   • Audit events older than 180 days (PII retention).
+  //   • Email ingest older than 180 days.
+  // Safe to call hourly; idempotent and bounded.
   app.post("/api/cron/purge-old-data", (req: Request, res: Response) => {
     if (!requireCronSecret(req, res)) return;
     const pingsDeleted = storage.purgeOldLocationPings(15);
-    return res.json({ ok: true, pingsDeleted });
+    const fuelDeleted = storage.purgeOldFuelObservations(90);
+    const auditDeleted = storage.purgeOldAuditEvents(180);
+    const emailDeleted = storage.purgeOldEmailIngest(180);
+    return res.json({
+      ok: true,
+      pingsDeleted,
+      fuelDeleted,
+      auditDeleted,
+      emailDeleted,
+    });
   });
 
   app.post("/api/cron/refresh-fuel", async (req: Request, res: Response) => {
