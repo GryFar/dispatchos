@@ -361,6 +361,30 @@ function ensureUserDriverColumns() {
     // removes a user. Kept for FK integrity with loads/audit/assignments.
     sqlite.exec("ALTER TABLE users ADD COLUMN deleted_at TEXT");
   }
+  // Phase 7 — GPS tracking. Last-known position cached on the user row for
+  // fast read on dashboards / cockpit. Full history lives in
+  // driver_location_pings (15-day rolling window).
+  if (!names.has("last_lat")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN last_lat REAL");
+  }
+  if (!names.has("last_lng")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN last_lng REAL");
+  }
+  if (!names.has("last_location_at")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN last_location_at TEXT");
+  }
+  if (!names.has("last_location_accuracy_m")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN last_location_accuracy_m REAL");
+  }
+  if (!names.has("last_location_source")) {
+    // osmand | owntracks | telegram_live | crowdsource | manual
+    sqlite.exec("ALTER TABLE users ADD COLUMN last_location_source TEXT");
+  }
+  if (!names.has("tracking_token")) {
+    // Per-driver shared secret. Drivers paste this into Traccar Client /
+    // Owntracks as the device id. We index on it for O(1) ping lookup.
+    sqlite.exec("ALTER TABLE users ADD COLUMN tracking_token TEXT");
+  }
 }
 ensureUserDriverColumns();
 
@@ -592,6 +616,115 @@ sqlite.exec(`
     ON broker_safety_audit_snapshots(client_id, captured_at DESC);
 `);
 
+// ---------------------------------------------------------------------------
+// Phase 7 — GPS tracking (Traccar Client / Owntracks / Telegram live / crowd)
+// ---------------------------------------------------------------------------
+// We accept pings from multiple sources via separate HTTP endpoints (see
+// server/routes/track.ts). The schema is source-agnostic; `source` is a
+// discriminator. We retain 15 days of pings (cleaned by cron) to enable
+// fuel-stop forensics: «when the driver was at lat/lng on date X, the
+// cheapest diesel within 5 miles was \$Y at station Z».
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS driver_location_pings (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL,
+    accuracy_m REAL,           -- horizontal accuracy in meters, when reported
+    speed_kmh REAL,            -- speed when reported (Traccar/Owntracks both have it)
+    heading_deg REAL,          -- direction of travel
+    battery_pct REAL,          -- device battery, for awareness
+    source TEXT NOT NULL,      -- osmand | owntracks | telegram_live | crowdsource | manual
+    captured_at TEXT NOT NULL, -- ISO timestamp from the device
+    received_at TEXT NOT NULL  -- ISO timestamp when we wrote the row
+  );
+  CREATE INDEX IF NOT EXISTS driver_location_pings_user_time_idx
+    ON driver_location_pings(user_id, captured_at DESC);
+  CREATE INDEX IF NOT EXISTS driver_location_pings_captured_idx
+    ON driver_location_pings(captured_at);
+`);
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Fuel price observations (multi-source crowd-and-scrape)
+// ---------------------------------------------------------------------------
+// One row = one observed price at one station at one moment. Sources have a
+// priority on read (newest fresh observation by trusted source wins). 90-day
+// retention. The station identity is best-effort (place_id from Google Maps
+// when we have it, else (lat,lng,name) fuzzy match).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS fuel_price_observations (
+    id TEXT PRIMARY KEY,
+    station_place_id TEXT,     -- Google Maps place_id when known; null = unmapped
+    station_name TEXT,         -- 'Pilot', 'Loves', '7-Eleven', etc.
+    station_brand TEXT,        -- normalized brand for filtering
+    station_lat REAL NOT NULL,
+    station_lng REAL NOT NULL,
+    address TEXT,
+    state TEXT,                -- 2-letter state code, for PADD lookups
+    fuel_type TEXT NOT NULL,   -- diesel | gasoline_regular | gasoline_mid | gasoline_premium | def
+    price_cents INTEGER NOT NULL, -- price per gallon in cents
+    source TEXT NOT NULL,      -- gasbuddy | tomtom | eia | dispatchos_crowdsource
+    source_confidence REAL NOT NULL, -- 0.0–1.0, primary 1.0, eia ~0.7
+    observed_at TEXT NOT NULL, -- when the price was current at station
+    received_at TEXT NOT NULL,
+    reporter_user_id TEXT,     -- set when source=dispatchos_crowdsource
+    raw_payload TEXT           -- vendor blob for forensics / re-parse
+  );
+  CREATE INDEX IF NOT EXISTS fuel_obs_station_time_idx
+    ON fuel_price_observations(station_place_id, observed_at DESC);
+  CREATE INDEX IF NOT EXISTS fuel_obs_geo_idx
+    ON fuel_price_observations(station_lat, station_lng);
+  CREATE INDEX IF NOT EXISTS fuel_obs_state_time_idx
+    ON fuel_price_observations(state, fuel_type, observed_at DESC);
+`);
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Fuel transactions (driver-reported, derived from receipt photos)
+// ---------------------------------------------------------------------------
+// One row = one filled tank. We compute mileage between transactions to
+// derive real MPG and compare against avg_mpg on the carrier. Receipt photo
+// path may be set when source=crowdsource (driver photo of pump receipt).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS fuel_transactions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,         -- driver who fueled
+    client_id TEXT,                -- carrier they were driving for
+    load_id TEXT,                  -- associated load if any
+    station_place_id TEXT,
+    station_name TEXT,
+    station_lat REAL,
+    station_lng REAL,
+    fuel_type TEXT NOT NULL,
+    gallons REAL NOT NULL,
+    price_per_gallon_cents INTEGER NOT NULL,
+    total_cents INTEGER NOT NULL,
+    odometer_miles INTEGER,        -- when reported / OCR'd
+    receipt_storage_path TEXT,     -- relative to uploadsRoot
+    notes TEXT,
+    occurred_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS fuel_tx_user_time_idx
+    ON fuel_transactions(user_id, occurred_at DESC);
+  CREATE INDEX IF NOT EXISTS fuel_tx_client_time_idx
+    ON fuel_transactions(client_id, occurred_at DESC);
+`);
+
+// Carriers — add avg_mpg + fuel-related defaults. Migration-only ALTERs.
+{
+  const cols = sqlite.prepare("PRAGMA table_info(clients)").all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("avg_mpg")) {
+    // Average miles per gallon for the carrier's primary equipment. Used to
+    // estimate fuel cost per trip + flag overshooting on actual fills.
+    sqlite.exec("ALTER TABLE clients ADD COLUMN avg_mpg REAL");
+  }
+  if (!names.has("fuel_tank_gallons")) {
+    // Useful for ETA-to-empty given current consumption + last fill.
+    sqlite.exec("ALTER TABLE clients ADD COLUMN fuel_tank_gallons REAL");
+  }
+}
+
 // Broker Trust Score — Killer #1. Behavioural signals reported by dispatchers
 // (or auto-collected): pays on time, honours ratecon, responds, fraud, etc.
 // Distinct from broker_safety_audit_snapshots (FMCSA/legal). Append-mostly;
@@ -624,6 +757,20 @@ function now() {
 
 function makeId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Great-circle distance in km between two lat/lng pairs. Used by tracking +
+ *  fuel-nearby lookups. Accurate to ~0.5% which is plenty for 5-50 km cones. */
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
 function parsePayload<T>(row: { payload: string } | undefined): T | undefined {
@@ -693,6 +840,13 @@ interface UserRow {
   telegram_chat_id: string | null;
   // Soft-delete marker (added via ensureUserDriverColumns()).
   deleted_at: string | null;
+  // Phase 7 — GPS tracking cache (added via ensureUserDriverColumns()).
+  last_lat: number | null;
+  last_lng: number | null;
+  last_location_at: string | null;
+  last_location_accuracy_m: number | null;
+  last_location_source: string | null;
+  tracking_token: string | null;
 }
 
 export interface UserInternal {
@@ -718,6 +872,13 @@ export interface UserInternal {
   telegramChatId?: string;
   // Soft-delete marker. Set = removed by admin (distinct from blocked).
   deletedAt?: string;
+  // Phase 7 GPS tracking — last-known location cache + shared secret.
+  lastLat?: number;
+  lastLng?: number;
+  lastLocationAt?: string;
+  lastLocationAccuracyM?: number;
+  lastLocationSource?: string;
+  trackingToken?: string;
 }
 
 // Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
@@ -773,6 +934,12 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     driverStatus,
     telegramChatId: row.telegram_chat_id ?? undefined,
     deletedAt: row.deleted_at ?? undefined,
+    lastLat: row.last_lat ?? undefined,
+    lastLng: row.last_lng ?? undefined,
+    lastLocationAt: row.last_location_at ?? undefined,
+    lastLocationAccuracyM: row.last_location_accuracy_m ?? undefined,
+    lastLocationSource: row.last_location_source ?? undefined,
+    trackingToken: row.tracking_token ?? undefined,
   };
 }
 
@@ -2985,6 +3152,175 @@ export const storage = {
       FROM broker_trust_signals
       GROUP BY broker_mc
     `).all() as Array<{ broker_mc: string; total: number; positives: number }>;
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 7 — GPS tracking storage helpers.
+  // -------------------------------------------------------------------------
+
+  /** Look up a user by their tracking_token. O(1) via the partial index that
+   *  we create lazily here (only meaningful once at least one user has one). */
+  getUserByTrackingToken(token: string): UserInternal | undefined {
+    if (!token) return undefined;
+    return sqlite
+      .prepare("SELECT * FROM users WHERE tracking_token = ? AND deleted_at IS NULL")
+      .get(token) as UserInternal | undefined;
+  },
+
+  /** Generate + persist a fresh tracking token for a driver. Returns the token. */
+  setTrackingToken(userId: string, actorUserId?: string): string {
+    // 32 bytes → 64 hex chars; URL-safe; non-guessable.
+    const token = crypto.randomBytes(32).toString("hex");
+    sqlite.prepare("UPDATE users SET tracking_token = ?, updated_at = ? WHERE id = ?")
+      .run(token, now(), userId);
+    this.audit("user.tracking_token_issued", "user", userId, { actorUserId });
+    return token;
+  },
+
+  /** Clear a user's tracking token (revokes the URL the driver was using). */
+  revokeTrackingToken(userId: string, actorUserId?: string) {
+    sqlite.prepare("UPDATE users SET tracking_token = NULL, updated_at = ? WHERE id = ?")
+      .run(now(), userId);
+    this.audit("user.tracking_token_revoked", "user", userId, { actorUserId });
+  },
+
+  /**
+   * Record a single location ping. Also updates the user's last_* cache so
+   * the dashboard doesn't have to query the history table. We DO NOT audit
+   * pings — they fire every few minutes and would flood audit_events.
+   */
+  recordLocationPing(input: {
+    userId: string;
+    lat: number;
+    lng: number;
+    accuracyM?: number | null;
+    speedKmh?: number | null;
+    headingDeg?: number | null;
+    batteryPct?: number | null;
+    source: "osmand" | "owntracks" | "telegram_live" | "crowdsource" | "manual";
+    capturedAt: string;
+  }): string {
+    const id = makeId("ping");
+    const receivedAt = now();
+    sqlite.prepare(`
+      INSERT INTO driver_location_pings (
+        id, user_id, lat, lng, accuracy_m, speed_kmh, heading_deg, battery_pct,
+        source, captured_at, received_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, input.userId, input.lat, input.lng,
+      input.accuracyM ?? null, input.speedKmh ?? null,
+      input.headingDeg ?? null, input.batteryPct ?? null,
+      input.source, input.capturedAt, receivedAt,
+    );
+    sqlite.prepare(`
+      UPDATE users SET
+        last_lat = ?, last_lng = ?,
+        last_location_at = ?, last_location_accuracy_m = ?,
+        last_location_source = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      input.lat, input.lng,
+      input.capturedAt, input.accuracyM ?? null,
+      input.source, receivedAt, input.userId,
+    );
+    return id;
+  },
+
+  /** Recent track for a user. Default last 24h, capped at 5000 points. */
+  listLocationPings(userId: string, opts: { sinceIso?: string; limit?: number } = {}) {
+    const since = opts.sinceIso ?? new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const limit = Math.min(opts.limit ?? 2000, 5000);
+    return sqlite.prepare(`
+      SELECT * FROM driver_location_pings
+      WHERE user_id = ? AND captured_at >= ?
+      ORDER BY captured_at ASC
+      LIMIT ?
+    `).all(userId, since, limit) as Array<Record<string, unknown>>;
+  },
+
+  /** Cron hook: drop pings older than the retention window (15 days). */
+  purgeOldLocationPings(retainDays = 15): number {
+    const cutoff = new Date(Date.now() - retainDays * 24 * 3600 * 1000).toISOString();
+    const r = sqlite.prepare("DELETE FROM driver_location_pings WHERE captured_at < ?").run(cutoff);
+    return r.changes ?? 0;
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 7 — Fuel price observations.
+  // -------------------------------------------------------------------------
+
+  recordFuelPriceObservation(input: {
+    stationPlaceId?: string | null;
+    stationName?: string | null;
+    stationBrand?: string | null;
+    stationLat: number;
+    stationLng: number;
+    address?: string | null;
+    state?: string | null;
+    fuelType: "diesel" | "gasoline_regular" | "gasoline_mid" | "gasoline_premium" | "def";
+    priceCents: number;
+    source: "gasbuddy" | "tomtom" | "eia" | "dispatchos_crowdsource";
+    sourceConfidence: number;
+    observedAt: string;
+    reporterUserId?: string | null;
+    rawPayload?: unknown;
+  }): string {
+    const id = makeId("fuelp");
+    sqlite.prepare(`
+      INSERT INTO fuel_price_observations (
+        id, station_place_id, station_name, station_brand,
+        station_lat, station_lng, address, state,
+        fuel_type, price_cents, source, source_confidence,
+        observed_at, received_at, reporter_user_id, raw_payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, input.stationPlaceId ?? null, input.stationName ?? null, input.stationBrand ?? null,
+      input.stationLat, input.stationLng, input.address ?? null, input.state ?? null,
+      input.fuelType, input.priceCents, input.source, input.sourceConfidence,
+      input.observedAt, now(), input.reporterUserId ?? null,
+      input.rawPayload ? JSON.stringify(input.rawPayload) : null,
+    );
+    return id;
+  },
+
+  /** Cheapest diesel within `radiusKm` of (lat,lng), observed within `maxAgeH`. */
+  findCheapestDieselNear(
+    lat: number, lng: number,
+    opts: { radiusKm?: number; maxAgeH?: number; limit?: number } = {},
+  ) {
+    const radiusKm = opts.radiusKm ?? 8;     // ~5 miles
+    const maxAgeH = opts.maxAgeH ?? 48;
+    const limit = opts.limit ?? 10;
+    // SQLite has no geo extension by default — we do a cheap bounding-box
+    // pre-filter then refine in app with haversine. ~0.01° per km at the
+    // equator (looser near poles); good enough for an 8km cone-pull.
+    const dLat = radiusKm / 111;
+    const dLng = radiusKm / (111 * Math.max(0.1, Math.cos((lat * Math.PI) / 180)));
+    const cutoff = new Date(Date.now() - maxAgeH * 3600 * 1000).toISOString();
+    const rows = sqlite.prepare(`
+      SELECT * FROM fuel_price_observations
+      WHERE fuel_type = 'diesel'
+        AND observed_at >= ?
+        AND station_lat BETWEEN ? AND ?
+        AND station_lng BETWEEN ? AND ?
+      ORDER BY observed_at DESC
+      LIMIT 200
+    `).all(cutoff, lat - dLat, lat + dLat, lng - dLng, lng + dLng) as Array<Record<string, unknown>>;
+    // Refine: haversine distance, dedup by station_place_id (newest wins),
+    // sort by price asc.
+    const byStation = new Map<string, { row: Record<string, unknown>; distanceKm: number }>();
+    for (const r of rows) {
+      const key = (r.station_place_id as string) ?? `geo:${r.station_lat},${r.station_lng}`;
+      const d = haversineKm(lat, lng, r.station_lat as number, r.station_lng as number);
+      if (d > radiusKm) continue;
+      const existing = byStation.get(key);
+      if (!existing) byStation.set(key, { row: r, distanceKm: d });
+    }
+    return Array.from(byStation.values())
+      .sort((a, b) => (a.row.price_cents as number) - (b.row.price_cents as number))
+      .slice(0, limit)
+      .map((e) => ({ ...e.row, distance_km: e.distanceKm }));
   },
 
   recordLaneObservation(originState: string, destState: string, rate: number, miles: number) {
