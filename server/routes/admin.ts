@@ -704,6 +704,37 @@ export function registerAdminRoutes(app: Express): void {
   );
 
   // -------------------------------------------------------------------------
+  // GET /api/admin/clients/:id/insurance-alerts
+  // -------------------------------------------------------------------------
+  // History of insurance alerts sent for this carrier (newest first). Used by
+  // client-detail page to show «Alert sent T-7d to TG+email» breadcrumbs.
+  app.get(
+    "/api/admin/clients/:id/insurance-alerts",
+    admin,
+    ah((req, res) => {
+      const clientId = String(req.params.id);
+      const rows = storage.listInsuranceAlertsForClient(clientId, 50);
+      return res.json({ alerts: rows.map((r) => ({
+        ...r,
+        channels: typeof r.channels === "string" ? JSON.parse(r.channels as string) : r.channels,
+      })) });
+    }),
+  );
+
+  // POST /api/admin/insurance/check-now — manual trigger for the cron logic.
+  // Useful when an admin updates a carrier's insurance date and wants to
+  // verify alerts will fire correctly.
+  app.post(
+    "/api/admin/insurance/check-now",
+    admin,
+    ah(async (_req, res) => {
+      const { runInsuranceCheck } = await import("../lib/insurance-monitor");
+      const result = await runInsuranceCheck();
+      return res.json(result);
+    }),
+  );
+
+  // -------------------------------------------------------------------------
   // POST /api/admin/users/:id/tracking-token
   // -------------------------------------------------------------------------
   // Generates (or rotates) a per-driver tracking token. The token is the

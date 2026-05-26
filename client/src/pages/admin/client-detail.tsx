@@ -219,6 +219,11 @@ function ProfileTab({ client }: { client: Client }) {
     wearCostPerMile: client.wearCostPerMile ?? "",
     hoursAvailable: (client as any).hoursAvailable ?? "",
     fuelTankGallons: (client as any).fuelTankGallons ?? "",
+
+    // Phase 7.2 — insurance expiries. yyyy-MM-dd или пусто.
+    cargoInsuranceExpiresAt: (client as any).cargoInsuranceExpiresAt ?? "",
+    autoLiabilityExpiresAt: (client as any).autoLiabilityExpiresAt ?? "",
+    generalLiabilityExpiresAt: (client as any).generalLiabilityExpiresAt ?? "",
   });
 
   // Reset form when client refetches (e.g. after save)
@@ -249,6 +254,9 @@ function ProfileTab({ client }: { client: Client }) {
       wearCostPerMile: client.wearCostPerMile ?? "",
       hoursAvailable: (client as any).hoursAvailable ?? "",
       fuelTankGallons: (client as any).fuelTankGallons ?? "",
+      cargoInsuranceExpiresAt: (client as any).cargoInsuranceExpiresAt ?? "",
+      autoLiabilityExpiresAt: (client as any).autoLiabilityExpiresAt ?? "",
+      generalLiabilityExpiresAt: (client as any).generalLiabilityExpiresAt ?? "",
     });
   }, [client]);
 
@@ -308,6 +316,10 @@ function ProfileTab({ client }: { client: Client }) {
     if (form.fuelTankGallons !== "") {
       (patch as any).fuelTankGallons = Number(form.fuelTankGallons);
     }
+    // Insurance expiries — отправляем всегда (пустая строка = снять).
+    (patch as any).cargoInsuranceExpiresAt = form.cargoInsuranceExpiresAt || undefined;
+    (patch as any).autoLiabilityExpiresAt = form.autoLiabilityExpiresAt || undefined;
+    (patch as any).generalLiabilityExpiresAt = form.generalLiabilityExpiresAt || undefined;
 
     mutation.mutate(patch);
   }
@@ -591,6 +603,35 @@ function ProfileTab({ client }: { client: Client }) {
         </CardContent>
       </Card>
 
+      {/* Block 6 — Insurance expiries (Phase 7.2) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Страховые сертификаты</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            Мы автоматом алертим в Telegram + email за 14, 7, 3, 1 день до истечения, в день истечения и по факту просрочки.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <InsuranceDateField
+              label="Cargo insurance"
+              value={form.cargoInsuranceExpiresAt}
+              onChange={(v) => setForm({ ...form, cargoInsuranceExpiresAt: v })}
+            />
+            <InsuranceDateField
+              label="Auto liability"
+              value={form.autoLiabilityExpiresAt}
+              onChange={(v) => setForm({ ...form, autoLiabilityExpiresAt: v })}
+            />
+            <InsuranceDateField
+              label="General liability"
+              value={form.generalLiabilityExpiresAt}
+              onChange={(v) => setForm({ ...form, generalLiabilityExpiresAt: v })}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Footer — save */}
       <div className="sticky bottom-0 -mx-4 flex items-center justify-end gap-2 border-t border-border bg-background/90 px-4 py-3 backdrop-blur md:-mx-6 md:px-6">
         <Button onClick={handleSave} disabled={mutation.isPending}>
@@ -609,6 +650,57 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
         {label}
       </Label>
       {children}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// InsuranceDateField — yyyy-MM-dd input + live status badge.
+// ---------------------------------------------------------------------------
+//
+// Status tiers:
+//   empty       → (no badge)
+//   > 30d away  → ✅ ОК
+//   8—30d away  → 🟡 Скоро истекает
+//   1–7d away   → ⚠️ На неделе
+//   today/past  → 🔴 Просрочена
+function InsuranceDateField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  let badge: { text: string; cls: string } | null = null;
+  if (value) {
+    const expiry = new Date(`${value}T00:00:00`).getTime();
+    const daysUntil = Math.round((expiry - Date.now()) / (24 * 3600 * 1000));
+    if (daysUntil < 0) {
+      badge = { text: `🔴 Просрочена на ${Math.abs(daysUntil)} дн.`, cls: "text-destructive border-destructive/40 bg-destructive/5" };
+    } else if (daysUntil === 0) {
+      badge = { text: "🔴 Истекает сегодня", cls: "text-destructive border-destructive/40 bg-destructive/5" };
+    } else if (daysUntil <= 7) {
+      badge = { text: `⚠️ Через ${daysUntil} дн.`, cls: "text-warning border-warning/40 bg-warning/5" };
+    } else if (daysUntil <= 30) {
+      badge = { text: `🟡 Через ${daysUntil} дн.`, cls: "text-amber-600 border-amber-500/30 bg-amber-500/5" };
+    } else {
+      badge = { text: `✅ Через ${daysUntil} дн.`, cls: "text-success border-success/30 bg-success/5" };
+    }
+  }
+
+  return (
+    <div>
+      <Label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </Label>
+      <Input type="date" value={value} onChange={(e) => onChange(e.target.value)} />
+      {badge && (
+        <div className={`mt-1.5 inline-flex rounded-md border px-2 py-0.5 text-[11px] ${badge.cls}`}>
+          {badge.text}
+        </div>
+      )}
     </div>
   );
 }
