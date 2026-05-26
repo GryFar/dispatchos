@@ -66,6 +66,7 @@ export const clientSchema = z.object({
   wearCostPerMile: z.number().optional(),               // default 0.15 if absent
   hoursAvailable: z.number().optional(),                // HOS hours left, used to reject too-long loads
   fuelTankGallons: z.number().optional(),               // for future range planning
+  avgMpg: z.number().optional(),                        // carrier avg miles/gallon, fuel cost + overpay calc
   scoreWeights: z.object({                              // per-client tuned weights
     ppm: z.number().optional(),
     deadhead: z.number().optional(),

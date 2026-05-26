@@ -47,6 +47,14 @@ const EQUIPMENT_OPTIONS: { value: Equipment; label: string }[] = [
   { value: "sprinter_van", label: "Sprinter Van" },
 ];
 
+// Placeholder MPG hints by equipment (US car-hauling averages).
+const MPG_DEFAULTS: Record<Equipment, number> = {
+  enclosed_car_hauler: 7.5,
+  open_car_hauler: 8.5,
+  hotshot_flatbed: 12.0,
+  sprinter_van: 14.0,
+};
+
 const US_STATES = [
   "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
   "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
@@ -204,6 +212,7 @@ function ProfileTab({ client }: { client: Client }) {
     minimumPpm: client.minimumPpm,
     mpg: client.mpg,
     fuelPrice: client.fuelPrice,
+    avgMpg: client.avgMpg ?? "",
     fixedCostPerMile: client.fixedCostPerMile,
     preferredLanes: client.preferredLanes.join(", "),
     avoidStates: client.avoidStates,
@@ -240,6 +249,7 @@ function ProfileTab({ client }: { client: Client }) {
       minimumPpm: client.minimumPpm,
       mpg: client.mpg,
       fuelPrice: client.fuelPrice,
+      avgMpg: client.avgMpg ?? "",
       fixedCostPerMile: client.fixedCostPerMile,
       preferredLanes: client.preferredLanes.join(", "),
       avoidStates: client.avoidStates,
@@ -300,7 +310,7 @@ function ProfileTab({ client }: { client: Client }) {
 
     // Smart-matching fields — отправляем ТОЛЬКО заполненные
     if (form.equipmentTypes.length > 0) patch.equipmentTypes = form.equipmentTypes;
-    if (form.maxGvwLbs !== "") patch.maxGvwLbs = Number(form.maxGvwLbs);
+    if (form.avgMpg !== "") patch.avgMpg = Number(form.avgMpg);
     if (form.payMode === "cpm" && form.payCentsPerMile !== "") {
       patch.payCentsPerMile = Number(form.payCentsPerMile);
     }
@@ -405,12 +415,13 @@ function ProfileTab({ client }: { client: Client }) {
               onChange={(e) => setForm({ ...form, minimumPpm: Number(e.target.value) })}
             />
           </Field>
-          <Field label="MPG (расход)">
+          <Field label="Ср. MPG (для топл. аналитики)">
             <Input
               type="number"
               step="0.1"
-              value={form.mpg}
-              onChange={(e) => setForm({ ...form, mpg: Number(e.target.value) })}
+              placeholder={`по умолч. ${MPG_DEFAULTS[form.equipment as Equipment] ?? 8}`}
+              value={form.avgMpg}
+              onChange={(e) => setForm({ ...form, avgMpg: e.target.value })}
             />
           </Field>
           <Field label="Fuel price ($/gallon)">

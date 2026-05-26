@@ -1729,8 +1729,10 @@ export function registerAdminRoutes(app: Express): void {
 
       // MPG (only if we have enough data to be meaningful).
       const actualMpg = gallons > 0.5 && totalMiles > 10 ? totalMiles / gallons : null;
-      // @ts-expect-error — avg_mpg added as a clients column (ALTER); client type doesn't yet expose it.
-      const expectedMpg = (client.avg_mpg as number | undefined) ?? null;
+      // avgMpg живёт в client payload (добавлен в clientSchema Владом, fuel task #2).
+      // Плоская колонка clients.avg_mpg (из #61) пока не используется —
+      // оставлена для будущих SQL agg на больших датасетах.
+      const expectedMpg = (client as { avgMpg?: number }).avgMpg ?? null;
 
       // Per-transaction overpay calculation. For each fillup, find cheapest
       // diesel observed within ±6h of the fillup, within 8km. If the cheapest
