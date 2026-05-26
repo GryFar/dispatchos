@@ -63,7 +63,7 @@ const US_STATES = [
   "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
 ];
 
-type TabKey = "profile" | "location" | "stats" | "fuel" | "ifta";
+type TabKey = "profile" | "location" | "stats" | "fuel" | "ifta" | "safety";
 
 export default function ClientDetailPage() {
   const [, params] = useRoute("/clients/:id");
@@ -155,6 +155,9 @@ export default function ClientDetailPage() {
         <TabButton active={tab === "ifta"} onClick={() => setTab("ifta")}>
           IFTA
         </TabButton>
+        <TabButton active={tab === "safety"} onClick={() => setTab("safety")}>
+          Safety
+        </TabButton>
         <TabButton active={tab === "stats"} onClick={() => setTab("stats")}>
           Статистика
         </TabButton>
@@ -164,6 +167,7 @@ export default function ClientDetailPage() {
       {tab === "location" && <LocationTab client={client} />}
       {tab === "fuel" && <FuelTab client={client} />}
       {tab === "ifta" && <IftaTab client={client} />}
+      {tab === "safety" && <SafetyTab client={client} />}
       {tab === "stats" && <StatsTab client={client} />}
     </div>
   );
@@ -1119,6 +1123,225 @@ function Stat({
         <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
         <p className={`mt-1 text-lg font-semibold ${toneCls}`}>{value}</p>
         {hint && <p className="text-[10px] text-muted-foreground">{hint}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+// ---------------------------------------------------------------------------
+// SafetyTab — Carrier Safety Profile (Montgomery defense, paid add-on)
+// Backend: GET /api/admin/clients/:id/safety-profile (JSON)
+//          GET /api/admin/clients/:id/safety-profile.md (Markdown download)
+// ---------------------------------------------------------------------------
+
+interface SafetyProfile {
+  clientId: string;
+  clientName: string;
+  mc: string;
+  generatedAt: string;
+  fmcsa: {
+    fetched: boolean;
+    error?: string;
+    raw: Record<string, unknown> | null;
+  };
+  insurance: Array<{
+    kind: "cargo" | "liability" | "general";
+    expiresAt: string | null;
+    status: "active" | "expiring" | "expired" | "missing";
+    daysUntilExpiry: number | null;
+  }>;
+  operational: {
+    loadsTotal: number;
+    loadsLast90d: number;
+    loadsDelivered: number;
+    loadsActive: number;
+    firstActivityAt: string | null;
+    lastActivityAt: string | null;
+  };
+  verdict: {
+    level: "green" | "yellow" | "red" | "unknown";
+    summary: string;
+    risks: string[];
+    strengths: string[];
+  };
+  disclaimer: string;
+}
+
+function SafetyTab({ client }: { client: Client }) {
+  const q = useQuery<SafetyProfile>({
+    queryKey: ["/api/admin/clients", client.id, "safety-profile"],
+    queryFn: () =>
+      apiJson<SafetyProfile>("GET", `/api/admin/clients/${client.id}/safety-profile`),
+  });
+
+  const mdUrl = `/api/admin/clients/${client.id}/safety-profile.md`;
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between gap-3">
+            <span>Carrier Safety Profile</span>
+            <a
+              href={mdUrl}
+              download
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            >
+              ↓ Скачать (.md)
+            </a>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm text-muted-foreground">
+          <p>
+            Документ для брокерской due-diligence после SCOTUS Montgomery v. Caribe Transport II (2026).
+            Агрегирует FMCSA SAFER snapshot, статус страховок и операционную историю в этой системе.
+          </p>
+          <p className="text-xs">
+            Можно отдавать брокерам как доказательство carrier vetting. Файл генерируется в формате Markdown,
+            конвертируется в PDF через любой redactor (Notion, Google Docs).
+          </p>
+        </CardContent>
+      </Card>
+
+      {q.isLoading && (
+        <Card>
+          <CardContent className="flex h-32 items-center justify-center text-sm text-muted-foreground">
+            Собираем профиль…
+          </CardContent>
+        </Card>
+      )}
+
+      {q.isError && (
+        <Card>
+          <CardContent className="py-4 text-sm text-destructive">
+            Не удалось загрузить профиль. Возможно, FMCSA_WEB_KEY не настроен в Integrations.
+          </CardContent>
+        </Card>
+      )}
+
+      {q.data && (
+        <>
+          <SafetyVerdictCard verdict={q.data.verdict} mc={q.data.mc} fmcsaFetched={q.data.fmcsa.fetched} />
+          <SafetyInsuranceCard insurance={q.data.insurance} />
+          <SafetyOperationalCard op={q.data.operational} />
+          <Card>
+            <CardContent className="py-3 text-[11px] leading-relaxed text-muted-foreground">
+              {q.data.disclaimer}
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SafetyVerdictCard({
+  verdict, mc, fmcsaFetched,
+}: {
+  verdict: SafetyProfile["verdict"];
+  mc: string;
+  fmcsaFetched: boolean;
+}) {
+  const badgeMap: Record<SafetyProfile["verdict"]["level"], { label: string; cls: string }> = {
+    green: { label: "🟢 GREEN — соответствует due-care", cls: "bg-success/10 text-success border-success/30" },
+    yellow: { label: "🟡 YELLOW — приемлемо с оговорками", cls: "bg-warning/10 text-warning border-warning/30" },
+    red: { label: "🔴 RED — есть дисквалифицирующие сигналы", cls: "bg-destructive/10 text-destructive border-destructive/30" },
+    unknown: { label: "⚪ UNKNOWN — недостаточно данных", cls: "bg-muted text-muted-foreground border-border" },
+  };
+  const badge = badgeMap[verdict.level];
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center justify-between gap-2 text-base">
+          <span>Verdict</span>
+          <span className="text-xs font-normal text-muted-foreground">MC {mc}</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className={`inline-flex rounded-md border px-3 py-1.5 text-sm font-semibold ${badge.cls}`}>
+          {badge.label}
+        </div>
+        <p className="text-sm">{verdict.summary}</p>
+        {!fmcsaFetched && (
+          <p className="text-xs text-warning">
+            ⚠ FMCSA данные не загружены — проверь FMCSA_WEB_KEY в Integrations.
+          </p>
+        )}
+        {verdict.strengths.length > 0 && (
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Сильные стороны</p>
+            <ul className="mt-1 space-y-1 text-sm">
+              {verdict.strengths.map((s, i) => (
+                <li key={i} className="flex gap-2"><span className="text-success">✓</span>{s}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {verdict.risks.length > 0 && (
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Риски</p>
+            <ul className="mt-1 space-y-1 text-sm">
+              {verdict.risks.map((r, i) => (
+                <li key={i} className="flex gap-2"><span className="text-destructive">!</span>{r}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SafetyInsuranceCard({ insurance }: { insurance: SafetyProfile["insurance"] }) {
+  const labelMap = { cargo: "Cargo", liability: "Auto liability", general: "General liability" };
+  const statusClass = (s: SafetyProfile["insurance"][number]["status"]) =>
+    s === "active" ? "text-success"
+    : s === "expiring" ? "text-warning"
+    : s === "expired" ? "text-destructive"
+    : "text-muted-foreground";
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Страховки</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-2 text-sm">
+          {insurance.map((ins) => (
+            <div key={ins.kind} className="flex items-center justify-between border-b border-border/50 py-1.5">
+              <span className="font-medium">{labelMap[ins.kind]}</span>
+              <span className={`text-right ${statusClass(ins.status)}`}>
+                {ins.status === "missing"
+                  ? "не указано"
+                  : `${ins.status.toUpperCase()}${ins.daysUntilExpiry !== null ? ` · ${ins.daysUntilExpiry}d` : ""}`}
+              </span>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SafetyOperationalCard({ op }: { op: SafetyProfile["operational"] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Операционная история</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Stat label="Всего грузов" value={String(op.loadsTotal)} />
+          <Stat label="За 90 дней" value={String(op.loadsLast90d)} />
+          <Stat label="Доставлено" value={String(op.loadsDelivered)} />
+          <Stat label="Активных сейчас" value={String(op.loadsActive)} />
+        </div>
+        {op.firstActivityAt && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Первая активность: {new Date(op.firstActivityAt).toISOString().slice(0, 10)}
+            {op.lastActivityAt && ` · Последняя: ${new Date(op.lastActivityAt).toISOString().slice(0, 10)}`}
+          </p>
+        )}
       </CardContent>
     </Card>
   );
