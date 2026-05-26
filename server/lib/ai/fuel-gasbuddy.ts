@@ -140,7 +140,7 @@ function parseGasBuddyHtml(html: string, fallbackLat: number, fallbackLng: numbe
   // GasBuddy station cards have historically used class names containing
   // "StationDisplay" / "Station". We scan for elements that contain both a
   // price-looking token and a station name. This is intentionally loose.
-  $('[class*="StationDisplay"], [class*="Station__"], [class*="station"]').each((_, el) => {
+  $('[class*="StationDisplay"], [class*="Station__"], [class*="station"]').each((_: number, el: any) => {
     const node = $(el);
     const priceText = node
       .find('[class*="Price"], [class*="price"]')
