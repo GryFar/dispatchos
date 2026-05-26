@@ -9,6 +9,7 @@
 import type { Express, Request, Response } from "express";
 import crypto from "node:crypto";
 import { refreshFromEia } from "../lib/ai/fuel";
+import { fetchGasBuddyDieselNear } from "../lib/ai/fuel-gasbuddy";
 import { storage } from "../storage";
 import { getAdapter } from "../lib/adapters";
 import { decryptCredentials } from "../lib/crypto/keyring";
@@ -188,5 +189,54 @@ export function registerCronRoutes(app: Express): void {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/cron/refresh-gasbuddy
+  //
+  // Best-effort GasBuddy diesel scrape for a set of coordinates. Body:
+  //   { points: [{ lat, lng, radiusKm? }, ...] }
+  // For each point, scrape nearby diesel prices and persist as
+  // source="gasbuddy" fuel_price_observations. GasBuddy is bot-protected, so
+  // any point may yield 0 rows (blocked / JS-rendered); that's expected and
+  // non-fatal. Nikita wires the EIA fallback on top.
+  //
+  // Auth: X-Cron-Secret. Response: { ok, points, totalObserved, perPoint[] }
+  // -------------------------------------------------------------------------
+  app.post("/api/cron/refresh-gasbuddy", async (req: Request, res: Response) => {
+    if (!requireCronSecret(req, res)) return;
+
+    const points = Array.isArray(req.body?.points) ? req.body.points : [];
+    if (points.length === 0) {
+      return res.status(400).json({ message: "Body must include points: [{lat, lng, radiusKm?}]" });
+    }
+
+    const perPoint: Array<{ lat: number; lng: number; observed: number; error?: string }> = [];
+    let totalObserved = 0;
+
+    for (const p of points) {
+      const lat = Number(p?.lat);
+      const lng = Number(p?.lng);
+      const radiusKm = typeof p?.radiusKm === "number" ? p.radiusKm : 8;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        perPoint.push({ lat, lng, observed: 0, error: "invalid_coords" });
+        continue;
+      }
+      try {
+        const obs = await fetchGasBuddyDieselNear(lat, lng, radiusKm);
+        for (const o of obs) storage.recordFuelPriceObservation(o);
+        totalObserved += obs.length;
+        perPoint.push({ lat, lng, observed: obs.length });
+      } catch (err) {
+        perPoint.push({ lat, lng, observed: 0, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    storage.audit("fuel.gasbuddy_refresh", "fuel_price_observations", "batch", {
+      points: points.length,
+      totalObserved,
+    });
+
+    return res.json({ ok: true, points: points.length, totalObserved, perPoint });
   });
 }
