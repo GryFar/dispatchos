@@ -52,6 +52,10 @@ import {
 import { storage } from "../storage";
 import { computeInvoiceForWeek } from "../lib/billing";
 import { buildIftaQuarterly, renderIftaCsv } from "../lib/ifta";
+import {
+  buildCarrierSafetyProfile,
+  renderCarrierSafetyProfileMarkdown,
+} from "../lib/carrier-safety-profile";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1832,6 +1836,45 @@ export function registerAdminRoutes(app: Express): void {
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     return res.send(csv);
+  });
+
+  // -------------------------------------------------------------------------
+  // Carrier Safety Profile (paid add-on — Montgomery v. Caribe defense)
+  //
+  // GET /api/admin/clients/:id/safety-profile      → JSON snapshot
+  // GET /api/admin/clients/:id/safety-profile.md   → Markdown download
+  //
+  // FMCSA SAFER fetch is best-effort; if the FMCSA_WEB_KEY isn't configured
+  // we still return the local-data parts (insurance + operational record)
+  // with fmcsa.fetched=false so the UI can flag it.
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/clients/:id/safety-profile", admin, async (req, res) => {
+    const profile = await buildCarrierSafetyProfile(String(req.params.id));
+    if (!profile) return res.status(404).json({ message: "Client not found" });
+    storage.audit(
+      "carrier.safety_profile_viewed",
+      "client",
+      profile.clientId,
+      { verdict: profile.verdict.level },
+    );
+    return res.json(profile);
+  });
+
+  app.get("/api/admin/clients/:id/safety-profile.md", admin, async (req, res) => {
+    const profile = await buildCarrierSafetyProfile(String(req.params.id));
+    if (!profile) return res.status(404).json({ message: "Client not found" });
+    const md = renderCarrierSafetyProfileMarkdown(profile);
+    storage.audit(
+      "carrier.safety_profile_exported",
+      "client",
+      profile.clientId,
+      { verdict: profile.verdict.level, format: "markdown" },
+    );
+    const safeName = profile.clientName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 60);
+    const filename = `carrier_safety_${safeName}_${new Date().toISOString().slice(0, 10)}.md`;
+    res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(md);
   });
 }
 
