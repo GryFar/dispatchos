@@ -25,17 +25,83 @@ declare module "express-session" {
 }
 
 // ===========================================================================
-// Password hashing (pbkdf2-sha256, 210k iterations) — unchanged from v1.2.7
+// Password hashing (pbkdf2-sha256)
 // ===========================================================================
+//
+// Audit High #10 (2026-05-26): bumped iterations from 210_000 → 600_000 to
+// match OWASP 2024 guidance for SHA-256. Existing hashes were stored raw
+// hex with NO algorithm/iteration prefix, so we need to keep verifying them
+// at the old count to avoid invalidating every account on deploy.
+//
+// Strategy:
+//   • New hashes are stored with a prefix «pbkdf2$<iters>$<hex>» so future
+//     bumps are graceful again.
+//   • Legacy hashes (no prefix) are recognised by their bare 64-char hex
+//     shape and verified at the old 210k count. On successful verify we
+//     return `needsRehash = true` so the caller can upgrade transparently
+//     at the next successful login.
+//   • Caller (routes.ts /api/auth/login) checks the flag and calls
+//     `updateUserPassword` to migrate. Backwards compatible end-to-end.
+// ---------------------------------------------------------------------------
 
-export function hashPassword(password: string, salt = crypto.randomBytes(16).toString("hex")) {
-  const hash = crypto.pbkdf2Sync(password, salt, 210_000, 32, "sha256").toString("hex");
+export const CURRENT_PBKDF2_ITERATIONS = 600_000;
+const LEGACY_PBKDF2_ITERATIONS = 210_000;
+
+function pbkdf2(password: string, salt: string, iterations: number): string {
+  return crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256").toString("hex");
+}
+
+export function hashPassword(
+  password: string,
+  salt = crypto.randomBytes(16).toString("hex"),
+): { salt: string; hash: string } {
+  const hash = `pbkdf2$${CURRENT_PBKDF2_ITERATIONS}$${pbkdf2(password, salt, CURRENT_PBKDF2_ITERATIONS)}`;
   return { salt, hash };
 }
 
-export function verifyPassword(password: string, salt: string, expectedHash: string) {
-  const { hash } = hashPassword(password, salt);
-  return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(expectedHash, "hex"));
+/**
+ * Verify a password against a stored hash, supporting both the new prefixed
+ * format and legacy bare-hex 210k hashes.
+ *
+ * Returns `{ ok, needsRehash }` so the caller can opportunistically migrate
+ * legacy hashes on the next login. Boolean coercion (`!!result.ok`) keeps
+ * old callers happy if they ever existed (none do in-tree today).
+ */
+export function verifyPassword(
+  password: string,
+  salt: string,
+  storedHash: string,
+): { ok: boolean; needsRehash: boolean } {
+  // New format: pbkdf2$<iters>$<hex>
+  if (storedHash.startsWith("pbkdf2$")) {
+    const parts = storedHash.split("$");
+    if (parts.length !== 3) return { ok: false, needsRehash: false };
+    const iters = Number(parts[1]);
+    if (!Number.isInteger(iters) || iters < LEGACY_PBKDF2_ITERATIONS) {
+      return { ok: false, needsRehash: false };
+    }
+    const expected = parts[2];
+    if (expected.length !== 64) return { ok: false, needsRehash: false };
+    const candidate = pbkdf2(password, salt, iters);
+    const ok = safeHexEq(candidate, expected);
+    return { ok, needsRehash: ok && iters < CURRENT_PBKDF2_ITERATIONS };
+  }
+  // Legacy format: bare 64-char hex computed at 210_000 iterations.
+  if (storedHash.length === 64 && /^[0-9a-f]+$/i.test(storedHash)) {
+    const candidate = pbkdf2(password, salt, LEGACY_PBKDF2_ITERATIONS);
+    const ok = safeHexEq(candidate, storedHash);
+    return { ok, needsRehash: ok }; // always needs upgrade on success
+  }
+  return { ok: false, needsRehash: false };
+}
+
+function safeHexEq(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
+  } catch {
+    return false;
+  }
 }
 
 // ===========================================================================

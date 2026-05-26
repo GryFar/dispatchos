@@ -69,6 +69,20 @@ function asNumber(v: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/**
+ * Reject the GPS «null island» (0°, 0°) — a tiny patch of ocean off the
+ * coast of Africa. Real driver fixes there are vanishingly rare, but a GPS
+ * chipset with no lock often reports (0,0). Writing it to the DB shifts
+ * miles-per-state aggregation, breaks IFTA bbox lookup, and makes the
+ * driver appear «at sea» on the cockpit.
+ *
+ * We give a 1km tolerance around the origin to be safe against
+ * floating-point noise.
+ */
+function isNullIsland(lat: number, lng: number): boolean {
+  return Math.abs(lat) < 0.01 && Math.abs(lng) < 0.01;
+}
+
 export function registerTrackRoutes(app: Express): void {
   // -------------------------------------------------------------------------
   // GET /api/track/osmand — Traccar Client / OsmAnd protocol
@@ -86,8 +100,13 @@ export function registerTrackRoutes(app: Express): void {
         return res.status(400).end();
       }
       // Sanity-clamp to valid earth coordinates so a misconfigured client
-      // doesn't poison the DB.
+      // doesn't poison the DB. Also reject null-island (0,0): GPS chipsets
+      // emit this when they have no lock yet, and previously we wrote it to
+      // the DB — a driver «off the coast of Africa» wrecks IFTA bbox lookup.
       if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        return res.status(400).end();
+      }
+      if (isNullIsland(lat, lng)) {
         return res.status(400).end();
       }
 
@@ -142,6 +161,9 @@ export function registerTrackRoutes(app: Express): void {
       }
       if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
         return res.status(400).json({ message: "out-of-range coordinates" });
+      }
+      if (isNullIsland(lat, lng)) {
+        return res.status(400).json({ message: "null-island GPS fix (0,0) rejected" });
       }
 
       storage.recordLocationPing({

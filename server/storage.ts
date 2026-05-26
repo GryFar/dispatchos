@@ -1081,15 +1081,20 @@ export const storage = {
   // Users
   // -------------------------------------------------------------------------
 
+  // Audit High #20 — все single-row user lookups фильтруют по софт-дилиту.
+  // До этого софт-удалённый юзер мог вернуться в session-lookup, TG-bot или
+  // login-flow — фактически «un-delete» через бэкдор. listUsers уже был ОК.
   getUserById(id: string): UserInternal | undefined {
-    const row = sqlite.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined;
+    const row = sqlite
+      .prepare("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL")
+      .get(id) as UserRow | undefined;
     return rowToUserInternal(row);
   },
 
   getUserByEmail(email: string): UserInternal | undefined {
-    const row = sqlite.prepare("SELECT * FROM users WHERE email = ?").get(email.toLowerCase()) as
-      | UserRow
-      | undefined;
+    const row = sqlite
+      .prepare("SELECT * FROM users WHERE email = ? AND deleted_at IS NULL")
+      .get(email.toLowerCase()) as UserRow | undefined;
     return rowToUserInternal(row);
   },
 
@@ -1101,7 +1106,7 @@ export const storage = {
   // -------------------------------------------------------------------------
   getUserByTelegramChatId(chatId: string): UserInternal | undefined {
     const row = sqlite
-      .prepare("SELECT * FROM users WHERE telegram_chat_id = ?")
+      .prepare("SELECT * FROM users WHERE telegram_chat_id = ? AND deleted_at IS NULL")
       .get(chatId) as UserRow | undefined;
     return rowToUserInternal(row);
   },
