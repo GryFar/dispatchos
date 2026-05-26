@@ -93,7 +93,7 @@ export default function SignupPage() {
   if (successData) {
     return (
       <AuthShell>
-        <PostSignupTotp data={successData} onContinue={() => setLocation(successData.redirect || defaultRouteForRole(successData.role))} />
+        <PostSignupTotp data={successData} onContinue={() => setLocation("/onboarding")} />
       </AuthShell>
     );
   }

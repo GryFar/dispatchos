@@ -14,6 +14,7 @@ import LandingPage from "@/pages/landing";
 import LoginPage from "@/pages/login";
 import SignupPage from "@/pages/signup";
 import ForgotPasswordPage from "@/pages/forgot-password";
+import OnboardingPage from "@/pages/onboarding";
 import NotFound from "@/pages/not-found";
 import { AdminShell } from "@/pages/admin/_shell";
 import LegacyDashboardPage from "@/pages/admin/legacy-dashboard";
@@ -108,6 +109,7 @@ export default function App() {
               <Route path="/login" component={LoginPage} />
               <Route path="/signup" component={SignupPage} />
               <Route path="/forgot-password" component={ForgotPasswordPage} />
+              <Route path="/onboarding" component={OnboardingPage} />
 
               {/* Admin space */}
               <Route path="/admin" nest>
