@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/use-auth";
 import { defaultRouteForRole } from "@/components/role-gate";
+import { useT } from "@/lib/i18n";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 
 /**
  * Public landing page rendered at "/" for unauthenticated visitors.
@@ -32,6 +34,7 @@ import { defaultRouteForRole } from "@/components/role-gate";
 export default function LandingPage() {
   const { user, isLoading } = useAuth();
   const [, setLocation] = useLocation();
+  const { t } = useT();
 
   // Scroll targets — refs instead of #anchors because we use hash routing.
   const featuresRef = useRef<HTMLDivElement | null>(null);
@@ -91,7 +94,7 @@ export default function LandingPage() {
             type="button"
             onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
             className="flex items-center gap-3 font-bold tracking-tight text-white"
-            aria-label="DispatchOS — на главную"
+            aria-label={t("landing.nav.toHome")}
           >
             <svg width="36" height="36" viewBox="0 0 32 32" fill="none">
               <rect width="32" height="32" rx="6" fill="#0a0e1a" />
@@ -113,21 +116,22 @@ export default function LandingPage() {
               onClick={() => scrollTo(featuresRef)}
               className="hidden text-sm text-[#9aa3ba] transition-colors hover:text-white sm:block"
             >
-              Возможности
+              {t("landing.nav.features")}
             </button>
             <button
               type="button"
               onClick={() => scrollTo(contactRef)}
               className="hidden text-sm text-[#9aa3ba] transition-colors hover:text-white sm:block"
             >
-              Связаться
+              {t("landing.nav.contact")}
             </button>
+            <LanguageSwitcher variant="ghost" />
             <button
               type="button"
               onClick={() => setLocation("/login")}
               className="inline-flex items-center gap-2 rounded-lg bg-[#f59e0b] px-4 py-2 text-sm font-semibold text-[#0a0e1a] transition-all hover:bg-[#fbbf24] hover:shadow-[0_0_24px_rgba(245,158,11,0.4)]"
             >
-              Войти
+              {t("common.login")}
               <ArrowRight className="h-4 w-4" />
             </button>
           </div>
@@ -137,18 +141,16 @@ export default function LandingPage() {
         <section className="mt-16 flex flex-col items-start gap-6 md:mt-24">
           <span className="inline-flex items-center gap-2 rounded-full border border-[rgba(245,158,11,0.3)] bg-[rgba(245,158,11,0.08)] px-3 py-1 text-xs font-medium text-[#f59e0b]">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#f59e0b]" />
-            В работе с реальными перевозчиками
+            {t("landing.hero.badge")}
           </span>
 
           <h1 className="max-w-3xl text-4xl font-bold leading-[1.1] tracking-tight text-white md:text-6xl">
-            Операционная система для{" "}
-            <span className="text-[#f59e0b]">диспатчера грузов</span>
+            {t("landing.hero.titleA")}{" "}
+            <span className="text-[#f59e0b]">{t("landing.hero.titleB")}</span>
           </h1>
 
           <p className="max-w-2xl text-base leading-relaxed text-[#9aa3ba] md:text-lg">
-            DispatchOS объединяет inbound-загрузки, скоринг брокеров, GPS-трекинг
-            водителей и compliance в один экран. Создано для car-hauler, hotshot
-            и owner-operator команд — без enterprise-ценника.
+            {t("landing.hero.subtitle")}
           </p>
 
           <div className="flex flex-wrap items-center gap-3 pt-2">
@@ -157,7 +159,7 @@ export default function LandingPage() {
               onClick={() => setLocation("/login")}
               className="inline-flex items-center gap-2 rounded-lg bg-[#f59e0b] px-6 py-3 text-base font-semibold text-[#0a0e1a] transition-all hover:bg-[#fbbf24] hover:shadow-[0_0_32px_rgba(245,158,11,0.45)]"
             >
-              Войти в систему
+              {t("landing.hero.ctaLogin")}
               <ArrowRight className="h-5 w-5" />
             </button>
             <button
@@ -166,7 +168,7 @@ export default function LandingPage() {
               className="inline-flex items-center gap-2 rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#161c2e] px-6 py-3 text-base font-semibold text-white transition-colors hover:border-[#f59e0b] hover:text-[#f59e0b]"
             >
               <Mail className="h-5 w-5" />
-              Запросить демо
+              {t("landing.hero.ctaDemo")}
             </button>
           </div>
         </section>
@@ -175,33 +177,33 @@ export default function LandingPage() {
         <section ref={featuresRef} className="mt-24 grid scroll-mt-8 gap-4 md:grid-cols-3">
           <FeatureCard
             icon={<Mail className="h-5 w-5" />}
-            title="Inbound из всех источников"
-            text="Email-парсер ловит грузы из Sylectus, Hempstead и брокерских ratecon'ов. Telegram-бот водителя в комплекте."
+            title={t("landing.feature.inbound.title")}
+            text={t("landing.feature.inbound.text")}
           />
           <FeatureCard
             icon={<Shield className="h-5 w-5" />}
-            title="Broker Trust Score"
-            text="FMCSA SAFER + история платежей + сигналы от диспетчеров. Один экран — решение по тендеру."
+            title={t("landing.feature.broker.title")}
+            text={t("landing.feature.broker.text")}
           />
           <FeatureCard
             icon={<MapPin className="h-5 w-5" />}
-            title="GPS и геофенсинг"
-            text="Traccar и OwnTracks ингест, авто-чекин в pickup/delivery, online-индикатор водителя."
+            title={t("landing.feature.gps.title")}
+            text={t("landing.feature.gps.text")}
           />
           <FeatureCard
             icon={<Gauge className="h-5 w-5" />}
-            title="Топливо и MPG"
-            text="GasBuddy + EIA + crowdsource. Алерты на переплаты, реальный MPG, прогноз на маршруте."
+            title={t("landing.feature.fuel.title")}
+            text={t("landing.feature.fuel.text")}
           />
           <FeatureCard
             icon={<Truck className="h-5 w-5" />}
-            title="IFTA и compliance"
-            text="Квартальная отчётность по штатам, страховки, MCS-150, DQ-файлы — напоминалки по желанию клиента."
+            title={t("landing.feature.ifta.title")}
+            text={t("landing.feature.ifta.text")}
           />
           <FeatureCard
             icon={<Zap className="h-5 w-5" />}
-            title="AI-помощник"
-            text="Claude разбирает чеки, классифицирует BOL/POD, помогает в переговорах с брокером по email."
+            title={t("landing.feature.ai.title")}
+            text={t("landing.feature.ai.text")}
           />
         </section>
 
@@ -209,19 +211,19 @@ export default function LandingPage() {
         <section className="mt-20 rounded-xl border border-[rgba(255,255,255,0.08)] bg-gradient-to-b from-[#161c2e] to-[#0f1424] p-6 md:p-8">
           <div className="grid gap-4 md:grid-cols-3">
             <TrustItem
-              label="Свежие апдейты"
-              value="IFTA, Geofence, Insurance monitor"
-              hint="Май 2026"
+              label={t("landing.trust.updates.label")}
+              value={t("landing.trust.updates.value")}
+              hint={t("landing.trust.updates.hint")}
             />
             <TrustItem
-              label="Под Montgomery v. Caribe"
-              value="Carrier Safety Profile"
-              hint="paid add-on $50–100/мес"
+              label={t("landing.trust.montgomery.label")}
+              value={t("landing.trust.montgomery.value")}
+              hint={t("landing.trust.montgomery.hint")}
             />
             <TrustItem
-              label="Для малых перевозчиков"
-              value="1–50 trucks"
-              hint="без per-user тарифов"
+              label={t("landing.trust.small.label")}
+              value={t("landing.trust.small.value")}
+              hint={t("landing.trust.small.hint")}
             />
           </div>
         </section>
@@ -236,11 +238,11 @@ export default function LandingPage() {
         <footer className="mt-auto flex flex-col items-start justify-between gap-3 border-t border-[rgba(255,255,255,0.08)] pt-8 text-xs text-[#6b7390] md:flex-row md:items-center">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="h-3.5 w-3.5 text-[#34d399]" />
-            <span>© {new Date().getFullYear()} DispatchOS. Создано для дальнобойщиков, диспетчеров и owner-operators в US.</span>
+            <span>{t("landing.footer.copy", { year: new Date().getFullYear() })}</span>
           </div>
           <div className="flex items-center gap-4">
-            <button type="button" onClick={() => setContactOpen(true)} className="hover:text-white">Связаться</button>
-            <button type="button" onClick={() => setLocation("/login")} className="hover:text-white">Войти</button>
+            <button type="button" onClick={() => setContactOpen(true)} className="hover:text-white">{t("common.contact")}</button>
+            <button type="button" onClick={() => setLocation("/login")} className="hover:text-white">{t("common.login")}</button>
           </div>
         </footer>
       </div>
@@ -398,6 +400,7 @@ function ContactInline({ onOpenFullForm }: { onOpenFullForm: () => void }) {
 // ---------------------------------------------------------------------------
 
 function ContactModal({ onClose }: { onClose: () => void }) {
+  const { t, lang } = useT();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [note, setNote] = useState("");
@@ -458,15 +461,15 @@ function ContactModal({ onClose }: { onClose: () => void }) {
             <CheckCircle2 className="h-5 w-5" />
             <div>
               {state.duplicate
-                ? "Запрос принят. Этот email уже есть у нас — обновили заметку."
-                : "Спасибо. Команда свяжется с вами в течение рабочего дня."}
+                ? t("landing.subscribe.duplicate")
+                : t("landing.contact.ok")}
             </div>
             <button
               type="button"
               onClick={onClose}
               className="ml-auto inline-flex items-center gap-2 rounded-md border border-[rgba(52,211,153,0.3)] px-3 py-1.5 text-xs font-medium text-[#34d399] hover:bg-[rgba(52,211,153,0.1)]"
             >
-              Закрыть
+              {t("common.close")}
             </button>
           </div>
         ) : (

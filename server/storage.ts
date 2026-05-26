@@ -407,6 +407,11 @@ function ensureUserDriverColumns() {
     // preventing replay of an observed 6-digit code within its ±1 window.
     sqlite.exec("ALTER TABLE users ADD COLUMN last_used_totp_counter INTEGER");
   }
+  if (!names.has("preferred_lang")) {
+    // i18n — persisted UI language choice. NULL = user has not picked yet,
+    // client falls back to localStorage / browser locale. 'ru' | 'en'.
+    sqlite.exec("ALTER TABLE users ADD COLUMN preferred_lang TEXT");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -951,6 +956,8 @@ interface UserRow {
   last_location_source: string | null;
   tracking_token: string | null;
   last_seen_at: string | null;
+  // i18n — last UI language chosen ('ru' | 'en'). NULL until first choice.
+  preferred_lang: string | null;
 }
 
 export interface UserInternal {
@@ -985,6 +992,8 @@ export interface UserInternal {
   trackingToken?: string;
   // Phase 7 presence — last authenticated /api hit.
   lastSeenAt?: string;
+  // i18n — last UI language picked. NULL until first explicit choice.
+  preferredLang?: "ru" | "en";
 }
 
 // Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
@@ -1047,6 +1056,10 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     lastLocationSource: row.last_location_source ?? undefined,
     trackingToken: row.tracking_token ?? undefined,
     lastSeenAt: row.last_seen_at ?? undefined,
+    preferredLang:
+      row.preferred_lang === "ru" || row.preferred_lang === "en"
+        ? row.preferred_lang
+        : undefined,
   };
 }
 
@@ -1068,6 +1081,7 @@ function toUserPublic(user: UserInternal, extras?: { assignedClientIds?: string[
     lastLoginAt: user.lastLoginAt,
     lastSeenAt: user.lastSeenAt,
     deletedAt: user.deletedAt ?? null,
+    preferredLang: user.preferredLang ?? null,
   };
 }
 
@@ -1397,6 +1411,13 @@ export const storage = {
     sqlite
       .prepare("UPDATE users SET last_used_totp_counter = ? WHERE id = ?")
       .run(counter, id);
+  },
+
+  /** i18n — persist the user's UI language choice (cross-device). */
+  setUserPreferredLang(id: string, lang: "ru" | "en"): void {
+    sqlite
+      .prepare("UPDATE users SET preferred_lang = ?, updated_at = ? WHERE id = ?")
+      .run(lang, now(), id);
   },
 
   // -------------------------------------------------------------------------

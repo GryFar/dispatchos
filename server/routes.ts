@@ -15,6 +15,7 @@ import {
   signupSchema,
   telegramCommandSchema,
   updateLocationSchema,
+  updateMyPreferencesSchema,
   type BrokerRecord,
   type Client,
   type DispatchBoard,
@@ -1156,6 +1157,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const user = getCurrentUser(req);
     if (!user) return res.status(401).json({ message: "Authentication required" });
     res.json(storage.toUserPublic(user));
+  });
+
+  // i18n — PATCH /api/me/preferences. Accepts a partial preferences body and
+  // persists fields that we currently support (preferredLang). Sent by the
+  // <LanguageSwitcher> on every change so the choice survives across devices.
+  app.patch("/api/me/preferences", (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Authentication required" });
+    let body: ReturnType<typeof updateMyPreferencesSchema.parse>;
+    try {
+      body = updateMyPreferencesSchema.parse(req.body);
+    } catch (err) {
+      return handleZodError(err, res);
+    }
+    if (body.preferredLang) {
+      storage.setUserPreferredLang(user.id, body.preferredLang);
+    }
+    const updated = storage.getUserById(user.id);
+    res.json(updated ? storage.toUserPublic(updated) : storage.toUserPublic(user));
   });
 
   // -------------------------------------------------------------------------
