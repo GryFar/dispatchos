@@ -469,6 +469,41 @@ function CompanyStep({
 }) {
   const isFleet = persona === "fleet" || persona === "enterprise";
 
+  // FMCSA SAFER lookup on the MC field (debounced 500ms). Surfaces the carrier's
+  // legal name as confirmation, warns if the MC is already tied to another
+  // account (anti-fraud) or is not FMCSA-authorized. Best-effort: a null/empty
+  // result is silent — the hard uniqueness gate lives on the server PATCH.
+  const [mcInfo, setMcInfo] = useState<{
+    found: boolean;
+    claimedByOther?: boolean;
+    blocked?: boolean;
+    legalName?: string;
+    operatingStatus?: string;
+    fmcsaConfigured?: boolean;
+  } | null>(null);
+  const [mcChecking, setMcChecking] = useState(false);
+
+  useEffect(() => {
+    const trimmed = mc.trim();
+    if (trimmed.replace(/\D/g, "").length < 3) {
+      setMcInfo(null);
+      setMcChecking(false);
+      return;
+    }
+    setMcChecking(true);
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/onboarding/mc-lookup?mc=${encodeURIComponent(trimmed)}`);
+        setMcInfo(r.ok ? await r.json() : null);
+      } catch {
+        setMcInfo(null);
+      } finally {
+        setMcChecking(false);
+      }
+    }, 500);
+    return () => clearTimeout(t);
+  }, [mc]);
+
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold leading-tight tracking-tight text-white md:text-4xl">
@@ -503,6 +538,24 @@ function CompanyStep({
             <p className="text-[10px] text-[#6b7390]">
               We'll auto-pull authority status from FMCSA SAFER.
             </p>
+            {mcChecking && (
+              <p className="text-[11px] text-[#6b7390]">Проверяем FMCSA SAFER…</p>
+            )}
+            {!mcChecking && mcInfo?.claimedByOther && (
+              <p className="text-[11px] font-medium text-red-400">
+                🔴 Этот MC# уже привязан к другому аккаунту.
+              </p>
+            )}
+            {!mcChecking && mcInfo?.blocked && !mcInfo?.claimedByOther && (
+              <p className="text-[11px] font-medium text-red-400">
+                🔴 У этого MC нет действующей authority ({mcInfo.operatingStatus}).
+              </p>
+            )}
+            {!mcChecking && mcInfo?.found && !mcInfo?.blocked && !mcInfo?.claimedByOther && mcInfo.legalName && (
+              <p className="text-[11px] font-medium text-emerald-400">
+                ✅ {mcInfo.legalName}
+              </p>
+            )}
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs text-[#9aa3ba]">DOT# (optional)</Label>
