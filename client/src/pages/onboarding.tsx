@@ -39,7 +39,7 @@ import {
   Truck,
 } from "lucide-react";
 import { useAuth } from "@/lib/use-auth";
-import { apiJson } from "@/lib/queryClient";
+import { apiJson, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
@@ -321,7 +321,97 @@ export default function OnboardingPage() {
             </Button>
           </div>
         )}
+        <PhoneVerifyBlock />
       </div>
+    </div>
+  );
+}
+
+function PhoneVerifyBlock() {
+  const [phone, setPhone] = useState("");
+  const [code, setCode] = useState("");
+  const [sent, setSent] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "err" | "info"; text: string } | null>(null);
+
+  async function send() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await apiJson("POST", "/api/me/phone/send-verify", { phone });
+      setSent(true);
+      setMsg({ kind: "info", text: "Код отправлен по SMS." });
+    } catch (e) {
+      const status = e instanceof ApiError ? e.status : 0;
+      if (status === 503) setMsg({ kind: "info", text: "SMS-верификация недоступна в этой среде." });
+      else if (status === 422) setMsg({ kind: "err", text: "VoIP / стационарные номера не принимаются." });
+      else if (status === 400) setMsg({ kind: "err", text: "Введите номер в формате +1XXXXXXXXXX." });
+      else setMsg({ kind: "err", text: "Не удалось отправить код." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirm() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await apiJson("POST", "/api/me/phone/confirm-verify", { phone, code });
+      setVerified(true);
+    } catch (e) {
+      const status = e instanceof ApiError ? e.status : 0;
+      if (status === 409) setMsg({ kind: "err", text: "Этот номер уже привязан к другому аккаунту." });
+      else setMsg({ kind: "err", text: "Неверный код." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2 border-t border-[rgba(255,255,255,0.08)] pt-4">
+      <Label className="text-xs text-[#9aa3ba]">Телефон (подтверждение по SMS) *</Label>
+      {verified ? (
+        <p className="rounded-md border border-[rgba(52,211,153,0.2)] bg-[rgba(52,211,153,0.05)] p-3 text-xs text-[#34d399]">
+          ✓ Телефон {phone} подтверждён.
+        </p>
+      ) : (
+        <>
+          <div className="flex gap-2">
+            <Input
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="+13055551234"
+              disabled={sent || busy}
+              className="border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-white placeholder:text-[#6b7390]"
+            />
+            {!sent && (
+              <Button type="button" onClick={send} disabled={busy || !phone}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Отправить код"}
+              </Button>
+            )}
+          </div>
+          {sent && (
+            <div className="flex gap-2">
+              <Input
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder="6-значный код"
+                inputMode="numeric"
+                className="border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-white placeholder:text-[#6b7390]"
+              />
+              <Button type="button" onClick={confirm} disabled={busy || code.length < 4}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Подтвердить"}
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+      {msg && (
+        <p className={msg.kind === "err" ? "text-[11px] text-red-400" : "text-[11px] text-[#9aa3ba]"}>
+          {msg.text}
+        </p>
+      )}
     </div>
   );
 }

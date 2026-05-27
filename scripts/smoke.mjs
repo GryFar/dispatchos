@@ -708,6 +708,28 @@ try {
   }
   console.log("[OK] POST /api/dispatch/ai-recommend blocks admin (403)");
 
+  // Twilio phone verification: without Twilio creds (smoke env) the endpoint
+  // degrades gracefully — 503 verify_not_configured, never a 5xx crash. This
+  // proves the endpoint is wired and the graceful path works; the real SMS
+  // flow (200 -> confirm -> verified) only exercises in prod where creds exist.
+  let phoneSendStatus = 0;
+  let phoneSendCode = "";
+  try {
+    await request("/api/me/phone/send-verify", {
+      method: "POST",
+      body: { phone: "+13055551234" },
+    });
+  } catch (err) {
+    phoneSendStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    phoneSendCode = /verify_not_configured/.test(String(err.message)) ? "verify_not_configured" : "";
+  }
+  if (phoneSendStatus !== 503 || phoneSendCode !== "verify_not_configured") {
+    throw new Error(
+      `phone/send-verify without Twilio should be 503 verify_not_configured, got ${phoneSendStatus} ${phoneSendCode}`,
+    );
+  }
+  console.log("[OK] POST /api/me/phone/send-verify graceful without Twilio (503)");
+
   // -------------------------------------------------------------------------
   // Admin POST /api/admin/users — create a stub driver, then GET by id
   // -------------------------------------------------------------------------
