@@ -287,6 +287,7 @@ function TrustItem({
 // ---------------------------------------------------------------------------
 
 function SubscribeForm() {
+  const { t } = useT();
   const [email, setEmail] = useState("");
   const [state, setState] = useState<
     | { kind: "idle" }
@@ -311,7 +312,10 @@ function SubscribeForm() {
       });
       if (!res.ok) {
         const data = (await res.json().catch(() => null)) as { message?: string } | null;
-        setState({ kind: "err", message: data?.message || `Ошибка ${res.status}` });
+        setState({
+          kind: "err",
+          message: data?.message || `${t("landing.subscribe.errorPrefix")} ${res.status}`,
+        });
         return;
       }
       const data = (await res.json()) as { duplicate?: boolean };
@@ -323,18 +327,16 @@ function SubscribeForm() {
 
   return (
     <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-[#161c2e]/60 p-6">
-      <h3 className="text-base font-semibold text-white">Подписаться на рассылку</h3>
-      <p className="mt-1 text-sm text-[#9aa3ba]">
-        Свежие апдейты продукта и индустриальные сигналы. Без спама.
-      </p>
+      <h3 className="text-base font-semibold text-white">{t("landing.subscribe.title")}</h3>
+      <p className="mt-1 text-sm text-[#9aa3ba]">{t("landing.subscribe.subtitle")}</p>
 
       {state.kind === "ok" ? (
         <div className="mt-4 flex items-start gap-2 rounded-lg border border-[rgba(52,211,153,0.25)] bg-[rgba(52,211,153,0.06)] p-3 text-sm text-[#34d399]">
           <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" />
           <div>
             {state.duplicate
-              ? "Этот email уже подписан — спасибо что вернулся."
-              : "Готово, подписали. Жди апдейтов."}
+              ? t("landing.subscribe.duplicateShort")
+              : t("landing.subscribe.okShort")}
           </div>
         </div>
       ) : (
@@ -343,7 +345,7 @@ function SubscribeForm() {
             type="email"
             required
             autoComplete="email"
-            placeholder="you@trucking.co"
+            placeholder={t("landing.subscribe.placeholder")}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             disabled={state.kind === "submitting"}
@@ -356,10 +358,10 @@ function SubscribeForm() {
           >
             {state.kind === "submitting" ? (
               <>
-                <Loader2 className="h-4 w-4 animate-spin" /> Отправляем
+                <Loader2 className="h-4 w-4 animate-spin" /> {t("landing.subscribe.submitting")}
               </>
             ) : (
-              <>Подписаться <ArrowRight className="h-4 w-4" /></>
+              <>{t("landing.subscribe.cta")} <ArrowRight className="h-4 w-4" /></>
             )}
           </button>
         </form>
@@ -377,19 +379,18 @@ function SubscribeForm() {
 // ---------------------------------------------------------------------------
 
 function ContactInline({ onOpenFullForm }: { onOpenFullForm: () => void }) {
+  const { t } = useT();
   return (
     <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-[#161c2e]/60 p-6">
-      <h3 className="text-base font-semibold text-white">Связаться с нами</h3>
-      <p className="mt-1 text-sm text-[#9aa3ba]">
-        Расскажите чем занимаетесь — мы перезвоним и покажем как DispatchOS закрывает вашу боль.
-      </p>
+      <h3 className="text-base font-semibold text-white">{t("landing.contact.title")}</h3>
+      <p className="mt-1 text-sm text-[#9aa3ba]">{t("landing.contact.subtitle")}</p>
       <button
         type="button"
         onClick={onOpenFullForm}
         className="mt-4 inline-flex items-center gap-2 rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:border-[#f59e0b] hover:text-[#f59e0b]"
       >
         <Mail className="h-4 w-4" />
-        Открыть форму
+        {t("landing.contact.cta")}
       </button>
     </div>
   );
@@ -429,7 +430,10 @@ function ContactModal({ onClose }: { onClose: () => void }) {
       });
       if (!res.ok) {
         const data = (await res.json().catch(() => null)) as { message?: string } | null;
-        setState({ kind: "err", message: data?.message || `Ошибка ${res.status}` });
+        setState({
+          kind: "err",
+          message: data?.message || `${t("landing.subscribe.errorPrefix")} ${res.status}`,
+        });
         return;
       }
       const data = (await res.json()) as { duplicate?: boolean };
@@ -445,16 +449,14 @@ function ContactModal({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           onClick={onClose}
-          aria-label="Закрыть"
+          aria-label={t("landing.contact.closeAria")}
           className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-md text-[#9aa3ba] hover:bg-[#0f1424] hover:text-white"
         >
           <X className="h-4 w-4" />
         </button>
 
-        <h3 className="text-lg font-semibold text-white">Связаться с DispatchOS</h3>
-        <p className="mt-1 text-sm text-[#9aa3ba]">
-          Заполните форму — мы свяжемся в течение рабочего дня.
-        </p>
+        <h3 className="text-lg font-semibold text-white">{t("landing.contact.modalTitle")}</h3>
+        <p className="mt-1 text-sm text-[#9aa3ba]">{t("landing.contact.modalSubtitle")}</p>
 
         {state.kind === "ok" ? (
           <div className="mt-5 flex flex-col items-start gap-3 rounded-lg border border-[rgba(52,211,153,0.25)] bg-[rgba(52,211,153,0.06)] p-4 text-sm text-[#34d399]">
@@ -475,19 +477,19 @@ function ContactModal({ onClose }: { onClose: () => void }) {
         ) : (
           <form onSubmit={submit} className="mt-5 space-y-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-[#9aa3ba]">Имя</label>
+              <label className="mb-1 block text-xs font-medium text-[#9aa3ba]">{t("landing.contact.nameLabel")}</label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 maxLength={120}
-                placeholder="Никита"
+                placeholder={t("landing.contact.namePlaceholder")}
                 disabled={state.kind === "submitting"}
                 className="w-full rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] px-3 py-2 text-sm text-white placeholder:text-[#6b7390] outline-none focus:border-[#f59e0b]"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-[#9aa3ba]">Email *</label>
+              <label className="mb-1 block text-xs font-medium text-[#9aa3ba]">{t("landing.contact.emailLabel")}</label>
               <input
                 type="email"
                 required
@@ -500,13 +502,13 @@ function ContactModal({ onClose }: { onClose: () => void }) {
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-[#9aa3ba]">Сообщение</label>
+              <label className="mb-1 block text-xs font-medium text-[#9aa3ba]">{t("landing.contact.noteLabel")}</label>
               <textarea
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
                 rows={4}
                 maxLength={2000}
-                placeholder="Расскажите про вашу команду и текущую TMS / процесс"
+                placeholder={t("landing.contact.notePlaceholder2")}
                 disabled={state.kind === "submitting"}
                 className="w-full resize-none rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] px-3 py-2 text-sm text-white placeholder:text-[#6b7390] outline-none focus:border-[#f59e0b]"
               />
@@ -523,7 +525,7 @@ function ContactModal({ onClose }: { onClose: () => void }) {
                 disabled={state.kind === "submitting"}
                 className="rounded-lg border border-[rgba(255,255,255,0.14)] bg-transparent px-4 py-2 text-sm font-medium text-[#9aa3ba] hover:text-white"
               >
-                Отмена
+                {t("common.cancel")}
               </button>
               <button
                 type="submit"
