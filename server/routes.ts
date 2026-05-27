@@ -57,6 +57,7 @@ import { enrichLoadSync } from "./lib/ai";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
 import { fetchByMc } from "./lib/ai/fmcsa";
+import { isDisposableEmail } from "./lib/disposable-domains";
 import crypto from "node:crypto";
 
 const HOUR = 60 * 60 * 1000;
@@ -1143,6 +1144,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return handleZodError(error, res);
     }
 
+    // Anti-fraud: reject throwaway/disposable email providers before consuming
+    // the invite, so a temp inbox can't be used to farm free trials.
+    if (isDisposableEmail(body.email)) {
+      storage.audit("auth.signup_blocked_disposable", "user", "signup", {
+        emailDomain: body.email.slice(body.email.lastIndexOf("@") + 1).toLowerCase(),
+      });
+      return res.status(400).json({
+        message: "Пожалуйста, используйте постоянный рабочий email (временные адреса не принимаются).",
+        code: "disposable_email",
+      });
+    }
+
     const invite = storage.getInvite(body.inviteCode);
     const nowMs = Date.now();
     if (!invite || invite.consumedAt || new Date(invite.expiresAt).getTime() <= nowMs) {
@@ -1151,6 +1164,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(400).json({ message: "Invite not found or expired" });
     }
 
+    
     // Email-locked invites must match exactly (case-insensitive).
     if (invite.email && invite.email.toLowerCase() !== body.email.toLowerCase()) {
       return res.status(400).json({ message: "Invite is locked to a different email" });

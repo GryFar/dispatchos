@@ -552,7 +552,47 @@ try {
   }
   console.log("[OK] POST /api/admin/invites (DOS-XXXX-XXXX-XXXX + hash signupUrl)");
 
+  // Anti-fraud: a disposable-email signup is rejected before the invite is
+  // consumed. Use a fresh invite so the rejection can't be confused with an
+  // already-used code, and verify the invite survives (not consumed).
+  const disposableInvite = await request("/api/admin/invites", {
+    method: "POST",
+    body: { role: "dispatcher", ttlHours: 24 },
+  });
+  let disposableStatus = 0;
+  let disposableCode = "";
+  const savedCookie = cookieHeader;
+  cookieHeader = ""; // signup is unauthenticated
+  try {
+    await request("/api/auth/signup", {
+      method: "POST",
+      body: {
+        inviteCode: disposableInvite.code,
+        email: "throwaway@mailinator.com",
+        fullName: "Throwaway Tester",
+        password: "SmokeDisposable1!",
+      },
+    });
+  } catch (err) {
+    disposableStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    disposableCode = /disposable_email/.test(String(err.message)) ? "disposable_email" : "";
+  }
+  cookieHeader = savedCookie; // back to admin
+  if (disposableStatus !== 400 || disposableCode !== "disposable_email") {
+    throw new Error(
+      `disposable email signup should be 400 disposable_email, got ${disposableStatus} ${disposableCode}`,
+    );
+  }
+  // The invite must still be active (rejection happens before consume).
+  const disposableInviteStillActive = await request("/api/admin/invites?status=active&limit=50");
+  if (!disposableInviteStillActive.items.some((i) => i.code === disposableInvite.code)) {
+    throw new Error("disposable-rejected invite should NOT be consumed");
+  }
+  console.log("[OK] signup blocks disposable email (400) without consuming invite");
+
   // GET /api/admin/invites — status=active includes the new one
+
+  
   const activeInvites = await request("/api/admin/invites?status=active&limit=50");
   if (!Array.isArray(activeInvites.items) || !activeInvites.items.some((i) => i.code === dispatcherInvite.code)) {
     throw new Error("/api/admin/invites?status=active did not return the new invite");
