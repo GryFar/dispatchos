@@ -551,9 +551,19 @@ function handleBadRequest(error: unknown, res: any) {
   return res.status(400).json({ message: "Bad request" });
 }
 
+// Normalize an MC/MX/FF docket number to a canonical "<PREFIX>-<digits>" form.
+// Audit V3-9: the previous version stripped all non-digits and forced an "MC-"
+// prefix, collapsing MX-123 / FF-123 into MC-123 (different FMCSA docket
+// families → false collisions, which matters for the per-MC unique account
+// constraint). We now preserve a leading MC/MX/FF prefix; default to MC when
+// only digits are given (the common broker case).
 function normalizeMc(value: string) {
-  const digits = value.replace(/\D/g, "");
-  return digits ? `MC-${digits}` : value.toUpperCase();
+  const raw = String(value ?? "").trim().toUpperCase();
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return raw;
+  const prefixMatch = raw.match(/^(MC|MX|FF)\b/);
+  const prefix = prefixMatch ? prefixMatch[1] : "MC";
+  return `${prefix}-${digits}`;
 }
 
 async function checkBrokerRisk(brokerMc: string, brokerName = "Unknown Broker"): Promise<BrokerRecord> {
