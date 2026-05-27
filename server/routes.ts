@@ -56,6 +56,7 @@ import { registerBillingRoutes } from "./routes/billing";
 import { enrichLoadSync } from "./lib/ai";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
+import { fetchByMc } from "./lib/ai/fmcsa";
 import crypto from "node:crypto";
 
 const HOUR = 60 * 60 * 1000;
@@ -1250,6 +1251,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
         features: p.features,
       }));
     return res.json({ plans, trialDays: 14 });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/onboarding/mc-lookup?mc=MC-123456
+  //
+  // FMCSA SAFER proxy for the onboarding MC field: confirms the docket exists,
+  // surfaces legalName / dotNumber / state for autofill, flags
+  // OUT_OF_SERVICE / NOT_AUTHORIZED, and reports whether the MC is already
+  // claimed by another account. Graceful: missing key / FMCSA down / docket not
+  // found => { found: false } (never 5xx). MC uniqueness is the hard gate;
+  // FMCSA is a best-effort enhancement layered on top.
+  // -------------------------------------------------------------------------
+  app.get("/api/onboarding/mc-lookup", async (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Authentication required" });
+
+    const rawMc = String(req.query.mc ?? "").trim();
+    if (!rawMc) return res.status(400).json({ message: "mc query param required" });
+    const normalized = normalizeMc(rawMc);
+
+    const owner = storage.getMcRegistryOwner(normalized);
+    const claimedByOther = !!owner && owner.userId !== user.id;
+
+    const webKey = getIntegrationValue("fmcsa", "FMCSA_WEB_KEY") ?? process.env.FMCSA_WEBKEY;
+    if (!webKey) {
+      return res.json({ mc: normalized, found: false, claimedByOther, fmcsaConfigured: false });
+    }
+
+    const carrier = await fetchByMc(normalized, { webKey });
+    if (!carrier) {
+      return res.json({ mc: normalized, found: false, claimedByOther, fmcsaConfigured: true });
+    }
+
+    const blocked =
+      carrier.operatingStatus === "OUT_OF_SERVICE" || carrier.operatingStatus === "NOT_AUTHORIZED";
+    return res.json({
+      mc: normalized,
+      found: true,
+      claimedByOther,
+      fmcsaConfigured: true,
+      blocked,
+      legalName: carrier.legalName,
+      dotNumber: carrier.dotNumber ?? null,
+      state: carrier.address?.state ?? null,
+      operatingStatus: carrier.operatingStatus,
+      authority: carrier.authority,
+    });
   });
 
   // -------------------------------------------------------------------------
