@@ -1192,9 +1192,28 @@ export const storage = {
   // Audit High #20 — все single-row user lookups фильтруют по софт-дилиту.
   // До этого софт-удалённый юзер мог вернуться в session-lookup, TG-bot или
   // login-flow — фактически «un-delete» через бэкдор. listUsers уже был ОК.
+  //
+  // 2026-05-27 hotfix (Vlad smoke regression): admin inspection paths need
+  // to see soft-deleted users (audit trail, post-delete UI confirmation).
+  // Use `getUserByIdIncludingDeleted` for those. Default `getUserById`
+  // STAYS strict — anything auth-adjacent must keep going through it.
   getUserById(id: string): UserInternal | undefined {
     const row = sqlite
       .prepare("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL")
+      .get(id) as UserRow | undefined;
+    return rowToUserInternal(row);
+  },
+
+  /**
+   * Same as getUserById but does NOT filter out soft-deleted rows.
+   *
+   * Use ONLY for admin inspection / audit display / post-delete returns.
+   * Never for auth, session, TG-bot, dispatch flow, or anything that would
+   * let a deleted user act as an active one.
+   */
+  getUserByIdIncludingDeleted(id: string): UserInternal | undefined {
+    const row = sqlite
+      .prepare("SELECT * FROM users WHERE id = ?")
       .get(id) as UserRow | undefined;
     return rowToUserInternal(row);
   },
@@ -1448,7 +1467,10 @@ export const storage = {
       email: existing.email,
       role: existing.role,
     });
-    return this.getUserById(id);
+    // Must use the including-deleted variant — we just stamped deleted_at,
+    // so the strict getUserById() would now return undefined and callers
+    // (admin UI, smoke test) wouldn't get back the post-delete row.
+    return this.getUserByIdIncludingDeleted(id);
   },
 
   recordUserLogin(id: string) {
