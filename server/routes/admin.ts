@@ -342,7 +342,11 @@ export function registerAdminRoutes(app: Express): void {
     "/api/admin/users/:id",
     admin,
     ah((req, res) => {
-      const user = storage.getUserById(String(req.params.id));
+      // 2026-05-27 (Vlad smoke regression) — admin must be able to inspect
+      // soft-deleted users (audit trail, post-delete confirmation). Use the
+      // including-deleted variant; toUserPublic exposes deletedAt to the
+      // client so the admin UI can show a «Удалён» badge.
+      const user = storage.getUserByIdIncludingDeleted(String(req.params.id));
       if (!user) return res.status(404).json({ message: "User not found" });
       return res.json(storage.toUserPublic(user));
     }),
