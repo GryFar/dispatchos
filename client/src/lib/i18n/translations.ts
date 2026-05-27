@@ -89,6 +89,10 @@ const ru: Dict = {
   "landing.subscribe.cta": "Подписаться",
   "landing.subscribe.ok": "Спасибо — подписка оформлена.",
   "landing.subscribe.duplicate": "Вы уже подписаны. Никаких действий не требуется.",
+  "landing.subscribe.submitting": "Отправляем",
+  "landing.subscribe.duplicateShort": "Этот email уже подписан — спасибо что вернулся.",
+  "landing.subscribe.okShort": "Готово, подписали. Жди апдейтов.",
+  "landing.subscribe.errorPrefix": "Ошибка",
 
   // Landing — contact inline + modal
   "landing.contact.title": "Связаться с командой",
@@ -101,6 +105,15 @@ const ru: Dict = {
     "Сколько трэков, какие лайны (car-hauler / hotshot / dry van...), какой главный pain.",
   "landing.contact.submit": "Отправить запрос",
   "landing.contact.ok": "Спасибо — мы свяжемся в течение суток.",
+  "landing.contact.modalTitle": "Связаться с DispatchOS",
+  "landing.contact.modalSubtitle": "Заполните форму — мы свяжемся в течение рабочего дня.",
+  "landing.contact.nameLabel": "Имя",
+  "landing.contact.namePlaceholder": "Никита",
+  "landing.contact.emailLabel": "Email *",
+  "landing.contact.noteLabel": "Сообщение",
+  "landing.contact.notePlaceholder2": "Расскажите про вашу команду и текущую TMS / процесс",
+  "landing.contact.closeAria": "Закрыть",
+  "landing.contact.submitting": "Отправляем",
 
   // Landing — footer
   "landing.footer.copy":
@@ -243,6 +256,10 @@ const en: Dict = {
   "landing.subscribe.cta": "Subscribe",
   "landing.subscribe.ok": "Thanks — you're subscribed.",
   "landing.subscribe.duplicate": "You're already subscribed. Nothing to do here.",
+  "landing.subscribe.submitting": "Sending",
+  "landing.subscribe.duplicateShort": "This email is already on the list — thanks for coming back.",
+  "landing.subscribe.okShort": "Done, you're in. Watch for updates.",
+  "landing.subscribe.errorPrefix": "Error",
 
   // Landing — contact inline + modal
   "landing.contact.title": "Talk to the team",
@@ -255,6 +272,15 @@ const en: Dict = {
     "How many trucks, which lanes (car-hauler / hotshot / dry van...), what's the biggest pain.",
   "landing.contact.submit": "Send request",
   "landing.contact.ok": "Thanks — we'll be in touch within a day.",
+  "landing.contact.modalTitle": "Contact DispatchOS",
+  "landing.contact.modalSubtitle": "Fill out the form — we'll get back to you within a business day.",
+  "landing.contact.nameLabel": "Name",
+  "landing.contact.namePlaceholder": "Alex",
+  "landing.contact.emailLabel": "Email *",
+  "landing.contact.noteLabel": "Message",
+  "landing.contact.notePlaceholder2": "Tell us about your team and your current TMS / workflow",
+  "landing.contact.closeAria": "Close",
+  "landing.contact.submitting": "Sending",
 
   // Landing — footer
   "landing.footer.copy":
