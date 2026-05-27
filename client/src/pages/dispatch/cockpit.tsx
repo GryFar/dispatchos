@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
@@ -57,7 +58,12 @@ interface CockpitResponse {
   topLoads: Load[];
   suggestions: CockpitSuggestion[];
 }
-
+interface AiRecommendation {
+  recommendedLoadId: string | null;
+  reasoning: string;
+  watchOuts: string[];
+  confidence: number;
+}
 export default function DispatchCockpitPage() {
   const { data, isLoading, isFetching, dataUpdatedAt, refetch } =
     useQuery<CockpitResponse>({
@@ -243,12 +249,73 @@ function CarrierCard({ carrier }: { carrier: CockpitCarrier }) {
               {a}
             </li>
           ))}
-        </ul>
+</ul>
       )}
+      <CarrierAiPanel clientId={carrier.id} />
     </Card>
   );
 }
+function CarrierAiPanel({ clientId }: { clientId: string }) {
+  const [state, setState] = useState<{
+    loading: boolean;
+    rec?: AiRecommendation;
+    failed?: boolean;
+  }>({ loading: false });
 
+  async function runAi() {
+    setState({ loading: true });
+    try {
+      const rec = await apiJson<AiRecommendation>("POST", "/api/dispatch/ai-recommend", {
+        clientId,
+      });
+      setState({ loading: false, rec });
+    } catch {
+      setState({ loading: false, failed: true });
+    }
+  }
+
+  return (
+    <div className="mt-2 border-t border-border/60 pt-2">
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 w-full text-[11px]"
+        onClick={runAi}
+        disabled={state.loading}
+      >
+        {state.loading ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Sparkles className="h-3.5 w-3.5" />
+        )}
+        AI-анализ
+      </Button>
+      {state.rec && (
+        <div className="mt-2 space-y-1.5 rounded-md bg-primary/5 p-2 text-[11px]">
+          <p className="leading-snug text-foreground">🤖 {state.rec.reasoning}</p>
+          {state.rec.watchOuts.length > 0 && (
+            <ul className="space-y-0.5 text-muted-foreground">
+              {state.rec.watchOuts.map((w, i) => (
+                <li key={i} className="flex gap-1">
+                  <span className="shrink-0">•</span>
+                  <span>{w}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-[10px] text-muted-foreground">
+            Уверенность: {Math.round(state.rec.confidence * 100)}%
+          </p>
+        </div>
+      )}
+      {state.failed && (
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          AI-анализ временно недоступен.
+        </p>
+      )}
+    </div>
+  );
+}
 function TopLoadCard({ load }: { load: Load }) {
   return (
     <Link href={`/loads/${load.id}`}>

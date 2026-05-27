@@ -17,6 +17,7 @@ import type { Client, Load, ScoredLoad } from "@shared/schema";
 import { getCurrentUser, requireRole } from "../auth";
 import { storage } from "../storage";
 import { scoreLoadForClient } from "../routes";
+import { getAiRecommendation } from "../lib/ai/dispatch-advisor";
 
 function ah(
   handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown> | unknown,
@@ -142,6 +143,63 @@ export function registerCockpitRoutes(app: Express): void {
         topLoads,
         suggestions: suggestions.slice(0, 20),
       });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/dispatch/ai-recommend   body: { clientId }
+  //
+  // F2 AI Dispatcher: on-demand Claude reasoning over the deterministic
+  // scorer's top loads for one assigned carrier. Returns a plain-language
+  // booking recommendation. Tenant-safe: clientId must be assigned to this
+  // dispatcher (cross-tenant => 404, same anti-enumeration policy as the rest
+  // of /api/dispatch/*). Graceful: no ANTHROPIC_API_KEY / API error => 503
+  // ai_unavailable, so the board keeps working without the AI layer.
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/dispatch/ai-recommend",
+    requireRole("dispatcher"),
+    ah(async (req, res) => {
+      const me = getCurrentUser(req);
+      if (!me) return res.status(401).json({ message: "Authentication required" });
+
+      const clientId = String((req.body as { clientId?: unknown })?.clientId ?? "").trim();
+      if (!clientId) return res.status(400).json({ message: "clientId is required" });
+
+      // Tenant gate: only carriers assigned to this dispatcher.
+      const assigned = storage.listAssignedClientsForDispatcher(me.id);
+      if (!assigned.some((c) => c.id === clientId)) {
+        return res.status(404).json({ message: "Client not found" });
+      }
+      const client = storage.getClient(clientId) as Client | undefined;
+      if (!client) return res.status(404).json({ message: "Client not found" });
+
+      const available = storage.listLoadsForClientIds([clientId], {
+        status: "available",
+        limit: 200,
+      });
+      const top = available.items
+        .map((load: Load) => scoreLoadForClient(client, load))
+        .filter((l): l is ScoredLoad => Boolean(l))
+        .sort((a, b) => b.dispatchScore - a.dispatchScore)
+        .slice(0, 5);
+
+      if (!top.length) {
+        return res.status(404).json({ message: "No scored loads available for this carrier" });
+      }
+
+      const rec = await getAiRecommendation(client, top);
+      if (!rec) {
+        return res.status(503).json({ message: "AI advisor unavailable", code: "ai_unavailable" });
+      }
+
+      storage.audit("dispatch.ai_recommend", "client", clientId, {
+        dispatcherId: me.id,
+        recommendedLoadId: rec.recommendedLoadId,
+        confidence: rec.confidence,
+        loadsConsidered: top.length,
+      });
+      return res.json(rec);
     }),
   );
 }

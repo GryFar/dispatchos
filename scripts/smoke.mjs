@@ -673,8 +673,40 @@ try {
   }
   console.log("[OK] /api/admin/users blocks non-admin (403)");
 
+  // F2 AI Dispatcher: a dispatcher passes the role gate but is tenant-scoped —
+  // requesting a client they aren't assigned to returns 404 (not 403), proving
+  // the endpoint is registered, dispatcher-reachable, and tenant-guarded.
+  let aiUnassignedStatus = 0;
+  try {
+    await request("/api/dispatch/ai-recommend", {
+      method: "POST",
+      body: { clientId: "definitely-not-assigned" },
+    });
+  } catch (err) {
+    aiUnassignedStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (aiUnassignedStatus !== 404) {
+    throw new Error(`ai-recommend for an unassigned client should be 404, got ${aiUnassignedStatus}`);
+  }
+  console.log("[OK] POST /api/dispatch/ai-recommend tenant-scopes to assigned clients (404)");
+
   await request("/api/auth/logout", { method: "POST" });
   cookieHeader = adminCookieHeader; // back to admin session
+
+  // F2 AI Dispatcher: admin is the wrong role for /api/dispatch/* — 403.
+  let aiAdminStatus = 0;
+  try {
+    await request("/api/dispatch/ai-recommend", {
+      method: "POST",
+      body: { clientId: "anything" },
+    });
+  } catch (err) {
+    aiAdminStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (aiAdminStatus !== 403) {
+    throw new Error(`ai-recommend as admin should be 403, got ${aiAdminStatus}`);
+  }
+  console.log("[OK] POST /api/dispatch/ai-recommend blocks admin (403)");
 
   // -------------------------------------------------------------------------
   // Admin POST /api/admin/users — create a stub driver, then GET by id
