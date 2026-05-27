@@ -1323,7 +1323,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   });
 
-  app.patch("/api/me/onboarding", (req, res) => {
+  app.patch("/api/me/onboarding", async (req, res) => {
     const user = getCurrentUser(req);
     if (!user) return res.status(401).json({ message: "Authentication required" });
     let body: ReturnType<typeof updateOnboardingProgressSchema.parse>;
@@ -1340,6 +1340,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const incomingMc = (body.data as { mc?: unknown } | undefined)?.mc;
     if (typeof incomingMc === "string" && incomingMc.trim()) {
       const normalized = normalizeMc(incomingMc);
+
+      // Hard reject: if FMCSA is configured and reports this docket has no
+      // active operating authority, block the save even for a free MC — a
+      // REVOKED / OUT_OF_SERVICE / NOT_AUTHORIZED carrier shouldn't get a
+      // trial. Graceful: no key / FMCSA down / docket not found => skip the
+      // check (the uniqueness claim below still applies).
+      const fmcsaKey = getIntegrationValue("fmcsa", "FMCSA_WEB_KEY") ?? process.env.FMCSA_WEBKEY;
+      if (fmcsaKey) {
+        const carrier = await fetchByMc(normalized, { webKey: fmcsaKey });
+        if (
+          carrier &&
+          (carrier.operatingStatus === "OUT_OF_SERVICE" ||
+            carrier.operatingStatus === "NOT_AUTHORIZED")
+        ) {
+          storage.audit("onboarding.mc_rejected_authority", "user", user.id, {
+            mc: normalized,
+            operatingStatus: carrier.operatingStatus,
+          });
+          return res.status(422).json({
+            message: `У этого MC# нет действующей FMCSA authority (${carrier.operatingStatus}). Trial недоступен.`,
+            code: "mc_not_authorized",
+          });
+        }
+      }
+
       // Re-claim is idempotent for the same user; release any prior MC first so
       // a user correcting a typo isn't permanently bound to the wrong docket.
       const owner = storage.getMcRegistryOwner(normalized);
