@@ -478,10 +478,19 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS onboarding_progress_completed_idx
     ON onboarding_progress(completed_at);
+
+  -- Anti-fraud trial protection: one normalized MC docket = one account.
+  -- clients live as JSON payload (no flat MC column), so we keep a dedicated
+  -- registry with a PRIMARY KEY for a hard DB-level uniqueness guarantee.
+  CREATE TABLE IF NOT EXISTS mc_account_registry (
+    mc_normalized TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    claimed_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS mc_registry_user_idx
+    ON mc_account_registry(user_id);
 `);
 ensureUserDriverColumns();
-ensureDriverDocumentsColumns();
-
 // Compliance documents — add optional client_id scope so admins can attach a
 // doc to the carrier instead of a specific user. NULL = per-driver only.
 function ensureDriverDocumentsColumns() {
@@ -716,7 +725,12 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS approval_tasks_queue_idx
     ON approval_tasks(assignee_role, status, created_at DESC);
 `);
-
+// Run additive driver_documents migrations AFTER the table exists. Previously
+// this was invoked up near onboarding setup, before the CREATE TABLE below, so
+// on a fresh DB it threw "no such table: driver_documents" at boot. Calling it
+// here (post-create) keeps the ALTER idempotent on existing DBs and correct on
+// new ones.
+ensureDriverDocumentsColumns();
 // ---------------------------------------------------------------------------
 // Phase 6.1 — Broker safety audit snapshots (SCOTUS Montgomery v. Caribe, 2026-05-14)
 // ---------------------------------------------------------------------------
@@ -1791,6 +1805,32 @@ export const storage = {
         )
         .run(userId, step, JSON.stringify(mergedData), ts, ts, completedAt);
     }
+  },
+
+  // -------------------------------------------------------------------------
+  // Anti-fraud: per-MC account registry. One normalized MC = one account.
+  // -------------------------------------------------------------------------
+  getMcRegistryOwner(mcNormalized: string): { userId: string; claimedAt: string } | undefined {
+    const row = sqlite
+      .prepare("SELECT user_id, claimed_at FROM mc_account_registry WHERE mc_normalized = ?")
+      .get(mcNormalized) as { user_id: string; claimed_at: string } | undefined;
+    return row ? { userId: row.user_id, claimedAt: row.claimed_at } : undefined;
+  },
+
+  claimMc(mcNormalized: string, userId: string): { ok: boolean; conflictUserId?: string } {
+    const existing = this.getMcRegistryOwner(mcNormalized);
+    if (existing) {
+      if (existing.userId === userId) return { ok: true };
+      return { ok: false, conflictUserId: existing.userId };
+    }
+    sqlite
+      .prepare("INSERT INTO mc_account_registry (mc_normalized, user_id, claimed_at) VALUES (?, ?, ?)")
+      .run(mcNormalized, userId, now());
+    return { ok: true };
+  },
+
+  releaseMcForUser(userId: string): void {
+    sqlite.prepare("DELETE FROM mc_account_registry WHERE user_id = ?").run(userId);
   },
 
   /**
