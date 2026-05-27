@@ -446,6 +446,81 @@ function PersonaStep({
   );
 }
 
+/**
+ * MC lookup response shape (from GET /api/onboarding/mc-lookup).
+ *
+ * The endpoint is deliberately graceful — it always returns 200 with
+ * `found: boolean` even when FMCSA is down or the docket doesn't exist.
+ * That lets the UI surface a soft warning instead of erroring out, while
+ * the hard `mc_already_claimed` gate still runs server-side on save.
+ */
+type McLookupResult = {
+  mc: string;
+  found: boolean;
+  claimedByOther: boolean;
+  fmcsaConfigured: boolean;
+  blocked?: boolean;
+  legalName?: string;
+  dotNumber?: string | null;
+  state?: string | null;
+  operatingStatus?: string;
+  authority?: string;
+};
+
+/**
+ * Debounced MC lookup hook.
+ *
+ * Fires GET /api/onboarding/mc-lookup 500ms after the user stops typing,
+ * and only when the input has at least 3 numeric chars (anything shorter
+ * is guaranteed to be a partial entry). Aborts in-flight requests when
+ * the input changes, so we never apply a stale autofill on top of a
+ * newer one. Returns null while idle / loading-without-prior-result so
+ * the caller can render a skeleton.
+ */
+function useMcLookup(mc: string): { result: McLookupResult | null; loading: boolean } {
+  const [result, setResult] = useState<McLookupResult | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const digits = mc.replace(/\D/g, "");
+    if (digits.length < 3) {
+      setResult(null);
+      setLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/onboarding/mc-lookup?mc=${encodeURIComponent(mc)}`, {
+          credentials: "include",
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          setResult(null);
+          return;
+        }
+        const data = (await res.json()) as McLookupResult;
+        setResult(data);
+      } catch (err) {
+        // AbortError on re-typing is expected; everything else is silent
+        // (uniqueness check still happens server-side on save).
+        if ((err as Error).name !== "AbortError") setResult(null);
+      } finally {
+        setLoading(false);
+      }
+    }, 500);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [mc]);
+
+  return { result, loading };
+}
+
 function CompanyStep({
   persona,
   companyName,
@@ -468,6 +543,21 @@ function CompanyStep({
   setFleetSize: (s: string) => void;
 }) {
   const isFleet = persona === "fleet" || persona === "enterprise";
+  const { result: mcLookup, loading: mcLoading } = useMcLookup(mc);
+
+  // Auto-fill empty companyName + DOT once a SAFER hit arrives; never
+  // overwrite something the user already typed (they could be correcting
+  // a discrepancy with the docket).
+  useEffect(() => {
+    if (!mcLookup?.found) return;
+    if (isFleet && !companyName && mcLookup.legalName) {
+      setCompanyName(mcLookup.legalName);
+    }
+    if (!dot && mcLookup.dotNumber) {
+      setDot(mcLookup.dotNumber);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mcLookup?.found, mcLookup?.legalName, mcLookup?.dotNumber]);
 
   return (
     <div className="space-y-6">
@@ -500,8 +590,15 @@ function CompanyStep({
               placeholder="MC-123456"
               className="border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-white placeholder:text-[#6b7390]"
             />
-            <p className="text-[10px] text-[#6b7390]">
-              We'll auto-pull authority status from FMCSA SAFER.
+            <p className="flex items-center gap-1.5 text-[10px] text-[#6b7390]">
+              {mcLoading ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>Проверяем FMCSA SAFER...</span>
+                </>
+              ) : (
+                <span>We'll auto-pull authority status from FMCSA SAFER.</span>
+              )}
             </p>
           </div>
           <div className="space-y-1.5">
@@ -514,6 +611,9 @@ function CompanyStep({
             />
           </div>
         </div>
+
+        {/* SAFER feedback panels — stacked, hardest signal first. */}
+        <McLookupFeedback result={mcLookup} loading={mcLoading} mc={mc} />
 
         {isFleet && (
           <div className="space-y-1.5">
@@ -538,6 +638,95 @@ function CompanyStep({
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Render the result of the MC lookup as a tiered set of alerts.
+ *
+ * Severity order (hardest gate first — the user should see the show-stopper
+ * before they read about the autofill that just happened):
+ *   1. claimedByOther    → hard red: server WILL 409 on save
+ *   2. blocked           → hard red: OUT_OF_SERVICE / NOT_AUTHORIZED at FMCSA
+ *   3. found + clean     → soft green: autofill succeeded, here's the legal name
+ *   4. not found         → soft amber: docket not in SAFER (typo? brand-new auth?)
+ *
+ * `fmcsaConfigured=false` means we have no FMCSA_WEBKEY in env, so we skip
+ * the network entirely and only the uniqueness check ran — don't pretend we
+ * verified the docket.
+ */
+function McLookupFeedback({
+  result,
+  loading,
+  mc,
+}: {
+  result: McLookupResult | null;
+  loading: boolean;
+  mc: string;
+}) {
+  if (loading || !result || !mc) return null;
+
+  if (result.claimedByOther) {
+    return (
+      <div className="rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] p-3 text-xs text-[#fca5a5]">
+        <p className="font-semibold">MC уже используется другим аккаунтом.</p>
+        <p className="mt-1 text-[#fca5a5]/80">
+          Один MC docket = один аккаунт. Если это ваша компания и вы видите это сообщение поошибке — напишите support@dispatchos.co, поможем вернуть доступ. До тех пор продолжить нельзя.
+        </p>
+      </div>
+    );
+  }
+
+  if (result.found && result.blocked) {
+    return (
+      <div className="rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] p-3 text-xs text-[#fca5a5]">
+        <p className="font-semibold">
+          FMCSA status: {result.operatingStatus ?? "INACTIVE"}
+        </p>
+        <p className="mt-1 text-[#fca5a5]/80">
+          Этот MC docket отображается как OUT OF SERVICE или NOT AUTHORIZED в FMCSA. Если это ошибка (recent reinstatement, DataQ ожидается) — пришлите PDF выписки в support@dispatchos.co.
+        </p>
+      </div>
+    );
+  }
+
+  if (result.found) {
+    return (
+      <div className="rounded-md border border-[rgba(52,211,153,0.25)] bg-[rgba(52,211,153,0.06)] p-3 text-xs text-[#34d399]">
+        <p className="font-semibold">✓ FMCSA SAFER подтверждён.</p>
+        <p className="mt-1 text-[#34d399]/80">
+          {[
+            result.legalName,
+            result.dotNumber && `DOT ${result.dotNumber}`,
+            result.state,
+            result.operatingStatus && result.operatingStatus !== "AUTHORIZED"
+              ? result.operatingStatus
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      </div>
+    );
+  }
+
+  // not-found branch: differentiate "FMCSA not configured" (we genuinely
+  // didn't check) from "FMCSA checked and docket missing" (suspicious).
+  if (!result.fmcsaConfigured) {
+    return (
+      <p className="text-[10px] text-[#6b7390]">
+        FMCSA SAFER не подключён в этом environment'е — пропускаем верификацию. Uniqueness MC проверяется на save.
+      </p>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-[rgba(245,158,11,0.25)] bg-[rgba(245,158,11,0.06)] p-3 text-xs text-[#fbbf24]">
+      <p className="font-semibold">FMCSA SAFER не нашёл этот MC.</p>
+      <p className="mt-1 text-[#fbbf24]/80">
+        Ещё не ввели полный номер? Или docket совсем свежий и ещё не попал в публичный SAFER? Продолжить можно — верифицируем позже автоматически.
+      </p>
     </div>
   );
 }
