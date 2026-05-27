@@ -56,6 +56,12 @@ import { registerBillingRoutes } from "./routes/billing";
 import { enrichLoadSync } from "./lib/ai";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
+import {
+  TWILIO_VERIFY_CONFIGURED,
+  sendSmsVerification,
+  checkSmsVerification,
+  lookupLineType,
+} from "./lib/twilio/verify";
 import { fetchByMc } from "./lib/ai/fmcsa";
 import { isDisposableEmail } from "./lib/disposable-domains";
 import crypto from "node:crypto";
@@ -1395,6 +1401,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
 
+    // Trial gating: phone must be verified before onboarding can complete (=
+    // trial activates). Only enforced when Twilio is configured, so local dev
+    // without credentials isn't blocked. The check reads a fresh user row in
+    // case verification happened earlier in this same session.
+    if (body.completed && TWILIO_VERIFY_CONFIGURED) {
+      const fresh = storage.getUserById(user.id);
+      if (!fresh?.phoneVerified) {
+        return res.status(403).json({
+          message: "Подтвердите номер телефона, чтобы активировать trial.",
+          code: "phone_verification_required",
+        });
+      }
+    }
+
     storage.upsertOnboardingProgress(user.id, {
       step: body.step,
       data: body.data,
@@ -1409,6 +1429,71 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     const progress = storage.getOnboardingProgress(user.id);
     return res.json({ progress });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/me/phone/send-verify   body: { phone }
+  //
+  // Twilio Verify: send an SMS code to an E.164 number during onboarding.
+  // VoIP / landline numbers are rejected (trivially disposable → trial abuse).
+  // Graceful: if Twilio isn't configured (local dev) → 503 verify_not_configured
+  // so the UI can show a "skip / not available locally" state instead of erroring.
+  // -------------------------------------------------------------------------
+  app.post("/api/me/phone/send-verify", async (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Authentication required" });
+    if (!TWILIO_VERIFY_CONFIGURED) {
+      return res.status(503).json({ message: "Verification not configured", code: "verify_not_configured" });
+    }
+    const phone = String((req.body as { phone?: unknown })?.phone ?? "").trim();
+    if (!/^\+\d{8,15}$/.test(phone)) {
+      return res.status(400).json({ message: "phone must be E.164, e.g. +13055551234" });
+    }
+
+    const lineType = await lookupLineType(phone);
+    if (lineType === "voip" || lineType === "landline") {
+      storage.audit("phone.verify_blocked", "user", user.id, { phone, lineType });
+      return res.status(422).json({ message: "phone_type_not_allowed", code: "phone_type_not_allowed", lineType });
+    }
+
+    await sendSmsVerification(phone);
+    storage.audit("phone.verify_sent", "user", user.id, { phone, lineType });
+    return res.json({ ok: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/me/phone/confirm-verify   body: { phone, code }
+  //
+  // Confirms the SMS code via Twilio and, on success, stamps the user's phone
+  // as verified (unique across verified rows — one verified number per account).
+  // -------------------------------------------------------------------------
+  app.post("/api/me/phone/confirm-verify", async (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Authentication required" });
+    const phone = String((req.body as { phone?: unknown })?.phone ?? "").trim();
+    const code = String((req.body as { code?: unknown })?.code ?? "").trim();
+    if (!phone || !code) {
+      return res.status(400).json({ message: "phone and code are required" });
+    }
+
+    const approved = await checkSmsVerification(phone, code);
+    if (!approved) {
+      storage.audit("phone.verify_failed", "user", user.id, { phone });
+      return res.status(401).json({ message: "Invalid verification code", code: "invalid_code" });
+    }
+
+    try {
+      storage.markPhoneVerified(user.id, phone);
+    } catch (err) {
+      // UNIQUE index on verified phones — this number already backs another account.
+      storage.audit("phone.verify_duplicate", "user", user.id, { phone });
+      return res.status(409).json({
+        message: "Этот номер уже привязан к другому аккаунту.",
+        code: "phone_already_verified",
+      });
+    }
+    storage.audit("phone.verified", "user", user.id, { phone });
+    return res.json({ ok: true });
   });
 
   // i18n — PATCH /api/me/preferences. Accepts a partial preferences body and

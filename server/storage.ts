@@ -412,6 +412,18 @@ function ensureUserDriverColumns() {
     // client falls back to localStorage / browser locale. 'ru' | 'en'.
     sqlite.exec("ALTER TABLE users ADD COLUMN preferred_lang TEXT");
   }
+  // Twilio SMS verification (anti-fraud trial gate). `phone` already added above.
+  if (!names.has("phone_verified")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("phone_verified_at")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN phone_verified_at TEXT");
+  }
+  // Unique only across actually-verified rows — a verified phone can back one
+  // account; unverified / NULL phones are unconstrained (partial index).
+  sqlite.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS users_phone_verified_unique ON users(phone) WHERE phone_verified = 1",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,6 +1012,9 @@ interface UserRow {
   last_login_at: string | null;
   // Phase 4 P0 columns (added via ensureUserDriverColumns()).
   phone: string | null;
+  // Twilio SMS verification (added via ensureUserDriverColumns()).
+  phone_verified: number | null;
+  phone_verified_at: string | null;
   driver_status: string | null;
   // Phase 4 P2: TG driver bot. Nullable until the driver links.
   telegram_chat_id: string | null;
@@ -1034,6 +1049,7 @@ export interface UserInternal {
   // is NOT NULL DEFAULT 'available') but only surfaced for role=driver via
   // toUserPublic. `phone` is per-user contact, any role.
   phone?: string;
+  phoneVerified: boolean;
   driverStatus?: DriverStatus;
   // Phase 4 P2: TG chat_id (string — TG IDs are int64 which overflows JS
   // number; we store as text everywhere).
@@ -1103,6 +1119,7 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     updatedAt: row.updated_at,
     lastLoginAt: row.last_login_at ?? undefined,
     phone: row.phone ?? undefined,
+    phoneVerified: row.phone_verified === 1,
     driverStatus,
     telegramChatId: row.telegram_chat_id ?? undefined,
     deletedAt: row.deleted_at ?? undefined,
@@ -1475,6 +1492,15 @@ export const storage = {
 
   recordUserLogin(id: string) {
     sqlite.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(now(), id);
+  },
+  /** Twilio: mark a user's phone confirmed. Sets phone + phone_verified + timestamp. */
+  markPhoneVerified(userId: string, phoneE164: string): void {
+    const ts = now();
+    sqlite
+      .prepare(
+        "UPDATE users SET phone = ?, phone_verified = 1, phone_verified_at = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(phoneE164, ts, ts, userId);
   },
 
   /** Audit High #11 — TOTP replay protection: last counter that was accepted. */
