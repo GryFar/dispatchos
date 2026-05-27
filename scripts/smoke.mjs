@@ -21,6 +21,11 @@ function request(path, options = {}) {
       {
         method: options.method || "GET",
         headers: {
+          // CSRF Origin check (PR #90, V3-4) rejects authenticated non-GET
+          // requests without an Origin. The server whitelists http://127.* and
+          // http://localhost, so send our own loopback origin to mimic a real
+          // same-origin browser request rather than weakening the check.
+          Origin: baseUrl,
           ...(cookieHeader ? { Cookie: cookieHeader } : {}),
           ...(body ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } : {}),
         },
@@ -63,6 +68,7 @@ function upload(path, fields, fileField) {
       {
         method: "POST",
         headers: {
+          Origin: baseUrl, // CSRF Origin check (PR #90) — same as in request()
           ...form.getHeaders(),
           ...(cookieHeader ? { Cookie: cookieHeader } : {}),
         },
@@ -94,8 +100,8 @@ function base32ToBuffer(secret) {
   return Buffer.from((bits.match(/.{8}/g) || []).map((byte) => parseInt(byte, 2)));
 }
 
-function totp(secret) {
-  const counter = Math.floor(Date.now() / 30_000);
+function totp(secret, stepOffset = 0) {
+  const counter = Math.floor(Date.now() / 30_000) + stepOffset;
   const buffer = Buffer.alloc(8);
   buffer.writeUInt32BE(Math.floor(counter / 0x100000000), 0);
   buffer.writeUInt32BE(counter & 0xffffffff, 4);
@@ -133,6 +139,15 @@ const proc = spawn(process.execPath, ["dist/index.cjs"], {
     DISPATCHOS_DB_PATH: `smoke-${Date.now()}.db`,
     DISPATCHOS_DATA_ROOT: `smoke-data-${Date.now()}`,
     DISPATCHOS_RATE_LIMIT_PER_MINUTE: "5000",
+    // Boot-gate (Critical #3, PR #71) refuses to start in production mode
+    // without a real session secret. Provide an ephemeral 64-char hex secret
+    // for the smoke run — not a known placeholder, satisfies the >= 32 check.
+    DISPATCHOS_SESSION_SECRET: crypto.randomBytes(32).toString("hex"),
+    // Cookie defaults to Secure in production mode (PR #71), but the smoke
+    // server runs over plain http://127.0.0.1, so a Secure cookie would never
+    // round-trip and every post-login request would look unauthenticated.
+    // Disable Secure for the local smoke run only.
+    DISPATCHOS_COOKIE_SECURE: "false",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -475,7 +490,10 @@ try {
   // Re-login still works after logout (proves persistent session store is alive).
   await request("/api/auth/login", {
     method: "POST",
-    body: { username: "owner", password: "SmokePassword123!", token: totp(setup.totpSecret) },
+    // Re-login within the same 30s window would reuse the previous TOTP code,
+    // which the replay guard (PR #99) now rejects. Use the next time-step's
+    // code (counter+1, still inside the server's ±1 window) to get a fresh one.
+    body: { username: "owner", password: "SmokePassword123!", token: totp(setup.totpSecret, 1) },
   });
   const reMe = await request("/api/me");
   if (reMe.id !== me.id) {
@@ -3141,6 +3159,62 @@ try {
     throw new Error(`watchlist should block admin with 403, got ${watchForbidden}`);
   }
   console.log("[OK] GET /api/dispatch/watchlist blocks admin (403)");
+
+  // ===========================================================================
+  // Anti-fraud — one MC docket = one account (onboarding MC claim)
+  // ===========================================================================
+  const fraudMc = "MC-FRAUDTEST-9001";
+
+  // Account A (admin session) claims the MC via onboarding.
+  cookieHeader = adminCookieHeader;
+  await request("/api/me/onboarding", {
+    method: "PATCH",
+    body: { step: 2, data: { mc: fraudMc } },
+  });
+  console.log("[OK] onboarding MC claim (account A)");
+
+  // Account A re-saving the same MC is idempotent (no 409).
+  await request("/api/me/onboarding", {
+    method: "PATCH",
+    body: { step: 2, data: { mc: fraudMc } },
+  });
+  console.log("[OK] onboarding MC re-claim by same account is idempotent");
+
+  // Account B (dispatcher session) tries the same MC → must be rejected 409.
+  cookieHeader = dispCookie;
+  let mcConflictStatus = 0;
+  let mcConflictCode = "";
+  try {
+    await request("/api/me/onboarding", {
+      method: "PATCH",
+      body: { step: 2, data: { mc: fraudMc } },
+    });
+  } catch (err) {
+    mcConflictStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    mcConflictCode = /mc_already_claimed/.test(String(err.message)) ? "mc_already_claimed" : "";
+  }
+  if (mcConflictStatus !== 409 || mcConflictCode !== "mc_already_claimed") {
+    throw new Error(
+      `duplicate MC should be 409 mc_already_claimed, got ${mcConflictStatus} ${mcConflictCode}`,
+    );
+  }
+  console.log("[OK] onboarding MC claim blocks a second account (409)");
+
+  // Normalization: account B trying an equivalent unprefixed form is also blocked.
+  let mcNormConflict = 0;
+  try {
+    await request("/api/me/onboarding", {
+      method: "PATCH",
+      body: { step: 2, data: { mc: "9001" } }, // normalizes to MC-9001, different docket — should PASS
+    });
+  } catch (err) {
+    mcNormConflict = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  // "9001" normalizes to MC-9001 (not MC-FRAUDTEST-9001), so B may claim it freely.
+  if (mcNormConflict !== 0) {
+    throw new Error(`MC-9001 is a different docket and should not conflict, got ${mcNormConflict}`);
+  }
+  console.log("[OK] onboarding MC claim distinguishes distinct dockets");
 
 } catch (error) {
   console.error("[FAIL]", error.message);

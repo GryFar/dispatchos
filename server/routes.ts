@@ -1284,6 +1284,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (err) {
       return handleZodError(err, res);
     }
+
+    // Anti-fraud: one MC docket = one account. If this onboarding step carries
+    // a company MC, normalize it (V3-9) and claim it for this user. A claim
+    // held by a different account blocks the save — stops a single carrier
+    // from spinning up unlimited free trials under the same MC.
+    const incomingMc = (body.data as { mc?: unknown } | undefined)?.mc;
+    if (typeof incomingMc === "string" && incomingMc.trim()) {
+      const normalized = normalizeMc(incomingMc);
+      // Re-claim is idempotent for the same user; release any prior MC first so
+      // a user correcting a typo isn't permanently bound to the wrong docket.
+      const owner = storage.getMcRegistryOwner(normalized);
+      if (owner && owner.userId !== user.id) {
+        return res.status(409).json({
+          message: "Этот MC# уже привязан к другому аккаунту. Если это ошибка — свяжитесь с поддержкой.",
+          code: "mc_already_claimed",
+        });
+      }
+      if (!owner) {
+        storage.releaseMcForUser(user.id); // drop a previously-claimed (mistyped) MC
+        storage.claimMc(normalized, user.id);
+        storage.audit("onboarding.mc_claimed", "user", user.id, { mc: normalized });
+      }
+    }
+
     storage.upsertOnboardingProgress(user.id, {
       step: body.step,
       data: body.data,
