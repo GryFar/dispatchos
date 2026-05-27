@@ -1,22 +1,28 @@
+import { useEffect, useState } from "react";
 import { useRoute, useLocation } from "wouter";
 import { TrustBadge } from "@/components/dispatch/TrustBadge";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   Building2,
+  Check,
   Clock,
   Gauge,
   History,
   Loader2,
   MapPin,
+  Pencil,
   Truck,
   UserCircle2,
+  X,
 } from "lucide-react";
 import type { CheckinKind, LoadCheckin, LoadFull, AuditEvent } from "@shared/schema";
 import { apiJson, ApiError } from "@/lib/queryClient";
 import { formatMoney, formatDateFull, formatMiles, formatMc } from "@/lib/format";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
+import { useToast } from "@/hooks/use-toast";
 
 /**
  * /admin/loads/:id — full admin load detail.
@@ -198,23 +204,14 @@ export default function AdminLoadDetailPage() {
         </Card>
       </div>
 
-      {/* Driver assignment (read-only) */}
-      <Card className="p-4">
-        <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          <UserCircle2 className="h-3.5 w-3.5" /> Назначение
-        </p>
-        {load.driverId ? (
-          <>
-            <p className="mt-2 text-sm font-medium">{load.driverName ?? "Водитель"}</p>
-            <p className="mt-0.5 font-mono text-xs text-muted-foreground">{load.driverId}</p>
-            {load.bookedAt && (
-              <p className="mt-1 text-xs text-muted-foreground">Booked: {load.bookedAt}</p>
-            )}
-          </>
-        ) : (
-          <p className="mt-2 text-sm text-muted-foreground">Водитель не назначен</p>
-        )}
-      </Card>
+      {/* Driver assignment — admin can reassign inline */}
+      <DriverAssignmentCard
+        loadId={loadId!}
+        clientId={load.clientId ?? null}
+        driverId={load.driverId ?? null}
+        driverName={load.driverName ?? null}
+        bookedAt={load.bookedAt ?? null}
+      />
 
       {load.notes && (
         <Card className="p-4">
@@ -363,6 +360,169 @@ function BackBar({ onClick }: { onClick: () => void }) {
     >
       <ArrowLeft className="h-4 w-4" /> Назад к грузам
     </button>
+  );
+}
+
+/**
+ * Driver assignment card for the admin load detail.
+ *
+ * Read-mode shows current driver (or "Не назначен") + an Отредактировать
+ * button. Edit-mode replaces the value with a <select> populated from
+ * GET /api/admin/clients/:clientId/drivers (added 2026-05-27 in admin.ts),
+ * plus Save/Cancel. PATCH goes to /api/admin/loads/:id/driver.
+ *
+ * Why not always show the dropdown:
+ *  - The card is also a quick-glance summary; an unexpanded version keeps
+ *    the page calmer for the 99% case where the assignment is fine.
+ *  - Loading the driver list is a separate fetch, so we defer it until
+ *    the admin actually wants to reassign.
+ */
+function DriverAssignmentCard({
+  loadId,
+  clientId,
+  driverId,
+  driverName,
+  bookedAt,
+}: {
+  loadId: string;
+  clientId: string | null;
+  driverId: string | null;
+  driverName: string | null;
+  bookedAt: string | null;
+}) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [selectedId, setSelectedId] = useState<string>("");
+
+  useEffect(() => {
+    if (editing) setSelectedId(driverId ?? "");
+  }, [editing, driverId]);
+
+  type DriverRow = { id: string; fullName: string; email: string; driverStatus: string };
+  const driversQuery = useQuery<{ drivers: DriverRow[] }>({
+    queryKey: ["/api/admin/clients", clientId, "drivers"],
+    queryFn: () =>
+      apiJson<{ drivers: DriverRow[] }>("GET", `/api/admin/clients/${clientId}/drivers`),
+    enabled: editing && Boolean(clientId),
+  });
+
+  const reassign = useMutation({
+    mutationFn: async (newDriverId: string | null) =>
+      apiJson<AdminLoad>("PATCH", `/api/admin/loads/${loadId}/driver`, {
+        driverId: newDriverId,
+      }),
+    onSuccess: () => {
+      toast({ title: "Водитель обновлён" });
+      setEditing(false);
+      qc.invalidateQueries({ queryKey: ["/api/admin/loads", loadId] });
+      qc.invalidateQueries({ queryKey: ["/api/admin/loads"] });
+    },
+    onError: (err: unknown) => {
+      const message = err instanceof ApiError ? err.message : "Не удалось обновить водителя";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    },
+  });
+
+  const canEdit = Boolean(clientId);
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-start justify-between gap-3">
+        <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <UserCircle2 className="h-3.5 w-3.5" /> Назначение
+        </p>
+        {!editing && canEdit && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 px-2.5 text-xs"
+            onClick={() => setEditing(true)}
+            data-testid="button-reassign-driver"
+          >
+            <Pencil className="h-3 w-3" />
+            {driverId ? "Переназначить" : "Назначить"}
+          </Button>
+        )}
+      </div>
+
+      {!editing ? (
+        driverId ? (
+          <>
+            <p className="mt-2 text-sm font-medium">{driverName ?? "Водитель"}</p>
+            <p className="mt-0.5 font-mono text-xs text-muted-foreground">{driverId}</p>
+            {bookedAt && (
+              <p className="mt-1 text-xs text-muted-foreground">Booked: {bookedAt}</p>
+            )}
+          </>
+        ) : (
+          <p className="mt-2 text-sm text-muted-foreground">Водитель не назначен</p>
+        )
+      ) : (
+        <div className="mt-3 space-y-2">
+          {driversQuery.isLoading && (
+            <p className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" /> Загружаем водителей...
+            </p>
+          )}
+          {driversQuery.error && (
+            <p className="text-xs text-destructive">Не удалось загрузить список водителей.</p>
+          )}
+          {driversQuery.data && (
+            <>
+              <select
+                value={selectedId}
+                onChange={(e) => setSelectedId(e.target.value)}
+                disabled={reassign.isPending}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
+                data-testid="select-driver"
+              >
+                <option value="">— Снять назначение —</option>
+                {driversQuery.data.drivers.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.fullName} · {d.driverStatus}
+                    {d.id === driverId ? " (текущий)" : ""}
+                  </option>
+                ))}
+              </select>
+              {driversQuery.data.drivers.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  У этого клиента нет водителей — добавьте в «Пользователи».
+                </p>
+              )}
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 gap-1.5 px-2.5 text-xs"
+                  onClick={() => setEditing(false)}
+                  disabled={reassign.isPending}
+                >
+                  <X className="h-3 w-3" /> Отмена
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 gap-1.5 px-2.5 text-xs"
+                  onClick={() => reassign.mutate(selectedId === "" ? null : selectedId)}
+                  disabled={reassign.isPending || selectedId === (driverId ?? "")}
+                  data-testid="button-save-driver"
+                >
+                  {reassign.isPending ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Check className="h-3 w-3" />
+                  )}
+                  Сохранить
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 
