@@ -1724,6 +1724,111 @@ export function registerAdminRoutes(app: Express): void {
   });
 
   // -------------------------------------------------------------------------
+  // PATCH /api/admin/loads/:id/driver
+  //
+  // 2026-05-27 — admin reassign-driver UI (tracker backlog item, was waiting
+  // ~5 min of FE work). Backend mirrors the dispatcher endpoint at
+  // PATCH /api/dispatch/loads/:id but without the
+  // `loadIsVisibleToDispatcher` guard — admins have full visibility by role.
+  //
+  // Body: { driverId: string | null }
+  //   - null      → unassign the driver from this load
+  //   - <userId>  → assign; driver must (a) exist, (b) have role='driver',
+  //                 (c) not be blocked, (d) be linked to the same client as
+  //                 the load.
+  // -------------------------------------------------------------------------
+  app.patch("/api/admin/loads/:id/driver", admin, (req, res) => {
+    const actor = getCurrentUser(req);
+    if (!actor) return res.status(401).json({ message: "Authentication required" });
+
+    const id = String(req.params.id);
+    const body = (req.body ?? {}) as { driverId?: unknown };
+
+    // Inline validation — keep parity with dispatcher PATCH but without
+    // pulling another zod schema into shared/.
+    let driverId: string | null;
+    if (body.driverId === null || body.driverId === undefined) {
+      driverId = null;
+    } else if (typeof body.driverId === "string" && body.driverId.length > 0) {
+      driverId = body.driverId;
+    } else {
+      return res.status(400).json({
+        message: "Validation failed",
+        issues: [{ path: ["driverId"], message: "driverId must be a string or null" }],
+      });
+    }
+
+    const rawLoad = storage.getLoad(id);
+    if (!rawLoad) return res.status(404).json({ message: "Load not found" });
+    const load = rawLoad as typeof rawLoad & {
+      clientId?: string;
+      driverId?: string | null;
+    };
+
+    if (driverId !== null) {
+      const driver = storage.getUserById(driverId);
+      if (!driver || driver.role !== "driver") {
+        return res
+          .status(400)
+          .json({ message: "driverId must reference an existing driver" });
+      }
+      if (driver.blocked) {
+        return res.status(400).json({ message: "Driver is blocked" });
+      }
+      if (!load.clientId) {
+        return res
+          .status(400)
+          .json({ message: "Load has no clientId; cannot assign a driver" });
+      }
+      if (driver.linkedClientId !== load.clientId) {
+        return res
+          .status(400)
+          .json({ message: "Driver is not linked to this load's client" });
+      }
+    }
+
+    const previousDriverId = load.driverId ?? null;
+    const updated = storage.upsertLoad({
+      ...load,
+      driverId: driverId ?? undefined,
+    } as Parameters<typeof storage.upsertLoad>[0]);
+
+    storage.audit("load.driver_reassigned", "load", id, {
+      actorUserId: actor.id,
+      via: "admin",
+      from: previousDriverId,
+      to: driverId,
+    });
+
+    return res.json(updated);
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/clients/:clientId/drivers
+  //
+  // Helper for the reassign UI — returns the active (non-blocked, non-deleted)
+  // drivers linked to a given client so the dropdown can populate without
+  // pulling the full /api/admin/users list.
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/clients/:clientId/drivers", admin, (req, res) => {
+    const clientId = String(req.params.clientId);
+    const client = storage.getClient(clientId);
+    if (!client) return res.status(404).json({ message: "Client not found" });
+
+    const drivers = storage
+      .listUsers({ role: "driver" })
+      .filter((u) => u.linkedClientId === clientId)
+      .map((u) => ({
+        id: u.id,
+        fullName: u.fullName,
+        email: u.email,
+        driverStatus: u.driverStatus ?? "available",
+      }));
+
+    return res.json({ drivers });
+  });
+
+  // -------------------------------------------------------------------------
   // GET /api/admin/detention/upcoming
   //
   // Returns loads that currently have a pickup_arrived or delivery_arrived
