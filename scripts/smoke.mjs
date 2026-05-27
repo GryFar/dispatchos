@@ -3200,19 +3200,22 @@ try {
   }
   console.log("[OK] onboarding MC claim blocks a second account (409)");
 
-  // Normalization: account B trying an equivalent unprefixed form is also blocked.
-  let mcNormConflict = 0;
+  // A genuinely different docket (different digits) must NOT conflict — account
+  // B can claim it freely. (Note: "MC-FRAUDTEST-9001" normalizes to MC-9001
+  // since normalizeMc keeps only digits, so we use 7777 here for a clean,
+  // distinct docket.)
+  let mcDistinct = -1;
   try {
-    await request("/api/me/onboarding", {
+    const r = await request("/api/me/onboarding", {
       method: "PATCH",
-      body: { step: 2, data: { mc: "9001" } }, // normalizes to MC-9001, different docket — should PASS
+      body: { step: 2, data: { mc: "MC-7777" } },
     });
+    mcDistinct = 200; // request() throws on non-2xx, so reaching here = success
   } catch (err) {
-    mcNormConflict = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    mcDistinct = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
   }
-  // "9001" normalizes to MC-9001 (not MC-FRAUDTEST-9001), so B may claim it freely.
-  if (mcNormConflict !== 0) {
-    throw new Error(`MC-9001 is a different docket and should not conflict, got ${mcNormConflict}`);
+  if (mcDistinct !== 200) {
+    throw new Error(`distinct docket MC-7777 should be claimable, got ${mcDistinct}`);
   }
   console.log("[OK] onboarding MC claim distinguishes distinct dockets");
 
