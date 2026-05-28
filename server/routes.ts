@@ -615,10 +615,19 @@ function handleBadRequest(error: unknown, res: any) {
 // only digits are given (the common broker case).
 function normalizeMc(value: string) {
   const raw = String(value ?? "").trim().toUpperCase();
-  const digits = raw.replace(/\D/g, "");
-  if (!digits) return raw;
+  
   const prefixMatch = raw.match(/^(MC|MX|FF)\b/);
   const prefix = prefixMatch ? prefixMatch[1] : "MC";
+  // V4-007: use only the FIRST contiguous run of digits — the actual docket
+  // number — not every digit in the string. Taking all digits meant
+  // "MC-9001" and "MC-9001-X2" (-> 90012) normalized to different keys for the
+  // same docket, letting one MC be registered twice with junk suffixes and
+  // bypassing the uniqueness gate. We read digits AFTER the prefix so the
+  // prefix's own letters never interfere.
+  const afterPrefix = prefixMatch ? raw.slice(prefixMatch[0].length) : raw;
+  const docketMatch = afterPrefix.match(/\d+/);
+  const digits = docketMatch ? docketMatch[0] : "";
+  if (!digits) return raw;
   return `${prefix}-${digits}`;
 }
 
