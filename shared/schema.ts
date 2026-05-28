@@ -732,7 +732,7 @@ export type SignupResponse = z.infer<typeof signupResponseSchema>;
 /** Body for POST /api/auth/totp/confirm-signup */
 export const totpConfirmSignupSchema = z.object({
   pendingConfirmationToken: z.string().min(1),
-  code: z.string().length(6).regex(/^\d{6}$/, "Must be 6 digits"),
+  token: z.string().length(6),
 });
 export type TotpConfirmSignupInput = z.infer<typeof totpConfirmSignupSchema>;
 
