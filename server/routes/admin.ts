@@ -2393,6 +2393,35 @@ export function registerAdminRoutes(app: Express): void {
     });
     return res.status(201).json({ ok: true, id });
   });
+
+  // -------------------------------------------------------------------------
+  // GET /api/admin/broker-trust/:mc/signals — admin read of raw signals + counts.
+  // No score computation (separate PR). Source of truth for future scoring UI.
+  // -------------------------------------------------------------------------
+  app.get("/api/admin/broker-trust/:mc/signals", admin, (req, res) => {
+    const mc = String(req.params.mc ?? "").trim();
+    if (!mc) return res.status(400).json({ message: "mc is required" });
+    const since = typeof req.query.since === "string" ? req.query.since : undefined;
+    const types = typeof req.query.types === "string"
+      ? req.query.types.split(",").filter(Boolean) : undefined;
+    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    const signals = storage.listBrokerTrustSignals(mc, { since, types, limit });
+    const counts  = storage.countBrokerTrustSignalsByType(mc);
+    return res.json({
+      mc, total: signals.length, counts,
+      signals: signals.map((r) => ({
+        id: r.id as string,
+        brokerMc: r.broker_mc as string,
+        loadId: (r.load_id as string) ?? null,
+        clientId: (r.client_id as string) ?? null,
+        signalType: r.signal_type as string,
+        positive: Boolean(r.positive),
+        notes: (r.notes as string) ?? null,
+        reportedByUserId: (r.reported_by_user_id as string) ?? null,
+        reportedAt: r.reported_at as string,
+      })),
+    });
+  });
 }
 
 // ===========================================================================

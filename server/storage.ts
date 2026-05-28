@@ -436,6 +436,22 @@ function ensureUserDriverColumns() {
         AND totp_confirmed_at IS NULL
     `);
   }
+  // feat/twilio-verify-phone-email — phone + email verification columns.
+  if (!names.has("phone_verified")) {
+    sqlite.exec(
+      "ALTER TABLE users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0",
+    );
+    // Partial UNIQUE index: one verified number per account; unverified NULL unconstrained.
+    sqlite.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS users_phone_verified_unique ON users(phone) WHERE phone_verified = 1",
+    );
+  }
+  if (!names.has("phone_verified_at")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN phone_verified_at TEXT");
+  }
+  if (!names.has("email_verified_at")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN email_verified_at TEXT");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,6 +1083,10 @@ interface UserRow {
   unit_number: string | null;
   // fix/totp-onboarding-verify — NULL until user enters a valid code after signup.
   totp_confirmed_at: string | null;
+  // feat/twilio-verify-phone-email
+  phone_verified: number | null;
+  phone_verified_at: string | null;
+  email_verified_at: string | null;
 }
 
 export interface UserInternal {
@@ -1107,6 +1127,10 @@ export interface UserInternal {
   unitNumber?: string;
   // fix/totp-onboarding-verify — NULL until confirmed; blocks login if NULL and totpSecret is set.
   totpConfirmedAt?: string;
+  // feat/twilio-verify-phone-email
+  phoneVerified: boolean;
+  phoneVerifiedAt?: string;
+  emailVerifiedAt?: string;
 }
 
 // Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
@@ -1175,6 +1199,9 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
         : undefined,
     unitNumber: row.unit_number ?? undefined,
     totpConfirmedAt: row.totp_confirmed_at ?? undefined,
+    phoneVerified: row.phone_verified === 1,
+    phoneVerifiedAt: row.phone_verified_at ?? undefined,
+    emailVerifiedAt: row.email_verified_at ?? undefined,
   };
 }
 
@@ -1201,6 +1228,9 @@ function toUserPublic(user: UserInternal, extras?: { assignedClientIds?: string[
     // admin UI reads it for all roles to show in user tables, but it is
     // semantically a driver-only field.
     unitNumber: user.unitNumber ?? null,
+    // feat/twilio-verify-phone-email
+    phoneVerifiedAt: user.phoneVerifiedAt ?? null,
+    emailVerifiedAt: user.emailVerifiedAt ?? null,
   };
 }
 
@@ -1571,6 +1601,24 @@ export const storage = {
       )
       .run(ts, ts, id);
     return this.getUserById(id);
+  },
+
+  /** feat/twilio-verify-phone-email — stamp phone_verified + phone_verified_at. */
+  markPhoneVerified(userId: string, phoneE164: string): void {
+    const ts = now();
+    sqlite
+      .prepare(
+        "UPDATE users SET phone = ?, phone_verified = 1, phone_verified_at = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(phoneE164, ts, ts, userId);
+  },
+
+  /** feat/twilio-verify-phone-email — stamp email_verified_at. */
+  markEmailVerified(userId: string): void {
+    const ts = now();
+    sqlite
+      .prepare("UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?), updated_at = ? WHERE id = ?")
+      .run(ts, ts, userId);
   },
 
   /** i18n — persist the user's UI language choice (cross-device). */
@@ -3025,6 +3073,44 @@ export const storage = {
       .run(id, JSON.stringify(load), existing ? timestamp : timestamp, timestamp, clientIdCol, bookedAtCol, driverIdCol);
 
     this.audit(existing ? "load.updated" : "load.created", "load", id, load);
+
+    // Broker Trust auto write-paths — Killer Feature #1.
+    const anyExisting = existing as any;
+    const brokerMc = (anyLoad.brokerMc ?? anyLoad.broker_mc ?? "") as string;
+    if (brokerMc) {
+      const rate = typeof anyLoad.rate === "number" ? anyLoad.rate : null;
+
+      // load_booked: bookedAt newly set for the first time
+      if (!anyExisting?.bookedAt && !anyExisting?.booked_at && bookedAtCol) {
+        this.appendBrokerTrustSignal({
+          brokerMc, brokerName: (anyLoad.brokerName ?? null) as string | null,
+          loadId: id, clientId: clientIdCol, signalType: "load_booked", positive: true,
+          valueJson: rate !== null ? { rate } : undefined, source: "automatic",
+        });
+      }
+
+      // load_completed: status transitions to completed
+      const wasCompleted = anyExisting?.status === "completed" || !!(anyExisting?.deliveredAt ?? anyExisting?.delivered_at);
+      const isCompleted  = anyLoad.status === "completed" || !!(anyLoad.deliveredAt ?? anyLoad.delivered_at);
+      if (!wasCompleted && isCompleted) {
+        this.appendBrokerTrustSignal({
+          brokerMc, brokerName: (anyLoad.brokerName ?? null) as string | null,
+          loadId: id, clientId: clientIdCol, signalType: "load_completed", positive: true,
+          valueJson: rate !== null ? { rate } : undefined, source: "automatic",
+        });
+      }
+
+      // load_cancelled_by_broker: status transitions to cancelled
+      if (anyExisting?.status !== "cancelled" && anyLoad.status === "cancelled") {
+        this.appendBrokerTrustSignal({
+          brokerMc, brokerName: (anyLoad.brokerName ?? null) as string | null,
+          loadId: id, clientId: clientIdCol, signalType: "load_cancelled_by_broker", positive: false,
+          notes: (anyLoad.cancelReason ?? anyLoad.cancel_reason ?? null) as string | null,
+          source: "automatic",
+        });
+      }
+    }
+
     return load;
   },
 
@@ -3888,6 +3974,73 @@ export const storage = {
       FROM broker_trust_signals
       GROUP BY broker_mc
     `).all() as Array<{ broker_mc: string; total: number; positives: number }>;
+  },
+
+
+  // -------------------------------------------------------------------------
+  // Broker Trust MVP auto write-path helpers — Killer Feature #1.
+  // appendBrokerTrustSignal — unified write entry point, source-tagged.
+  // listBrokerTrustSignals  — filtered read for admin endpoint.
+  // countBrokerTrustSignalsByType — per-MC type breakdown.
+  // -------------------------------------------------------------------------
+
+  /** Append a trust signal from any automatic write-path. */
+  appendBrokerTrustSignal(input: {
+    brokerMc: string;
+    brokerName?: string | null;
+    loadId?: string | null;
+    clientId?: string | null;
+    signalType: string;
+    positive: boolean;
+    valueJson?: unknown;
+    notes?: string | null;
+    reportedByUserId?: string | null;
+    source: "automatic" | "dispatcher" | "driver" | "fmcsa" | "integration";
+  }): string {
+    const id = makeId("bts");
+    const ts = now();
+    const notesStr = input.notes ? `[${input.source}] ${input.notes}` : `[${input.source}]`;
+    sqlite.prepare(`
+      INSERT OR IGNORE INTO broker_trust_signals (
+        id, broker_mc, load_id, client_id, signal_type, positive,
+        value_json, notes, reported_by_user_id, reported_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, input.brokerMc, input.loadId ?? null, input.clientId ?? null,
+      input.signalType, input.positive ? 1 : 0,
+      input.valueJson !== undefined ? JSON.stringify(input.valueJson) : null,
+      notesStr, input.reportedByUserId ?? null, ts, ts,
+    );
+    return id;
+  },
+
+  /** List signals for a broker MC with optional filters. */
+  listBrokerTrustSignals(
+    brokerMc: string,
+    opts: { since?: string; types?: string[]; limit?: number } = {},
+  ): Array<Record<string, unknown>> {
+    const limit = Math.min(opts.limit ?? 200, 500);
+    const where: string[] = ["broker_mc = ?"];
+    const params: unknown[] = [brokerMc];
+    if (opts.since) { where.push("reported_at >= ?"); params.push(opts.since); }
+    if (opts.types && opts.types.length > 0) {
+      where.push(`signal_type IN (${opts.types.map(() => "?").join(",")})`);
+      params.push(...opts.types);
+    }
+    params.push(limit);
+    return (sqlite.prepare(
+      `SELECT * FROM broker_trust_signals WHERE ${where.join(" AND ")} ORDER BY reported_at DESC LIMIT ?`,
+    ) as unknown as { all: (...a: unknown[]) => unknown[] }).all(...params) as Array<Record<string, unknown>>;
+  },
+
+  /** Count signals per signal_type for a broker MC. */
+  countBrokerTrustSignalsByType(brokerMc: string): Record<string, number> {
+    const rows = sqlite.prepare(
+      `SELECT signal_type, COUNT(*) as cnt FROM broker_trust_signals WHERE broker_mc = ? GROUP BY signal_type`,
+    ).all(brokerMc) as Array<{ signal_type: string; cnt: number }>;
+    const result: Record<string, number> = {};
+    for (const r of rows) result[r.signal_type] = r.cnt;
+    return result;
   },
 
   // -------------------------------------------------------------------------
@@ -5271,3 +5424,54 @@ export const storage = {
     };
   },
 };
+
+// ---------------------------------------------------------------------------
+// Broker Trust backfill — runs once at startup when signals is empty.
+// ---------------------------------------------------------------------------
+export function backfillBrokerTrustSignals(): { backfilled: number } {
+  const signalCount = (sqlite.prepare("SELECT COUNT(*) AS c FROM broker_trust_signals").get() as { c: number }).c;
+  const loadCount   = (sqlite.prepare("SELECT COUNT(*) AS c FROM loads").get() as { c: number }).c;
+  if (signalCount > 0 || loadCount === 0) return { backfilled: 0 };
+
+  const loadRows = sqlite.prepare("SELECT payload FROM loads").all() as Array<{ payload: string }>;
+  let backfilled = 0;
+  const ts = new Date().toISOString();
+  const insertStmt = sqlite.prepare(`
+    INSERT OR IGNORE INTO broker_trust_signals (
+      id, broker_mc, load_id, client_id, signal_type, positive,
+      value_json, notes, reported_by_user_id, reported_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  type Row = { sig: string; loadId: string; mc: string; cid: string | null; rate: number | null };
+  const rows: Row[] = [];
+
+  for (const row of loadRows) {
+    try {
+      const load = JSON.parse(row.payload) as Record<string, unknown>;
+      const mc = ((load.brokerMc ?? load.broker_mc ?? "") as string).trim();
+      if (!mc) continue;
+      const loadId = (load.id ?? "") as string;
+      const cid = (load.clientId ?? load.client_id ?? null) as string | null;
+      const rate = typeof load.rate === "number" ? load.rate : null;
+      if (load.bookedAt || load.booked_at)
+        { rows.push({ sig: "load_booked", loadId, mc, cid, rate }); backfilled++; }
+      if (load.status === "completed" || load.deliveredAt || load.delivered_at)
+        { rows.push({ sig: "load_completed", loadId, mc, cid, rate }); backfilled++; }
+    } catch { /* skip */ }
+  }
+
+  const doInsert = sqlite.transaction((batch: Row[]) => {
+    for (const r of batch) {
+      insertStmt.run(
+        `bts_bf_${r.loadId}_${r.sig}`, r.mc, r.loadId, r.cid,
+        r.sig, 1,
+        r.rate !== null ? JSON.stringify({ rate: r.rate }) : null,
+        "[automatic] backfill", null, ts, ts,
+      );
+    }
+  });
+  if (rows.length > 0) doInsert(rows);
+  console.log(`[broker-trust] backfill: ${backfilled} signals from ${loadRows.length} loads`);
+  return { backfilled };
+}
