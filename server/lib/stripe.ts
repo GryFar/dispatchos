@@ -26,7 +26,7 @@
 import Stripe from "stripe";
 import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
-import { PLANS, stripePriceForTier, planForClient } from "./plans";
+import { PLANS, stripePriceForTier, tierForStripePrice, planForClient } from "./plans";
 
 let _stripe: Stripe | null = null;
 
@@ -267,11 +267,30 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
                 ? "canceled"
                 : (client as { billingStatus?: string }).billingStatus ?? "trial";
 
+      // V4-010: derive the plan tier from the price actually on the
+      // subscription, not from metadata. metadata.tier is set once at checkout
+      // and never changes — so a Customer-Portal plan change (which swaps the
+      // subscription's price) would otherwise leave planTier stale, and a
+      // mismatched metadata could grant a tier that wasn't paid for. The price
+      // on the live subscription is the authoritative, Stripe-verified signal.
+      const paidPriceId = sub.items?.data?.[0]?.price?.id ?? "";
+      const resolvedTier = tierForStripePrice(paidPriceId);
+      const metadataTier = sub.metadata?.tier ?? null;
+      if (resolvedTier && metadataTier && resolvedTier !== metadataTier) {
+        console.warn(
+          `[stripe] tier mismatch on ${sub.id}: metadata=${metadataTier} ` +
+            `price=${resolvedTier} — using price-derived tier`,
+        );
+      }
+
       const updates: Record<string, unknown> = {
         stripeSubscriptionId: sub.id,
         billingStatus,
         trialEndsAt: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : undefined,
       };
+      // Only set planTier when we could resolve it from the price; never
+      // downgrade to an unverified metadata value or wipe an existing tier.
+      if (resolvedTier) updates.planTier = resolvedTier;
       storage.upsertClient({
         ...(client as unknown as Parameters<typeof storage.upsertClient>[0]),
         ...updates,
