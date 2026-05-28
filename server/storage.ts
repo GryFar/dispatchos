@@ -1834,6 +1834,18 @@ export const storage = {
   },
 
   /**
+   * Reverse lookup — returns the MC docket this user has claimed, if any.
+   * Used by Audit v4 V4-003 to gate onboarding completion (no MC = no
+   * trial). Returns undefined if the user has never claimed an MC.
+   */
+  findMcByUserId(userId: string): { mcNormalized: string; claimedAt: string } | undefined {
+    const row = sqlite
+      .prepare("SELECT mc_normalized, claimed_at FROM mc_account_registry WHERE user_id = ?")
+      .get(userId) as { mc_normalized: string; claimed_at: string } | undefined;
+    return row ? { mcNormalized: row.mc_normalized, claimedAt: row.claimed_at } : undefined;
+  },
+
+  /**
    * Phase 7 — presence: bump last_seen_at. Called from the /api middleware
    * on every authenticated request (throttled in-process to 30s/user). Does
    * NOT update updated_at because that would invalidate caches across the

@@ -1395,6 +1395,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
 
+    // Audit v4 V4-003 — hard gate: cannot mark onboarding completed without
+    // having claimed an MC docket through this same flow. Previously a user
+    // could PATCH `{ completed: true }` with no MC and skip MC-uniqueness
+    // (V4-001 #104) + FMCSA REVOKED reject (V4-001 #107) entirely, getting
+    // a 14-day trial without any identity proof. Trial-farming hole.
+    //
+    // The MC can arrive either in THIS request (handled above) or be
+    // already claimed from an earlier PATCH — we check the registry for
+    // any docket owned by this user.
+    if (body.completed) {
+      const claimedMc = storage.findMcByUserId(user.id);
+      if (!claimedMc) {
+        storage.audit("onboarding.completion_rejected_no_mc", "user", user.id, {
+          step: body.step,
+        });
+        return res.status(422).json({
+          message:
+            "Нельзя завершить onboarding без MC#. Введите ваш MC номер и дождитесь FMCSA SAFER верификации.",
+          code: "mc_required_to_complete",
+        });
+      }
+    }
+
     storage.upsertOnboardingProgress(user.id, {
       step: body.step,
       data: body.data,
