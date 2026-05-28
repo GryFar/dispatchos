@@ -335,6 +335,21 @@ function UsersTable({ rows, loading, error }: { rows: UserPublic[]; loading: boo
       hideOnMobile: true,
     },
     {
+      // Henry QA Bug #5 — show truck unit number for driver rows.
+      key: "unitNumber",
+      header: "Unit #",
+      cell: (u) =>
+        u.role === "driver" ? (
+          <span className="font-mono text-xs">
+            {(u as any).unitNumber ?? <span className="text-muted-foreground">—</span>}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+      width: "90px",
+      hideOnMobile: true,
+    },
+    {
       key: "actions",
       header: "",
       cell: (u) => (
