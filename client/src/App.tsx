@@ -47,6 +47,7 @@ import DriverLoadsListPage from "@/pages/driver/loads-list";
 import DriverLoadDetailPage from "@/pages/driver/load-detail";
 import DriverDocumentsPage from "@/pages/driver/documents";
 import DriverProfilePage from "@/pages/driver/profile";
+import DriverLoadCreatePage from "@/pages/driver/load-create";
 // Phase 4 P0 — dispatcher portal at /dispatch/*
 import { DispatchShell } from "@/pages/dispatch/_shell";
 import DispatchDashboardPage from "@/pages/dispatch/dashboard";
@@ -194,6 +195,7 @@ function DriverRouter() {
     <DriverShell>
       <Switch>
         <Route path="/" component={DriverDashboardPage} />
+        <Route path="/loads/new" component={DriverLoadCreatePage} />
         <Route path="/loads" component={DriverLoadsListPage} />
         <Route path="/loads/:id" component={DriverLoadDetailPage} />
         <Route path="/documents" component={DriverDocumentsPage} />
