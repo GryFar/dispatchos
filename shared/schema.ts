@@ -356,7 +356,7 @@ export const userPublicSchema = z.object({
   // i18n — last UI language the user picked. Synced across devices via
   // PATCH /api/me/preferences. Frontend falls back to localStorage when
   // this is null (e.g. legacy users who never picked).
-  preferredLang: z.enum(["ru", "en"]).nullable().optional(),
+  preferredLang: z.enum(["ru", "en", "es", "fr"]).nullable().optional(),
   // Henry QA Bug #5 — truck unit number. Only meaningful for role=driver;
   // dispatchers/admins can set it on driver detail pages. Null = not assigned.
   unitNumber: z.string().nullable().optional(),
@@ -366,7 +366,7 @@ export const userPublicSchema = z.object({
 // preferredLang but kept open for future per-user prefs (theme, density,
 // notification opts, etc.).
 export const updateMyPreferencesSchema = z.object({
-  preferredLang: z.enum(["ru", "en"]).optional(),
+  preferredLang: z.enum(["ru", "en", "es", "fr"]).optional(),
 });
 
 // Input schema for admin creating a new user (no password — set via invite

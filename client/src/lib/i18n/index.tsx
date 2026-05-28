@@ -27,10 +27,10 @@ import {
 import { translate, type Lang, LANGS } from "./translations";
 
 const STORAGE_KEY = "dispatchos.lang";
-const DEFAULT_LANG: Lang = "ru";
+const DEFAULT_LANG: Lang = "en";
 
 function isValidLang(v: unknown): v is Lang {
-  return v === "ru" || v === "en";
+  return v === "ru" || v === "en" || v === "es" || v === "fr";
 }
 
 function detectInitialLang(): Lang {
@@ -43,8 +43,11 @@ function detectInitialLang(): Lang {
   }
   // Fall back to browser locale only if it's a language we actually ship.
   const browser = typeof navigator !== "undefined" ? navigator.language : "";
-  if (browser?.toLowerCase().startsWith("ru")) return "ru";
-  if (browser?.toLowerCase().startsWith("en")) return "en";
+  const bl = browser?.toLowerCase() ?? "";
+  if (bl.startsWith("ru")) return "ru";
+  if (bl.startsWith("es")) return "es";
+  if (bl.startsWith("fr")) return "fr";
+  if (bl.startsWith("en")) return "en";
   return DEFAULT_LANG;
 }
 
