@@ -1953,15 +1953,23 @@ export const storage = {
   },
 
   claimMc(mcNormalized: string, userId: string): { ok: boolean; conflictUserId?: string } {
-    const existing = this.getMcRegistryOwner(mcNormalized);
-    if (existing) {
-      if (existing.userId === userId) return { ok: true };
-      return { ok: false, conflictUserId: existing.userId };
-    }
-    sqlite
-      .prepare("INSERT INTO mc_account_registry (mc_normalized, user_id, claimed_at) VALUES (?, ?, ?)")
+    // V4-011: claim atomically via INSERT OR IGNORE against the mc_normalized
+    // PRIMARY KEY, instead of check-then-insert (a TOCTOU race: two concurrent
+    // claims could both pass the SELECT and the loser would crash on the PK
+    // constraint). INSERT OR IGNORE makes the DB the single arbiter — exactly
+    // one row wins. We then read back the owner to report the outcome:
+    //   - inserted (changes>0) -> we own it now
+    //   - ignored, owner == us  -> idempotent re-claim, ok
+    //   - ignored, owner != us  -> genuine conflict
+    const res = sqlite
+      .prepare(
+        "INSERT OR IGNORE INTO mc_account_registry (mc_normalized, user_id, claimed_at) VALUES (?, ?, ?)",
+      )
       .run(mcNormalized, userId, now());
-    return { ok: true };
+    if (res.changes > 0) return { ok: true };
+    const owner = this.getMcRegistryOwner(mcNormalized);
+    if (owner && owner.userId === userId) return { ok: true };
+    return { ok: false, conflictUserId: owner?.userId };
   },
 
   releaseMcForUser(userId: string): void {
