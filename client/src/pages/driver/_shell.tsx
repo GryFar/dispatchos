@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import { Home, Package, FileText, User } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /**
  * DriverShell — общий layout для всех экранов /d/*.
@@ -64,24 +65,25 @@ function DriverTopBar() {
 // Bottom nav — fixed, 4 tabs, touch targets ≥48px high (design-system §4.3).
 // ---------------------------------------------------------------------------
 
-const NAV_ITEMS = [
-  { href: "/", label: "Главная", icon: Home, match: (p: string) => p === "/" },
-  { href: "/loads", label: "Рейсы", icon: Package, match: (p: string) => p.startsWith("/loads") },
-  { href: "/documents", label: "Доки", icon: FileText, match: (p: string) => p.startsWith("/documents") },
-  { href: "/profile", label: "Профиль", icon: User, match: (p: string) => p.startsWith("/profile") },
-] as const;
-
 function DriverBottomNav() {
+  const { t } = useT();
   // useLocation here returns the path relative to the nested /d route. So `/`
   // is the dashboard, `/loads` is /d/loads, etc.
   const [location] = useLocation();
+
+  const NAV_ITEMS = [
+    { href: "/", label: t("driver._shell.nav.home"), icon: Home, match: (p: string) => p === "/" },
+    { href: "/loads", label: t("driver._shell.nav.loads"), icon: Package, match: (p: string) => p.startsWith("/loads") },
+    { href: "/documents", label: t("driver._shell.nav.docs"), icon: FileText, match: (p: string) => p.startsWith("/documents") },
+    { href: "/profile", label: t("driver._shell.nav.profile"), icon: User, match: (p: string) => p.startsWith("/profile") },
+  ] as const;
 
   return (
     <nav
       // Fixed at the bottom but constrained to the same max-width as main so
       // the visual rhythm stays consistent on tablet.
       className="fixed inset-x-0 bottom-0 z-10 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur supports-[backdrop-filter]:bg-background/80"
-      aria-label="Навигация водителя"
+      aria-label={t("driver._shell.nav.aria_label")}
     >
       <ul className="mx-auto flex h-16 max-w-[720px] items-stretch justify-around">
         {NAV_ITEMS.map((item) => {

@@ -49,6 +49,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
+import { useT } from "@/lib/i18n";
 
 /**
  * Driver load detail (`/d/loads/:id`).
@@ -60,16 +61,27 @@ import { StatusBadge } from "@/components/dispatch/StatusBadge";
  *      we don't have a dedicated POD storage yet; type='other' and a note
  *      gives admin enough context. Real "load-attached POD" can graduate
  *      to a typed slot in P2.)
- *   - Доставил: shortcut for check-in kind=delivered
- *   - Проблема: opens issue dialog → POST /api/me/issues
+ *   - Delivered: shortcut for check-in kind=delivered
+ *   - Issue: opens issue dialog → POST /api/me/issues
  *
  * Backend гарантирует 404 если load не принадлежит текущему driver'у —
  * никаких проверок tenant'а на фронте не нужно.
  */
 export default function DriverLoadDetailPage() {
+  const { t } = useT();
   const [match, params] = useRoute("/loads/:id");
   const [, setLocation] = useLocation();
   const loadId = match ? params?.id : null;
+
+  // CHECKIN_LABELS_KEYS defined inside component so t() is available
+  const CHECKIN_LABELS_KEYS: Record<CheckinKind, string> = {
+    pickup_arrived: "driver.load_detail.checkin.pickup_arrived",
+    loaded: "driver.load_detail.checkin.loaded",
+    in_transit: "driver.load_detail.checkin.in_transit",
+    delivery_arrived: "driver.load_detail.checkin.delivery_arrived",
+    delivered: "driver.load_detail.checkin.delivered",
+    note: "driver.load_detail.checkin.note",
+  };
 
   const { data, isLoading, error } = useQuery<LoadFull>({
     queryKey: ["me", "load", loadId],
@@ -98,15 +110,13 @@ export default function DriverLoadDetailPage() {
     const is404 = error instanceof ApiError && error.status === 404;
     return (
       <div className="space-y-4">
-        <BackBar onClick={() => setLocation("/loads")} />
+        <BackBar onClick={() => setLocation("/loads")} label={t("driver.load_detail.back")} />
         <Card className="border-destructive/40 bg-destructive/5 p-4 text-sm">
           <p className="font-medium">
-            {is404 ? "Рейс не найден." : "Не удалось загрузить рейс."}
+            {is404 ? t("driver.load_detail.not_found") : t("driver.load_detail.load_error")}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {is404
-              ? "Возможно, он принадлежит другому водителю или был удалён."
-              : (error as Error).message}
+            {is404 ? t("driver.load_detail.not_found_hint") : (error as Error).message}
           </p>
         </Card>
       </div>
@@ -119,14 +129,14 @@ export default function DriverLoadDetailPage() {
 
   return (
     <div className="space-y-4">
-      <BackBar onClick={() => setLocation("/loads")} />
+      <BackBar onClick={() => setLocation("/loads")} label={t("driver.load_detail.back")} />
 
       {/* Headline: route + money + status badge */}
       <Card className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Маршрут
+              {t("driver.load_detail.route")}
             </p>
             <p className="mt-1 text-lg font-semibold tracking-tight">
               {data.originCity}, {data.originState}
@@ -143,7 +153,7 @@ export default function DriverLoadDetailPage() {
             </p>
             <div className="mt-2">
               <StatusBadge variant={isBooked ? "active" : "info"}>
-                {isBooked ? "В работе" : "Доступен"}
+                {isBooked ? t("driver.load_detail.status.booked") : t("driver.load_detail.status.available")}
               </StatusBadge>
             </div>
           </div>
@@ -171,7 +181,7 @@ export default function DriverLoadDetailPage() {
       {/* Broker info */}
       <Card className="p-4">
         <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          <Building2 className="h-3.5 w-3.5" /> Брокер
+          <Building2 className="h-3.5 w-3.5" /> {t("driver.load_detail.broker")}
         </p>
         <p className="mt-2 text-sm font-medium">{data.brokerName}</p>
         <p className="mt-0.5 font-mono text-xs text-muted-foreground">
@@ -191,14 +201,14 @@ export default function DriverLoadDetailPage() {
       {checkinsData && checkinsData.items.length > 0 && (
         <Card className="p-4">
           <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            <Clock className="h-3.5 w-3.5" /> Хронология
+            <Clock className="h-3.5 w-3.5" /> {t("driver.load_detail.timeline")}
           </p>
           <ul className="mt-3 space-y-2">
             {checkinsData.items.map((c) => (
               <li key={c.id} className="flex items-start gap-2 text-xs">
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
                 <div className="flex-1">
-                  <p className="font-medium">{CHECKIN_LABELS[c.kind]}</p>
+                  <p className="font-medium">{t(CHECKIN_LABELS_KEYS[c.kind])}</p>
                   <p className="text-muted-foreground">
                     {formatDateFull(c.createdAt)}
                     {typeof c.lat === "number" && typeof c.lng === "number" && (
@@ -221,16 +231,7 @@ export default function DriverLoadDetailPage() {
   );
 }
 
-const CHECKIN_LABELS: Record<CheckinKind, string> = {
-  pickup_arrived: "Прибыл на pickup",
-  loaded: "Загружен",
-  in_transit: "В пути",
-  delivery_arrived: "Прибыл на delivery",
-  delivered: "Доставлен",
-  note: "Заметка",
-};
-
-function BackBar({ onClick }: { onClick: () => void }) {
+function BackBar({ onClick, label }: { onClick: () => void; label: string }) {
   return (
     <button
       type="button"
@@ -238,7 +239,7 @@ function BackBar({ onClick }: { onClick: () => void }) {
       className="inline-flex items-center gap-1.5 rounded-md px-1 py-1 text-sm font-medium text-muted-foreground hover:text-foreground"
     >
       <ArrowLeft className="h-4 w-4" />
-      Все рейсы
+      {label}
     </button>
   );
 }
@@ -270,6 +271,7 @@ function StopBlock({
 }
 
 function ActionButtons({ loadId }: { loadId: string }) {
+  const { t } = useT();
   const { toast } = useToast();
   const qc = useQueryClient();
   const [issueOpen, setIssueOpen] = useState(false);
@@ -279,7 +281,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
     mutationFn: (input: { kind: CheckinKind; lat?: number; lng?: number; notes?: string }) =>
       apiJson("POST", `/api/me/loads/${loadId}/checkin`, input),
     onSuccess: () => {
-      toast({ title: "Check-in отправлен" });
+      toast({ title: t("driver.load_detail.checkin.saved") });
       qc.invalidateQueries({ queryKey: ["me", "load", loadId, "checkins"] });
       qc.invalidateQueries({ queryKey: ["me", "load", loadId] });
       qc.invalidateQueries({ queryKey: ["/api/me/dashboard"] });
@@ -287,7 +289,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
     onError: (err: ApiError) => {
       toast({
         variant: "destructive",
-        title: "Не удалось",
+        title: t("driver.load_detail.checkin.error"),
         description: err.message,
       });
     },
@@ -297,8 +299,8 @@ function ActionButtons({ loadId }: { loadId: string }) {
     if (!navigator.geolocation) {
       toast({
         variant: "destructive",
-        title: "Геолокация недоступна",
-        description: "Браузер не поддерживает определение местоположения.",
+        title: t("common.error"),
+        description: "Geolocation is not available in this browser.",
       });
       return;
     }
@@ -312,7 +314,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
       (err) =>
         toast({
           variant: "destructive",
-          title: "Геолокация запрещена",
+          title: t("common.error"),
           description: err.message,
         }),
       { enableHighAccuracy: true, timeout: 10_000 },
@@ -353,7 +355,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
           onClick={() => withGeo("delivered")}
         >
           <CheckCircle2 className="h-5 w-5" />
-          <span className="text-xs font-medium">Доставил</span>
+          <span className="text-xs font-medium">Delivered</span>
         </Button>
         <Button
           variant="outline"
@@ -362,7 +364,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
           onClick={() => setIssueOpen(true)}
         >
           <AlertTriangle className="h-5 w-5" />
-          <span className="text-xs font-medium">Проблема</span>
+          <span className="text-xs font-medium">Issue</span>
         </Button>
       </div>
 
@@ -384,6 +386,7 @@ function IssueDialog({
   onOpenChange: (v: boolean) => void;
   loadId: string;
 }) {
+  const { t } = useT();
   const { toast } = useToast();
   const qc = useQueryClient();
   const [severity, setSeverity] = useState<IssueSeverity>("warn");
@@ -400,8 +403,8 @@ function IssueDialog({
       }),
     onSuccess: () => {
       toast({
-        title: "Отправлено диспетчеру",
-        description: "Админ увидит вашу проблему в очереди.",
+        title: t("common.success"),
+        description: "Your dispatcher has been notified.",
       });
       qc.invalidateQueries({ queryKey: ["/api/me/dashboard"] });
       onOpenChange(false);
@@ -410,65 +413,65 @@ function IssueDialog({
       setSeverity("warn");
     },
     onError: (err: ApiError) =>
-      toast({ variant: "destructive", title: "Не удалось", description: err.message }),
+      toast({ variant: "destructive", title: t("common.error"), description: err.message }),
   });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Сообщить о проблеме</DialogTitle>
+          <DialogTitle>Report an issue</DialogTitle>
           <DialogDescription>
-            Админ получит уведомление с возможностью связаться.
+            Your dispatcher will be notified and can follow up.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1.5">
-            <Label htmlFor="issue-sev">Срочность</Label>
+            <Label htmlFor="issue-sev">Severity</Label>
             <Select value={severity} onValueChange={(v) => setSeverity(v as IssueSeverity)}>
               <SelectTrigger id="issue-sev" className="h-11">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="info">Информация</SelectItem>
-                <SelectItem value="warn">Внимание</SelectItem>
-                <SelectItem value="urgent">СРОЧНО</SelectItem>
+                <SelectItem value="info">Info</SelectItem>
+                <SelectItem value="warn">Warning</SelectItem>
+                <SelectItem value="urgent">URGENT</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="issue-title">Заголовок</Label>
+            <Label htmlFor="issue-title">Title</Label>
             <Input
               id="issue-title"
               value={title}
               maxLength={120}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Брокер не отвечает"
+              placeholder="Broker not responding"
               className="h-11"
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="issue-desc">Описание (опц.)</Label>
+            <Label htmlFor="issue-desc">Description (optional)</Label>
             <Textarea
               id="issue-desc"
               value={description}
               maxLength={2000}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Что произошло, что вы пробовали..."
+              placeholder="What happened, what you tried..."
               rows={4}
             />
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Отмена
+            {t("common.cancel")}
           </Button>
           <Button
             onClick={() => mutation.mutate()}
             disabled={mutation.isPending || title.length < 3}
           >
             {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Отправить
+            {t("common.send")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -488,6 +491,7 @@ function ExpenseDialog({
   onOpenChange: (v: boolean) => void;
   loadId: string;
 }) {
+  const { t } = useT();
   const { toast } = useToast();
   const qc = useQueryClient();
   const [category, setCategory] = useState<ExpenseCategory>("fuel");
@@ -515,7 +519,7 @@ function ExpenseDialog({
       return res.json();
     },
     onSuccess: () => {
-      toast({ title: "Расход записан" });
+      toast({ title: t("driver.load_detail.expense.saved") });
       qc.invalidateQueries({ queryKey: ["/api/me/expenses"] });
       onOpenChange(false);
       setAmount("");
@@ -524,37 +528,37 @@ function ExpenseDialog({
       setCategory("fuel");
     },
     onError: (err: ApiError) =>
-      toast({ variant: "destructive", title: "Не удалось", description: err.message }),
+      toast({ variant: "destructive", title: t("driver.load_detail.expense.error"), description: err.message }),
   });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Записать расход</DialogTitle>
+          <DialogTitle>{t("driver.load_detail.expense.title")}</DialogTitle>
           <DialogDescription>
-            Чек по топливу, парковке, ремонту и т.п. — для своего учёта.
+            Fuel, parking, tolls, repairs — for your records.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1.5">
-            <Label htmlFor="exp-cat">Категория</Label>
+            <Label htmlFor="exp-cat">{t("driver.load_detail.expense.category")}</Label>
             <Select value={category} onValueChange={(v) => setCategory(v as ExpenseCategory)}>
               <SelectTrigger id="exp-cat" className="h-11">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="fuel">Топливо</SelectItem>
-                <SelectItem value="parking">Парковка</SelectItem>
-                <SelectItem value="tolls">Платные дороги</SelectItem>
-                <SelectItem value="repair">Ремонт</SelectItem>
+                <SelectItem value="fuel">{t("driver.load_detail.expense.fuel")}</SelectItem>
+                <SelectItem value="parking">Parking</SelectItem>
+                <SelectItem value="tolls">{t("driver.load_detail.expense.toll")}</SelectItem>
+                <SelectItem value="repair">Repair</SelectItem>
                 <SelectItem value="lumper">Lumper</SelectItem>
-                <SelectItem value="other">Другое</SelectItem>
+                <SelectItem value="other">{t("driver.load_detail.expense.other")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="exp-amt">Сумма (USD)</Label>
+            <Label htmlFor="exp-amt">{t("driver.load_detail.expense.amount")}</Label>
             <Input
               id="exp-amt"
               type="number"
@@ -563,22 +567,23 @@ function ExpenseDialog({
               max="100000"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              placeholder="42.50"
+              placeholder={t("driver.load_detail.expense.amount_placeholder")}
               className="h-11"
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="exp-notes">Заметки (опц.)</Label>
+            <Label htmlFor="exp-notes">{t("driver.load_detail.expense.notes")}</Label>
             <Input
               id="exp-notes"
               value={notes}
               maxLength={500}
               onChange={(e) => setNotes(e.target.value)}
+              placeholder={t("driver.load_detail.expense.notes_placeholder")}
               className="h-11"
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="exp-photo">Фото чека (опц.)</Label>
+            <Label htmlFor="exp-photo">Receipt photo (optional)</Label>
             <Input
               id="exp-photo"
               type="file"
@@ -590,14 +595,14 @@ function ExpenseDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Отмена
+            {t("common.cancel")}
           </Button>
           <Button
             onClick={() => mutation.mutate()}
             disabled={mutation.isPending || !amount || Number(amount) <= 0}
           >
             {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Сохранить
+            {t("common.save")}
           </Button>
         </DialogFooter>
       </DialogContent>

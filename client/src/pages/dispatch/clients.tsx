@@ -4,6 +4,7 @@ import { Briefcase, Loader2 } from "lucide-react";
 import { apiJson } from "@/lib/queryClient";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/dispatch/EmptyState";
+import { useT } from "@/lib/i18n";
 
 interface AssignedClient {
   id: string;
@@ -18,6 +19,7 @@ interface AssignedClient {
  * dispatcher can see its loads.
  */
 export default function DispatchClientsPage() {
+  const { t } = useT();
   const { data, isLoading } = useQuery<{ items: AssignedClient[] }>({
     queryKey: ["/api/dispatch/clients"],
     queryFn: () => apiJson("GET", "/api/dispatch/clients"),
@@ -27,11 +29,11 @@ export default function DispatchClientsPage() {
     <div className="space-y-5">
       <header>
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          dispatcher / клиенты
+          {t("dispatch.clients.header_sub")}
         </p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Мои клиенты</h1>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("dispatch.clients.title")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Клиенты, которыми вы управляете. Назначения — у админа.
+          {t("dispatch.clients.subtitle")}
         </p>
       </header>
 
@@ -43,8 +45,8 @@ export default function DispatchClientsPage() {
         <Card className="p-2">
           <EmptyState
             icon={<Briefcase className="h-6 w-6" />}
-            title="Нет назначений"
-            description="Свяжитесь с админом — он привяжет к вам клиентов."
+            title={t("dispatch.clients.empty")}
+            description={t("dispatch.clients.empty_desc")}
           />
         </Card>
       ) : (
@@ -62,7 +64,7 @@ export default function DispatchClientsPage() {
                       {c.activeDriversCount}
                     </p>
                     <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      водителей
+                      {t("dispatch.clients.drivers", { count: c.activeDriversCount })}
                     </p>
                   </div>
                   <div>
@@ -70,7 +72,7 @@ export default function DispatchClientsPage() {
                       {c.activeLoadsCount}
                     </p>
                     <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      активных рейсов
+                      {t("dispatch.clients.loads", { count: c.activeLoadsCount })}
                     </p>
                   </div>
                 </div>

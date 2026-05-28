@@ -14,6 +14,7 @@ import { apiJson } from "@/lib/queryClient";
 import { formatMoney, formatRelativeAgo } from "@/lib/format";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/dispatch/EmptyState";
+import { useT } from "@/lib/i18n";
 
 /**
  * Dispatcher dashboard (`/dispatch`).
@@ -23,6 +24,7 @@ import { EmptyState } from "@/components/dispatch/EmptyState";
  * list. No actions here — each peek tile deep-links into its own page.
  */
 export default function DispatchDashboardPage() {
+  const { t } = useT();
   const { data, isLoading } = useQuery<DispatchDashboard>({
     queryKey: ["/api/dispatch/me/dashboard"],
     queryFn: () => apiJson("GET", "/api/dispatch/me/dashboard"),
@@ -41,13 +43,13 @@ export default function DispatchDashboardPage() {
     <div className="space-y-6">
       <header>
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          dispatcher
+          {t("dispatch.dashboard.header_sub")}
         </p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-          Добрый день, {data.dispatcher.fullName.split(" ")[0]}!
+          {t("dispatch.dashboard.title")}, {data.dispatcher.fullName.split(" ")[0]}!
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Ваши клиенты, активные рейсы и очередь задач.
+          {t("dispatch.dashboard.subtitle")}
         </p>
       </header>
 
@@ -55,19 +57,19 @@ export default function DispatchDashboardPage() {
       <div className="grid gap-3 sm:grid-cols-3">
         <StatCard
           icon={<Users className="h-5 w-5" />}
-          label="Клиенты"
+          label={t("dispatch.clients.title")}
           value={data.stats.assignedClientsCount}
           href="/clients"
         />
         <StatCard
           icon={<Package className="h-5 w-5" />}
-          label="Активные рейсы"
+          label={t("dispatch.loads.status.booked")}
           value={data.stats.activeLoadsCount}
           href="/loads?status=booked"
         />
         <StatCard
           icon={<Inbox className="h-5 w-5" />}
-          label="Открытых задач"
+          label={t("dispatch.queue.tab.open")}
           value={data.stats.openTasksCount}
           href="/queue"
           urgent={data.stats.openTasksCount > 0}
@@ -78,21 +80,21 @@ export default function DispatchDashboardPage() {
       <section className="space-y-2">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Очередь задач
+            {t("dispatch.queue.title")}
           </h2>
           <Link
             href="/queue"
             className="text-xs text-primary hover:underline"
           >
-            Все →
+            All →
           </Link>
         </div>
         {data.recentOpenTasks.length === 0 ? (
           <Card className="p-2">
             <EmptyState
               icon={<Inbox className="h-6 w-6" />}
-              title="Пусто"
-              description="Когда водители сообщат о проблемах, они появятся здесь."
+              title={t("dispatch.queue.empty_open")}
+              description={t("dispatch.queue.empty_open_desc")}
             />
           </Card>
         ) : (
@@ -117,7 +119,7 @@ export default function DispatchDashboardPage() {
                     />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">
-                        {p.title || "Без названия"}
+                        {p.title || "Untitled"}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {formatRelativeAgo(task.createdAt)}
@@ -136,21 +138,21 @@ export default function DispatchDashboardPage() {
       <section className="space-y-2">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Мои клиенты
+            {t("dispatch.clients.title")}
           </h2>
           <Link
             href="/clients"
             className="text-xs text-primary hover:underline"
           >
-            Все →
+            All →
           </Link>
         </div>
         {data.assignedClients.length === 0 ? (
           <Card className="p-2">
             <EmptyState
               icon={<Briefcase className="h-6 w-6" />}
-              title="Нет назначений"
-              description="Свяжитесь с админом — он назначит вам клиентов."
+              title={t("dispatch.dashboard.empty")}
+              description={t("dispatch.dashboard.empty_desc")}
             />
           </Card>
         ) : (
@@ -159,8 +161,8 @@ export default function DispatchDashboardPage() {
               <Card key={c.id} className="p-3">
                 <p className="text-sm font-semibold">{c.name}</p>
                 <div className="mt-1 flex gap-4 text-xs text-muted-foreground">
-                  <span>{c.activeDriversCount} води­тел{c.activeDriversCount === 1 ? "ь" : c.activeDriversCount < 5 ? "я" : "ей"}</span>
-                  <span>{c.activeLoadsCount} активн. рейс{c.activeLoadsCount === 1 ? "" : c.activeLoadsCount < 5 ? "а" : "ов"}</span>
+                  <span>{t("dispatch.dashboard.client.drivers", { count: c.activeDriversCount })}</span>
+                  <span>{t("dispatch.dashboard.client.loads", { count: c.activeLoadsCount })}</span>
                 </div>
               </Card>
             ))}
@@ -172,21 +174,21 @@ export default function DispatchDashboardPage() {
       <section className="space-y-2">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Недавние рейсы
+            {t("dispatch.loads.title")}
           </h2>
           <Link
             href="/loads"
             className="text-xs text-primary hover:underline"
           >
-            Все →
+            All →
           </Link>
         </div>
         {data.recentLoads.length === 0 ? (
           <Card className="p-2">
             <EmptyState
               icon={<Package className="h-6 w-6" />}
-              title="Пока нет рейсов"
-              description="Рейсы появляются, как только админ создаёт их для ваших клиентов."
+              title={t("dispatch.loads.empty")}
+              description={t("dispatch.loads.empty_desc")}
             />
           </Card>
         ) : (

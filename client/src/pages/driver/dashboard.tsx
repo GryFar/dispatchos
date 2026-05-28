@@ -27,6 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useT } from "@/lib/i18n";
 
 /**
  * Driver dashboard (`/d`).
@@ -46,6 +47,7 @@ import {
  * редкое, цена refetch'а ничтожна, простота кода важнее.
  */
 export default function DriverDashboardPage() {
+  const { t } = useT();
   const { data, isLoading, error } = useQuery<DriverDashboard>({
     queryKey: ["me", "dashboard"],
     queryFn: () => apiJson<DriverDashboard>("GET", "/api/me/dashboard"),
@@ -67,9 +69,9 @@ export default function DriverDashboardPage() {
   if (error || !data) {
     return (
       <Card className="border-destructive/40 bg-destructive/5 p-4 text-sm">
-        <p className="font-medium">Не удалось загрузить главный экран.</p>
+        <p className="font-medium">{t("driver.dashboard.header_sub")}</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          {(error as Error | null)?.message ?? "Неизвестная ошибка"}
+          {(error as Error | null)?.message ?? t("common.error")}
         </p>
       </Card>
     );
@@ -116,6 +118,7 @@ function PendingDocsCard({
 }: {
   docs: DriverDashboard["pendingDocs"];
 }) {
+  const { t } = useT();
   const [, setLocation] = useLocation();
   // P0 always returned []; defensive filter in case some clients still send
   // the old shape without `status`.
@@ -136,19 +139,19 @@ function PendingDocsCard({
   let title: string;
   let detail: string;
   if (expired.length > 0) {
-    title = "Документы просрочены";
+    title = t("driver.dashboard.pending_docs.title");
     detail = expired.map((d) => docLabel(String(d.type))).join(", ");
   } else if (urgent.length > 0) {
-    title = "Срочно: документы истекают";
+    title = t("driver.dashboard.pending_docs.title");
     detail = urgent
-      .map((d) => `${docLabel(String(d.type))} — ${d.daysUntilExpiry} дн.`)
+      .map((d) => `${docLabel(String(d.type))} — ${d.daysUntilExpiry} days`)
       .join(" · ");
   } else {
-    title = "Документы скоро истекают";
+    title = t("driver.dashboard.pending_docs.title");
     detail = flagged
       .map((d) =>
         typeof d.daysUntilExpiry === "number"
-          ? `${docLabel(String(d.type))} (${d.daysUntilExpiry} дн.)`
+          ? `${docLabel(String(d.type))} (${d.daysUntilExpiry} days)`
           : docLabel(String(d.type)),
       )
       .join(", ");
@@ -182,27 +185,6 @@ function PendingDocsCard({
 // Status card — biggest UI element. Status drives the colour band on top.
 // ---------------------------------------------------------------------------
 
-const STATUS_META: Record<
-  DriverStatus,
-  { label: string; tone: string; description: string }
-> = {
-  available: {
-    label: "🟡 Свободен",
-    tone: "bg-warning/15 text-warning border-warning/30",
-    description: "Жду назначения от диспетчера",
-  },
-  on_route: {
-    label: "🟢 На грузе",
-    tone: "bg-success/15 text-success border-success/30",
-    description: "Везу активный груз",
-  },
-  off_duty: {
-    label: "🔴 Off-duty",
-    tone: "bg-muted text-muted-foreground border-border",
-    description: "HOS reset / не на смене",
-  },
-};
-
 function StatusCard({
   driver,
   currentLoad,
@@ -210,8 +192,33 @@ function StatusCard({
   driver: DriverDashboard["driver"];
   currentLoad: LoadFull | null;
 }) {
+  const { t } = useT();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  const STATUS_META: Record<
+    DriverStatus,
+    { label: string; tone: string; description: string; selectLabel: string }
+  > = {
+    available: {
+      label: t("driver.dashboard.status.available"),
+      tone: "bg-warning/15 text-warning border-warning/30",
+      description: "Waiting for dispatcher assignment",
+      selectLabel: t("driver.dashboard.status.available"),
+    },
+    on_route: {
+      label: t("driver.dashboard.status.on_route"),
+      tone: "bg-success/15 text-success border-success/30",
+      description: "Hauling an active load",
+      selectLabel: t("driver.dashboard.status.on_route"),
+    },
+    off_duty: {
+      label: t("driver.dashboard.status.off_duty"),
+      tone: "bg-muted text-muted-foreground border-border",
+      description: "HOS reset / off shift",
+      selectLabel: t("driver.dashboard.status.off_duty"),
+    },
+  };
 
   const updateStatus = useMutation({
     mutationFn: (status: DriverStatus) =>
@@ -222,7 +229,7 @@ function StatusCard({
     },
     onError: (err) => {
       toast({
-        title: "Не удалось изменить статус",
+        title: t("common.error"),
         description: err instanceof ApiError ? err.message : String(err),
         variant: "destructive",
       });
@@ -236,7 +243,7 @@ function StatusCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide opacity-80">
-            Статус
+            {t("driver.dashboard.status.available").split(" ")[0]}
           </p>
           <p className="mt-1 text-2xl font-semibold tracking-tight">
             {meta.label}
@@ -252,9 +259,9 @@ function StatusCard({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="available">Свободен</SelectItem>
-            <SelectItem value="on_route">На грузе</SelectItem>
-            <SelectItem value="off_duty">Off-duty</SelectItem>
+            <SelectItem value="available">{t("driver.dashboard.status.available")}</SelectItem>
+            <SelectItem value="on_route">{t("driver.dashboard.status.on_route")}</SelectItem>
+            <SelectItem value="off_duty">{t("driver.dashboard.status.off_duty")}</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -262,7 +269,7 @@ function StatusCard({
       {currentLoad && (
         <div className="mt-4 border-t border-border/40 pt-3">
           <p className="text-xs font-medium uppercase tracking-wide opacity-70">
-            Текущий груз
+            {t("driver.dashboard.today.open_load")}
           </p>
           <p className="mt-1 text-sm font-medium">
             {currentLoad.originCity}, {currentLoad.originState} →{" "}
@@ -276,7 +283,7 @@ function StatusCard({
             href={`/loads/${currentLoad.id}`}
             className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
           >
-            Открыть детали <ChevronRight className="h-3 w-3" />
+            {t("driver.dashboard.today.open_load")} <ChevronRight className="h-3 w-3" />
           </Link>
         </div>
       )}
@@ -297,6 +304,7 @@ function TodayPanel({
   todayPickup: DriverDashboard["todayPickup"];
   todayDelivery: DriverDashboard["todayDelivery"];
 }) {
+  const { t } = useT();
   const stop = todayPickup ?? todayDelivery;
   const stopKind = todayPickup ? "Pickup" : todayDelivery ? "Delivery" : null;
 
@@ -305,12 +313,12 @@ function TodayPanel({
       <Card className="p-4">
         <p className="flex items-center gap-2 text-sm font-medium">
           <Clock className="h-4 w-4 text-muted-foreground" />
-          Сегодня
+          {t("driver.dashboard.today.title")}
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
           {currentLoad
-            ? "На сегодня нет pickup/delivery — следующая активность завтра или позже."
-            : "Нет активных грузов."}
+            ? "No pickup/delivery today — next activity is tomorrow or later."
+            : t("driver.dashboard.today.no_active")}
         </p>
       </Card>
     );
@@ -320,7 +328,7 @@ function TodayPanel({
     <Card className="border-primary/30 bg-primary/5 p-4">
       <p className="flex items-center gap-2 text-sm font-medium text-primary">
         <Clock className="h-4 w-4" />
-        Сегодня · {stopKind}
+        {t("driver.dashboard.today.title")} · {stopKind}
       </p>
       <p className="mt-2 flex items-center gap-2 text-sm">
         <MapPin className="h-4 w-4 text-muted-foreground" />
@@ -347,6 +355,7 @@ function QuickActions({
   phone?: string;
   currentLoadId: string | null;
 }) {
+  const { t } = useT();
   const { toast } = useToast();
   const [, setLocation] = useLocation();
 
@@ -358,8 +367,8 @@ function QuickActions({
       return;
     }
     toast({
-      title: "Нет активного рейса",
-      description: `${action} привязывается к конкретному рейсу. Откройте рейс из списка.`,
+      title: t("driver.dashboard.today.no_active"),
+      description: `${action} is tied to a specific load. Open a load from the list.`,
     });
   };
 
@@ -387,10 +396,10 @@ function QuickActions({
         variant="outline"
         size="lg"
         className="h-auto flex-col gap-1.5 py-4"
-        onClick={() => routeOrHint("Проблема")}
+        onClick={() => routeOrHint("Issue")}
       >
         <AlertTriangle className="h-5 w-5" />
-        <span className="text-xs font-medium">Проблема</span>
+        <span className="text-xs font-medium">Issue</span>
       </Button>
       {/* Call button. Uses native tel: link when we have a dispatcher number.
        *  Phase 4 P0: dispatcher phone не передаётся в /api/me/dashboard
@@ -400,7 +409,7 @@ function QuickActions({
         <Button asChild variant="default" size="lg" className="h-auto flex-col gap-1.5 py-4">
           <a href={`tel:${phone.replace(/[^+\d]/g, "")}`}>
             <Phone className="h-5 w-5" />
-            <span className="text-xs font-medium">Позвонить</span>
+            <span className="text-xs font-medium">Call</span>
           </a>
         </Button>
       ) : (
@@ -410,13 +419,13 @@ function QuickActions({
           className="h-auto flex-col gap-1.5 py-4"
           onClick={() =>
             toast({
-              title: "Нет номера диспетчера",
-              description: "Добавьте телефон менеджера в профиле или свяжитесь через Telegram.",
+              title: t("driver.dashboard.today.no_active"),
+              description: "No dispatcher number saved. Contact your manager via Telegram.",
             })
           }
         >
           <Phone className="h-5 w-5" />
-          <span className="text-xs font-medium">Позвонить</span>
+          <span className="text-xs font-medium">Call</span>
         </Button>
       )}
     </div>
@@ -428,6 +437,7 @@ function QuickActions({
 // ---------------------------------------------------------------------------
 
 function RecentLoadsPanel({ loads }: { loads: LoadFull[] }) {
+  const { t } = useT();
   const items = useMemo(() => loads.slice(0, 3), [loads]);
 
   return (
@@ -435,18 +445,18 @@ function RecentLoadsPanel({ loads }: { loads: LoadFull[] }) {
       <div className="flex items-center justify-between">
         <p className="flex items-center gap-2 text-sm font-medium">
           <Truck className="h-4 w-4 text-muted-foreground" />
-          Последние рейсы
+          {t("driver.dashboard.recent.title")}
         </p>
         <Link
           href="/loads"
           className="text-xs font-medium text-primary hover:underline"
         >
-          Все
+          All
         </Link>
       </div>
       {items.length === 0 ? (
         <p className="mt-3 text-sm text-muted-foreground">
-          Здесь появятся ваши рейсы, как только диспетчер закрепит первый.
+          {t("driver.dashboard.recent.empty_desc")}
         </p>
       ) : (
         <ul className="mt-3 divide-y divide-border">
@@ -499,6 +509,7 @@ function ContextCard({
     phone: string | null;
   } | null;
 }) {
+  const { t } = useT();
   if (!client && !dispatcher) return null;
 
   return (
@@ -511,7 +522,7 @@ function ContextCard({
             </div>
             <div className="min-w-0">
               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                Моя компания
+                {t("driver.dashboard.context.broker")}
               </p>
               <p className="mt-0.5 truncate text-sm font-medium">{client.name}</p>
               <p className="font-mono text-[11px] text-muted-foreground">
@@ -527,7 +538,7 @@ function ContextCard({
             </div>
             <div className="min-w-0">
               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                Мой диспетчер
+                {t("driver.dashboard.context.dispatcher")}
               </p>
               <p className="mt-0.5 truncate text-sm font-medium">
                 {dispatcher.fullName}
