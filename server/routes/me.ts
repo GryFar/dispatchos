@@ -24,6 +24,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { ZodError } from "zod";
+import { z } from "zod";
 import {
   createCheckinSchema,
   createExpenseSchema,
@@ -34,9 +35,11 @@ import {
   uploadDriverDocumentSchema,
   updateDriverProfileSchema,
   updateDriverStatusSchema,
+  equipmentSchema,
   type DriverDashboard,
   type LoadFull,
 } from "@shared/schema";
+import { enrichLoadSync } from "../lib/ai/enrich";
 import { getCurrentUser, requireRole } from "../auth";
 import { storage, uploadsRoot } from "../storage";
 import { upload } from "../upload";
@@ -144,8 +147,29 @@ export function registerMeRoutes(app: Express): void {
       //   - today's pickup/delivery, derived from the current load.
       // Pulling 20 covers all three without a separate "latest" query — even
       // a busy driver doesn't have many active loads at once.
+      //
+      // Owner-operator: also include all loads for their carrier company
+      // (clientId === linkedClientId), not only those assigned to this driver.
       const page = storage.listLoadsForDriver(user.id, { limit: 20 });
-      const loads = page.items.map(toLoadFull);
+      let loads = page.items.map(toLoadFull);
+
+      if (user.linkedClientId) {
+        const linkedClient = storage.getClient(user.linkedClientId);
+        if ((linkedClient as any)?.persona === "owner_operator") {
+          const clientPage = storage.listLoadsForClientIds([user.linkedClientId], { limit: 20 });
+          const clientLoads = clientPage.items.map(toLoadFull);
+          // Merge: deduplicate by id, keep order newest-first
+          const seen = new Set(loads.map((l) => l.id));
+          for (const cl of clientLoads) {
+            if (!seen.has(cl.id)) {
+              seen.add(cl.id);
+              loads.push(cl);
+            }
+          }
+          // Re-sort merged list by pickupAt descending
+          loads.sort((a, b) => b.pickupAt.localeCompare(a.pickupAt));
+        }
+      }
 
       const currentLoad = loads.find((l) => deriveLoadStatus(l) === "booked") ?? null;
       const recentLoads = loads.slice(0, 3);
@@ -172,7 +196,7 @@ export function registerMeRoutes(app: Express): void {
         ? storage.getClient(user.linkedClientId)
         : undefined;
       const clientCard = carrier
-        ? { id: carrier.id, name: carrier.name, mc: carrier.mc }
+        ? { id: carrier.id, name: carrier.name, mc: carrier.mc, persona: (carrier as any).persona as "owner_operator" | "fleet" | "enterprise" | undefined }
         : null;
 
       let dispatcherCard: {
@@ -259,6 +283,23 @@ export function registerMeRoutes(app: Express): void {
 
       const page = storage.listLoadsForDriver(user.id, { limit, cursor });
       let items = page.items.map(toLoadFull);
+
+      // Owner-operator: also include all loads for their carrier company
+      if (user.linkedClientId) {
+        const linkedClient = storage.getClient(user.linkedClientId);
+        if ((linkedClient as any)?.persona === "owner_operator") {
+          const clientPage = storage.listLoadsForClientIds([user.linkedClientId], { limit: limit ?? 50 });
+          const seen = new Set(items.map((l) => l.id));
+          for (const cl of clientPage.items.map(toLoadFull)) {
+            if (!seen.has(cl.id)) {
+              seen.add(cl.id);
+              items.push(cl);
+            }
+          }
+          items.sort((a, b) => b.pickupAt.localeCompare(a.pickupAt));
+        }
+      }
+
       if (statusFilter) {
         items = items.filter((l) => deriveLoadStatus(l) === statusFilter);
       }
@@ -715,6 +756,102 @@ export function registerMeRoutes(app: Express): void {
       });
 
       return res.status(201).json(task);
+    }),
+  );
+
+  // ===========================================================================
+  // Owner-operator self-dispatch: POST /api/me/loads
+  // ===========================================================================
+  //
+  // Allows a driver with persona=owner_operator to create loads for their own
+  // company without going through an admin or dispatcher. The server:
+  //   1. Verifies caller is a driver with linkedClientId.
+  //   2. Verifies the linked client has persona=owner_operator.
+  //   3. Creates the load with clientId=linkedClientId, driverId=user.id.
+  //
+  // Security: we NEVER trust the body for clientId or driverId — both are
+  // derived from the session user, ensuring tenant isolation.
+  // ===========================================================================
+
+  const selfDispatchLoadSchema = z.object({
+    originCity: z.string().min(1),
+    originState: z.string().min(2).max(2),
+    destinationCity: z.string().min(1),
+    destinationState: z.string().min(2).max(2),
+    rate: z.number().positive(),
+    pickupAt: z.string(),
+    deliveryAt: z.string(),
+    equipment: equipmentSchema,
+    brokerName: z.string().default("Self-dispatch"),
+    brokerMc: z.string().default(""),
+    notes: z.string().optional(),
+  });
+
+  app.post(
+    "/api/me/loads",
+    driver,
+    ah(async (req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+
+      if (!user.linkedClientId) {
+        return res.status(403).json({
+          message: "Self-dispatch requires a linked carrier company. Contact your admin.",
+        });
+      }
+
+      const client = storage.getClient(user.linkedClientId);
+      if (!client) {
+        return res.status(403).json({ message: "Linked client not found." });
+      }
+
+      if ((client as any).persona !== "owner_operator") {
+        return res.status(403).json({
+          message: "Self-dispatch is only available for owner-operator accounts.",
+        });
+      }
+
+      const body = selfDispatchLoadSchema.parse(req.body);
+
+      // Build a full InsertLoad. brokerScore/fraudRisk will be filled by
+      // enrichLoadSync; loadedMiles is approximated as 0 (planner phase later).
+      const rawLoad = {
+        source: "self_dispatch",
+        originCity: body.originCity,
+        originState: body.originState,
+        originLat: 0,
+        originLng: 0,
+        destinationCity: body.destinationCity,
+        destinationState: body.destinationState,
+        destinationLat: 0,
+        destinationLng: 0,
+        rate: body.rate,
+        loadedMiles: 0,
+        pickupAt: body.pickupAt,
+        deliveryAt: body.deliveryAt,
+        equipment: body.equipment,
+        brokerName: body.brokerName,
+        brokerMc: body.brokerMc,
+        brokerScore: 100,
+        fraudRisk: 0,
+        marketQuality: 100,
+        notes: body.notes,
+        // Server-injected tenant fields — never from body
+        clientId: user.linkedClientId,
+        driverId: user.id,
+        bookedAt: new Date().toISOString(),
+      };
+
+      const enriched = enrichLoadSync(rawLoad);
+      const load = storage.upsertLoad(enriched as any);
+
+      storage.audit("driver.self_dispatch_load_created", "load", load.id, {
+        actorUserId: user.id,
+        clientId: user.linkedClientId,
+        driverId: user.id,
+      });
+
+      return res.status(201).json(load);
     }),
   );
 }

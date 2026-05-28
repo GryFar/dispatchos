@@ -549,6 +549,28 @@ const ru: Dict = {
   "clients.companyName": "Название компании",
   "clients.contactPerson": "Контактное лицо",
   "onboarding.companyNameHint": "Если вы owner-operator — укажите название бизнеса, а не личное имя.",
+
+  // Driver self-dispatch (owner-operator)
+  "driver.selfDispatch.createLoad": "Создать груз (self-dispatch)",
+  "driver.selfDispatch.formLabels.origin": "Отправление",
+  "driver.selfDispatch.formLabels.originCity": "Город",
+  "driver.selfDispatch.formLabels.originState": "Штат",
+  "driver.selfDispatch.formLabels.destination": "Назначение",
+  "driver.selfDispatch.formLabels.destinationCity": "Город",
+  "driver.selfDispatch.formLabels.destinationState": "Штат",
+  "driver.selfDispatch.formLabels.rate": "Ставка ($)",
+  "driver.selfDispatch.formLabels.pickup": "Дата/время погрузки",
+  "driver.selfDispatch.formLabels.delivery": "Дата/время доставки",
+  "driver.selfDispatch.formLabels.equipment": "Тип транспорта",
+  "driver.selfDispatch.formLabels.brokerName": "Брокер / заказчик",
+  "driver.selfDispatch.formLabels.brokerMc": "MC# брокера",
+  "driver.selfDispatch.formLabels.notes": "Примечания",
+  "driver.selfDispatch.success": "Груз создан успешно",
+  "driver.selfDispatch.error": "Не удалось создать груз",
+  "driver.selfDispatch.submit": "Создать рейс",
+  "driver.selfDispatch.cancel": "Отмена",
+  "driver.selfDispatch.title": "Новый рейс",
+  "driver.selfDispatch.subtitle": "Самостоятельное назначение груза",
 };
 
 const en: Dict = {
@@ -1078,6 +1100,28 @@ const en: Dict = {
   "clients.companyName": "Company name",
   "clients.contactPerson": "Contact person",
   "onboarding.companyNameHint": "If you\u2019re an owner-operator, use your business name, not your personal name.",
+
+  // Driver self-dispatch (owner-operator)
+  "driver.selfDispatch.createLoad": "Create load (self-dispatch)",
+  "driver.selfDispatch.formLabels.origin": "Origin",
+  "driver.selfDispatch.formLabels.originCity": "City",
+  "driver.selfDispatch.formLabels.originState": "State",
+  "driver.selfDispatch.formLabels.destination": "Destination",
+  "driver.selfDispatch.formLabels.destinationCity": "City",
+  "driver.selfDispatch.formLabels.destinationState": "State",
+  "driver.selfDispatch.formLabels.rate": "Rate ($)",
+  "driver.selfDispatch.formLabels.pickup": "Pickup date/time",
+  "driver.selfDispatch.formLabels.delivery": "Delivery date/time",
+  "driver.selfDispatch.formLabels.equipment": "Equipment type",
+  "driver.selfDispatch.formLabels.brokerName": "Broker / shipper",
+  "driver.selfDispatch.formLabels.brokerMc": "Broker MC#",
+  "driver.selfDispatch.formLabels.notes": "Notes",
+  "driver.selfDispatch.success": "Load created successfully",
+  "driver.selfDispatch.error": "Failed to create load",
+  "driver.selfDispatch.submit": "Create load",
+  "driver.selfDispatch.cancel": "Cancel",
+  "driver.selfDispatch.title": "New load",
+  "driver.selfDispatch.subtitle": "Self-dispatch for owner-operators",
 };
 
 // ---------------------------------------------------------------------------
