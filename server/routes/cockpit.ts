@@ -59,6 +59,34 @@ interface CockpitSuggestion {
   lane: string;
 }
 
+// V5-001 / PERF-034: the AI advisor is an expensive Claude call. Cap per
+// dispatcher to prevent runaway token spend (one curious dispatcher hammering
+// the button = ~$40/day) and abuse. In-memory per-user hourly budget, mirroring
+// the verify-bucket pattern used for Twilio.
+const AI_MAX_PER_HOUR = 20;
+const AI_WINDOW_MS = 60 * 60 * 1000;
+interface AiBudget {
+  count: number;
+  windowStart: number;
+}
+const aiBudgets = new Map<string, AiBudget>();
+function aiRateCheck(userId: string): { allowed: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  const b = aiBudgets.get(userId);
+  if (!b || now - b.windowStart > AI_WINDOW_MS) {
+    aiBudgets.set(userId, { count: 1, windowStart: now });
+    return { allowed: true, retryAfterSec: 0 };
+  }
+  if (b.count >= AI_MAX_PER_HOUR) {
+    return {
+      allowed: false,
+      retryAfterSec: Math.ceil((AI_WINDOW_MS - (now - b.windowStart)) / 1000),
+    };
+  }
+  b.count++;
+  return { allowed: true, retryAfterSec: 0 };
+}
+
 export function registerCockpitRoutes(app: Express): void {
   app.get(
     "/api/dispatch/cockpit",
@@ -163,8 +191,19 @@ export function registerCockpitRoutes(app: Express): void {
       const me = getCurrentUser(req);
       if (!me) return res.status(401).json({ message: "Authentication required" });
 
+      // V5-001 / PERF-034: cap expensive AI calls per dispatcher.
+      const budget = aiRateCheck(me.id);
+      if (!budget.allowed) {
+        return res.status(429).json({
+          message: "AI-анализ временно ограничен (слишком много запросов). Попробуйте позже.",
+          code: "ai_rate_limit",
+          retryAfterSec: budget.retryAfterSec,
+        });
+      }
+
       const clientId = String((req.body as { clientId?: unknown })?.clientId ?? "").trim();
       if (!clientId) return res.status(400).json({ message: "clientId is required" });
+
 
       // Tenant gate: only carriers assigned to this dispatcher.
       const assigned = storage.listAssignedClientsForDispatcher(me.id);
