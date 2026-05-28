@@ -223,6 +223,24 @@ export function stripePriceForTier(tier: string): string | undefined {
 }
 
 /**
+ * V4-010: reverse lookup — resolve the tier from the Stripe price id that was
+ * actually charged. Lets the webhook verify session.metadata.tier against what
+ * Stripe really billed, instead of trusting metadata blindly (a stale or
+ * mismatched metadata.tier could otherwise grant a higher plan than was paid
+ * for). Returns null if no plan maps to this price (env unset / unknown price).
+ */
+export function tierForStripePrice(priceId: string): string | null {
+  if (!priceId) return null;
+  for (const tier of Object.keys(PLANS)) {
+    const envKey = PLANS[tier]?.stripePriceEnvKey;
+    if (envKey && process.env[envKey] && process.env[envKey] === priceId) {
+      return tier;
+    }
+  }
+  return null;
+}
+
+/**
  * Returns true if the client can add another driver under their current
  * plan. Used by /api/admin/users POST to gate new driver invites.
  */
