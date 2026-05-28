@@ -1,9 +1,9 @@
-import { type ChangeEvent, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, Link } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { AlertCircle, CheckCircle2, Copy, Loader2, ShieldCheck } from "lucide-react";
+import { AlertCircle, CheckCircle2, Copy, Loader2, Mail, Phone, ShieldCheck } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { SignupResponse } from "@shared/schema";
 import { ApiError, apiJson } from "@/lib/queryClient";
@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useT } from "@/lib/i18n";
+import { formatUsPhone, toE164Us } from "@/lib/format-phone";
 import { AuthShell } from "./login";
 
 /**
@@ -49,6 +50,9 @@ export default function SignupPage() {
   const { user, isLoading: authLoading } = useAuth();
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [successData, setSuccessData] = useState<SignupResponse | null>(null);
+  // Step tracking: 'email' → 'totp' → 'phone' → redirect
+  type VerifyStep = "email" | "totp" | "phone";
+  const [verifyStep, setVerifyStep] = useState<VerifyStep>("email");
 
   const params = parseHashSearch();
   const prefilledCode = params.get("code") || "";
@@ -105,13 +109,35 @@ export default function SignupPage() {
     }
   }
 
-  // Post-signup success screen with TOTP setup
+  // Post-signup multi-step verification flow
   if (successData) {
-    return (
-      <AuthShell>
-        <PostSignupTotp data={successData} onContinue={() => setLocation("/onboarding")} />
-      </AuthShell>
-    );
+    if (verifyStep === "email") {
+      return (
+        <AuthShell>
+          <PostSignupEmailVerify
+            email={successData.email}
+            onContinue={() => setVerifyStep("totp")}
+          />
+        </AuthShell>
+      );
+    }
+    if (verifyStep === "totp") {
+      return (
+        <AuthShell>
+          <PostSignupTotp
+            data={successData}
+            onContinue={() => setVerifyStep("phone")}
+          />
+        </AuthShell>
+      );
+    }
+    if (verifyStep === "phone") {
+      return (
+        <AuthShell>
+          <PostSignupPhoneVerify onContinue={() => setLocation("/onboarding")} />
+        </AuthShell>
+      );
+    }
   }
 
   const password = form.watch("password");
@@ -366,4 +392,376 @@ function parseHashSearch(): URLSearchParams {
   const hash = window.location.hash || "";
   const qIndex = hash.indexOf("?");
   return new URLSearchParams(qIndex >= 0 ? hash.slice(qIndex) : "");
+}
+
+// ---------------------------------------------------------------------------
+// PostSignupEmailVerify — Step 1: verify email via Twilio Verify
+// ---------------------------------------------------------------------------
+function PostSignupEmailVerify({
+  email,
+  onContinue,
+}: {
+  email: string;
+  onContinue: () => void;
+}) {
+  const { t } = useT();
+  const [codeSent, setCodeSent] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [code, setCode] = useState("");
+  const [verifying, setVerifying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+
+  // Auto-send on mount
+  useEffect(() => {
+    sendCode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Cooldown countdown
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const id = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(id);
+  }, [cooldown]);
+
+  async function sendCode() {
+    setSending(true);
+    setError(null);
+    try {
+      await apiJson("POST", "/api/auth/email/send-code", { email });
+      setCodeSent(true);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (
+          err.status === 503 ||
+          (err.body as { error?: string } | null)?.error === "email_channel_not_configured" ||
+          (err.body as { error?: string } | null)?.error === "twilio_not_configured"
+        ) {
+          setUnavailable(true);
+          return;
+        }
+        if (err.status === 429) {
+          const retryAfter = (err.body as { retryAfter?: number } | null)?.retryAfter ?? 60;
+          setCooldown(retryAfter);
+          setError(t("auth.emailVerify.cooldown").replace("{sec}", String(retryAfter)));
+          return;
+        }
+        setError(err.message);
+      } else {
+        setError(t("auth.emailVerify.invalidCode"));
+      }
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleVerify() {
+    if (code.length !== 6) return;
+    setVerifying(true);
+    setError(null);
+    try {
+      await apiJson("POST", "/api/auth/email/check-code", { email, code });
+      setVerified(true);
+      setTimeout(() => onContinue(), 800);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(t("auth.emailVerify.invalidCode"));
+      } else {
+        setError(t("auth.emailVerify.invalidCode"));
+      }
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  if (verified) {
+    return (
+      <div className="space-y-4 text-center">
+        <CheckCircle2 className="mx-auto h-12 w-12 text-success" />
+        <p className="text-sm font-medium">{t("auth.emailVerify.verified") ?? "Email verified!"}</p>
+      </div>
+    );
+  }
+
+  if (unavailable) {
+    return (
+      <div className="space-y-4">
+        <Alert>
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="text-xs">
+            {t("auth.emailVerify.unavailable")}
+          </AlertDescription>
+        </Alert>
+        <Button onClick={onContinue} variant="outline" className="w-full">
+          {t("auth.emailVerify.skip")}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col items-center gap-2 text-center">
+        <h1 className="text-xl font-semibold tracking-tight">{t("auth.emailVerify.title")}</h1>
+        {codeSent && (
+          <p className="text-sm text-muted-foreground">
+            {t("auth.emailVerify.codeSent")} <span className="font-medium">{email}</span>
+          </p>
+        )}
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="text-xs">{error}</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="space-y-1.5">
+        <Label htmlFor="email-verify-code">{t("auth.emailVerify.enterCode")}</Label>
+        <Input
+          id="email-verify-code"
+          type="text"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          maxLength={6}
+          placeholder="000000"
+          className="font-mono tracking-widest text-center text-lg"
+          value={code}
+          onChange={(e: ChangeEvent<HTMLInputElement>) =>
+            setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+          }
+        />
+      </div>
+
+      <Button
+        onClick={handleVerify}
+        className="w-full"
+        disabled={code.length !== 6 || verifying || sending}
+      >
+        {verifying && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+        {t("auth.emailVerify.verify")}
+      </Button>
+
+      <Button
+        onClick={onContinue}
+        variant="ghost"
+        className="w-full text-muted-foreground"
+        disabled={verifying}
+      >
+        {t("auth.emailVerify.skip")}
+      </Button>
+
+      {cooldown > 0 ? (
+        <p className="text-center text-xs text-muted-foreground">
+          {t("auth.emailVerify.cooldown").replace("{sec}", String(cooldown))}
+        </p>
+      ) : (
+        codeSent && (
+          <Button
+            onClick={sendCode}
+            variant="ghost"
+            size="sm"
+            className="w-full text-xs"
+            disabled={sending}
+          >
+            {sending && <Loader2 className="mr-2 h-3 w-3 animate-spin" />}
+            Resend code
+          </Button>
+        )
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PostSignupPhoneVerify — Step 3: verify phone via Twilio Verify SMS
+// ---------------------------------------------------------------------------
+function PostSignupPhoneVerify({ onContinue }: { onContinue: () => void }) {
+  const { t } = useT();
+  const [phone, setPhone] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [code, setCode] = useState("");
+  const [verifying, setVerifying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+
+  // Cooldown countdown
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const id = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(id);
+  }, [cooldown]);
+
+  async function handleSendCode() {
+    const e164 = toE164Us(phone);
+    if (!e164) {
+      setError("Please enter a valid US phone number.");
+      return;
+    }
+    setSending(true);
+    setError(null);
+    try {
+      await apiJson("POST", "/api/auth/phone/send-code", { phone: e164 });
+      setCodeSent(true);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 503) {
+          setUnavailable(true);
+          return;
+        }
+        if (err.status === 429) {
+          const retryAfter = (err.body as { retryAfter?: number } | null)?.retryAfter ?? 60;
+          setCooldown(retryAfter);
+          setError(t("auth.phoneVerify.cooldown").replace("{sec}", String(retryAfter)));
+          return;
+        }
+        if ((err.body as { error?: string } | null)?.error === "phone_type_not_allowed") {
+          setError("VoIP and landline numbers are not supported. Use a mobile number.");
+          return;
+        }
+        setError(err.message);
+      } else {
+        setError(t("auth.phoneVerify.invalidCode"));
+      }
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleVerify() {
+    const e164 = toE164Us(phone);
+    if (!e164 || code.length !== 6) return;
+    setVerifying(true);
+    setError(null);
+    try {
+      await apiJson("POST", "/api/auth/phone/check-code", { phone: e164, code });
+      setVerified(true);
+      setTimeout(() => onContinue(), 800);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(t("auth.phoneVerify.invalidCode"));
+      } else {
+        setError(t("auth.phoneVerify.invalidCode"));
+      }
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  if (verified) {
+    return (
+      <div className="space-y-4 text-center">
+        <CheckCircle2 className="mx-auto h-12 w-12 text-success" />
+        <p className="text-sm font-medium">{t("auth.phoneVerify.verified") ?? "Phone verified!"}</p>
+      </div>
+    );
+  }
+
+  if (unavailable) {
+    return (
+      <div className="space-y-4">
+        <Alert>
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="text-xs">
+            {t("auth.phoneVerify.unavailable")}
+          </AlertDescription>
+        </Alert>
+        <Button onClick={onContinue} variant="outline" className="w-full">
+          {t("auth.phoneVerify.skip")}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col items-center gap-2 text-center">
+        <h1 className="text-xl font-semibold tracking-tight">{t("auth.phoneVerify.title")}</h1>
+        <p className="text-sm text-muted-foreground">{t("auth.phoneVerify.subtitle") ?? ""}</p>
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="text-xs">{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {!codeSent ? (
+        <>
+          <div className="space-y-1.5">
+            <Label htmlFor="phone-input">{t("auth.phoneVerify.phoneLabel") ?? t("auth.phoneVerify.enterPhone")}</Label>
+            <Input
+              id="phone-input"
+              type="tel"
+              inputMode="numeric"
+              autoComplete="tel"
+              placeholder={t("auth.phoneVerify.phonePlaceholder") ?? "(555) 555-5555"}
+              value={phone}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setPhone(formatUsPhone(e.target.value))
+              }
+            />
+          </div>
+          <Button
+            onClick={handleSendCode}
+            className="w-full"
+            disabled={sending || toE164Us(phone) === null || cooldown > 0}
+          >
+            {sending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {t("auth.phoneVerify.sendCode")}
+          </Button>
+          {cooldown > 0 && (
+            <p className="text-center text-xs text-muted-foreground">
+              {t("auth.phoneVerify.cooldown").replace("{sec}", String(cooldown))}
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-muted-foreground text-center">{t("auth.phoneVerify.codeSent")}</p>
+          <div className="space-y-1.5">
+            <Label htmlFor="phone-verify-code">{t("auth.phoneVerify.enterCode")}</Label>
+            <Input
+              id="phone-verify-code"
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              placeholder="000000"
+              className="font-mono tracking-widest text-center text-lg"
+              value={code}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+              }
+            />
+          </div>
+          <Button
+            onClick={handleVerify}
+            className="w-full"
+            disabled={code.length !== 6 || verifying}
+          >
+            {verifying && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {t("auth.phoneVerify.verify")}
+          </Button>
+        </>
+      )}
+
+      <Button
+        onClick={onContinue}
+        variant="ghost"
+        className="w-full text-muted-foreground"
+        disabled={verifying || sending}
+      >
+        {t("auth.phoneVerify.skip")}
+      </Button>
+    </div>
+  );
 }
