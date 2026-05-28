@@ -345,6 +345,9 @@ function DraggableClient({ client }: { client: Client }) {
       )}
     >
       <p className="text-xs font-medium">{client.name}</p>
+      {(client as any).contactPersonName && (
+        <p className="text-[10px] text-muted-foreground">{(client as any).contactPersonName}</p>
+      )}
       <p className="text-[10px] text-muted-foreground">
         <McCell value={client.mc} />
       </p>

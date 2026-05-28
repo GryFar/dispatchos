@@ -401,13 +401,16 @@ function ProfileTab({ client }: { client: Client }) {
 
   return (
     <div className="space-y-6">
-      {/* Block 1 — Основное */}
+      {/* Block 1 — Company info */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Основное</CardTitle>
+          <CardTitle className="text-base">Company info</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Legal/DBA company name from MC filing. Not the contact person&apos;s name.
+          </p>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
-          <Field label="Имя">
+          <Field label="Company name (legal/DBA)">
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
           <Field label="MC#">
