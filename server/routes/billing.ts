@@ -86,6 +86,16 @@ export function registerBillingRoutes(app: Express): void {
           message: "Webhook signature verification failed",
         });
       }
+
+      // V4-004: idempotency. Stripe retries on timeout / can deliver an event
+      // more than once; processing a duplicate would double-apply a plan
+      // upgrade or refund. Claim the event id atomically — if it was already
+      // processed, ack with 200 (so Stripe stops retrying) and skip the handler.
+      if (!storage.markStripeEventProcessed(event.id, event.type)) {
+        console.log(`[billing/webhook] duplicate event ${event.id} (${event.type}) — skipping`);
+        return res.json({ received: true, handled: true, duplicate: true });
+      }
+
       try {
         const outcome = await handleWebhookEvent(event);
         if (!outcome.handled) {
