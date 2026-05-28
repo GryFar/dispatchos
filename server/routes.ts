@@ -1456,6 +1456,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     const blocked =
       carrier.operatingStatus === "OUT_OF_SERVICE" || carrier.operatingStatus === "NOT_AUTHORIZED";
+
+    // Broker Trust Signal: log FMCSA authority status from broker-check.
+    storage.appendBrokerTrustSignal({
+      brokerMc: normalized, brokerName: carrier.legalName ?? null,
+      signalType: blocked ? "authority_revoked" : "authority_restored",
+      positive: !blocked, source: "fmcsa",
+      notes: `operatingStatus=${carrier.operatingStatus} (broker-check)`,
+    });
+
     return res.json({
       mc: normalized,
       found: true,
@@ -1527,6 +1536,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           storage.audit("onboarding.mc_rejected_authority", "user", user.id, {
             mc: normalized,
             operatingStatus: carrier.operatingStatus,
+          });
+          // Broker Trust Signal: authority_revoked (onboarding hard-reject).
+          storage.appendBrokerTrustSignal({
+            brokerMc: normalized, brokerName: carrier.legalName ?? null,
+            signalType: "authority_revoked", positive: false, source: "fmcsa",
+            notes: `operatingStatus=${carrier.operatingStatus} (onboarding hard-reject)`,
           });
           return res.status(422).json({
             message: `У этого MC# нет действующей FMCSA authority (${carrier.operatingStatus}). Trial недоступен.`,
