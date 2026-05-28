@@ -115,6 +115,57 @@ function totp(secret, stepOffset = 0) {
   return String(code % 1_000_000).padStart(6, "0");
 }
 
+// ---------------------------------------------------------------------------
+// fix(smoke): TOTP-confirm-before-login helpers — PR #116 contract
+// ---------------------------------------------------------------------------
+// After #116, POST /api/auth/signup no longer auto-creates a session.
+// Instead it returns { pendingConfirmationToken, totpSecret }.  The caller
+// must POST /api/auth/totp/confirm-signup with a valid TOTP code to stamp
+// totp_confirmed_at and receive a real session.
+//
+// Similarly, POST /api/auth/setup (bootstrap) does not return a
+// pendingConfirmationToken.  Use confirmTotpViaResumeSetup() for that path:
+// it calls POST /api/auth/totp/resume-setup (email+password) to obtain a
+// fresh token, then confirm-signup as above.
+// ---------------------------------------------------------------------------
+
+/**
+ * Confirm a pending TOTP setup using the token returned by /api/auth/signup.
+ * On success, confirm-signup creates the session (sets cookieHeader).
+ */
+async function confirmTotpSignup(pendingConfirmationToken, totpSecret, stepOffset = 0) {
+  const res = await request("/api/auth/totp/confirm-signup", {
+    method: "POST",
+    body: { pendingConfirmationToken, token: totp(totpSecret, stepOffset) },
+  });
+  if (!res.ok) throw new Error(`confirm-signup did not return ok=true: ${JSON.stringify(res)}`);
+  return res;
+}
+
+/**
+ * For the bootstrap-admin path: /api/auth/setup doesn't return a
+ * pendingConfirmationToken, so we obtain one via resume-setup and then
+ * confirm. After this call the session is NOT yet set (resume-setup is
+ * unauthenticated and confirm-signup logs the user in), so callers should
+ * then call /api/auth/login as before once totp_confirmed_at is stamped.
+ *
+ * Actually, confirm-signup itself creates the session, so after this call
+ * the cookieHeader is live and login is not needed.  We keep the original
+ * login call after this to preserve the smoke's explicit login-path coverage.
+ * To avoid TOTP replay, pass stepOffset=1 to the subsequent login.
+ */
+async function confirmTotpViaResumeSetup(email, password, stepOffset = 0) {
+  const resume = await request("/api/auth/totp/resume-setup", {
+    method: "POST",
+    body: { email, password },
+  });
+  if (!resume.pendingConfirmationToken || !resume.totpSecret) {
+    throw new Error(`resume-setup did not return token/secret: ${JSON.stringify(resume)}`);
+  }
+  await confirmTotpSignup(resume.pendingConfirmationToken, resume.totpSecret, stepOffset);
+  return resume.totpSecret;
+}
+
 async function waitForServer(proc) {
   const started = Date.now();
   while (Date.now() - started < 15000) {
@@ -173,9 +224,17 @@ try {
     body: { username: "owner", password: "SmokePassword123!" },
   });
   if (!setup.totpSecret) throw new Error("Auth setup did not return TOTP secret");
+  // fix(smoke) #116: setup doesn't stamp totp_confirmed_at — use resume-setup
+  // to get a pendingConfirmationToken, confirm TOTP, then login explicitly.
+  // confirm-signup logs us in (creates session), but we still call login below
+  // to keep explicit coverage of the login path.  Use stepOffset=1 on login
+  // to avoid replay rejection by the counter guard (PR #99).
+  await confirmTotpViaResumeSetup("owner@dispatchos.local", "SmokePassword123!");
+  // Session from confirm-signup is now live; clear it so we exercise login path.
+  cookieHeader = "";
   await request("/api/auth/login", {
     method: "POST",
-    body: { username: "owner", password: "SmokePassword123!", token: totp(setup.totpSecret) },
+    body: { username: "owner", password: "SmokePassword123!", token: totp(setup.totpSecret, 1) },
   });
   const authed = await request("/api/auth/status");
   if (!authed.authenticated) throw new Error("Auth login failed");
@@ -490,10 +549,10 @@ try {
   // Re-login still works after logout (proves persistent session store is alive).
   await request("/api/auth/login", {
     method: "POST",
-    // Re-login within the same 30s window would reuse the previous TOTP code,
-    // which the replay guard (PR #99) now rejects. Use the next time-step's
-    // code (counter+1, still inside the server's ±1 window) to get a fresh one.
-    body: { username: "owner", password: "SmokePassword123!", token: totp(setup.totpSecret, 1) },
+    // fix(smoke) #116: first login now uses stepOffset=1 (confirm-signup uses 0,
+    // first login uses 1), so re-login must use stepOffset=2 to avoid replay
+    // rejection by the counter guard (PR #99).
+    body: { username: "owner", password: "SmokePassword123!", token: totp(setup.totpSecret, 2) },
   });
   const reMe = await request("/api/me");
   if (reMe.id !== me.id) {
@@ -634,12 +693,18 @@ try {
   if (signupRes.redirect !== "/dispatch") {
     throw new Error(`/api/auth/signup redirect should be /dispatch, got ${signupRes.redirect}`);
   }
-  // Session is auto-bound after signup — /api/me should now return the dispatcher.
+  // fix(smoke) #116: signup no longer auto-creates a session.  Confirm TOTP
+  // via confirm-signup (which stamps totp_confirmed_at and creates the session).
+  if (!signupRes.pendingConfirmationToken) {
+    throw new Error("/api/auth/signup did not return pendingConfirmationToken");
+  }
+  await confirmTotpSignup(signupRes.pendingConfirmationToken, signupRes.totpSecret);
+  // Session is now live (created by confirm-signup) — /api/me should return the dispatcher.
   const meAfterSignup = await request("/api/me");
   if (meAfterSignup.id !== signupRes.id || meAfterSignup.role !== "dispatcher") {
     throw new Error("/api/me after signup did not reflect the new user");
   }
-  console.log("[OK] POST /api/auth/signup consumes invite + auto-login");
+  console.log("[OK] POST /api/auth/signup + confirm-signup creates session (TOTP confirmed)");
 
   // Re-using the consumed code → 400
   let reuseStatus = 0;
@@ -1646,7 +1711,12 @@ try {
   if (driverA.redirect !== "/d") {
     throw new Error(`P4 driverA signup redirect expected "/d", got ${driverA.redirect}`);
   }
-  console.log("[OK] P4 driver signup auto-login (redirect=/d)");
+  // fix(smoke) #116: confirm TOTP to stamp totp_confirmed_at and create session.
+  if (!driverA.pendingConfirmationToken) {
+    throw new Error("P4 driverA signup did not return pendingConfirmationToken");
+  }
+  await confirmTotpSignup(driverA.pendingConfirmationToken, driverA.totpSecret);
+  console.log("[OK] P4 driver signup + confirm-signup (redirect=/d, TOTP confirmed)");
 
   const driverACookie = cookieHeader;
 
@@ -1746,6 +1816,11 @@ try {
   if (driverB.redirect !== "/d") {
     throw new Error(`P4 driverB signup redirect expected "/d", got ${driverB.redirect}`);
   }
+  // fix(smoke) #116: confirm TOTP to stamp totp_confirmed_at and create session.
+  if (!driverB.pendingConfirmationToken) {
+    throw new Error("P4 driverB signup did not return pendingConfirmationToken");
+  }
+  await confirmTotpSignup(driverB.pendingConfirmationToken, driverB.totpSecret);
   const driverBCookie = cookieHeader;
 
   // Create one load for driver B (admin again).
@@ -1889,14 +1964,16 @@ try {
   console.log("[OK] P4 /api/me/dashboard blocks non-driver (403)");
 
   // Login redirect re-check: explicit POST /api/auth/login as driver A.
-  // (signup already verified redirect=/d; this confirms the login path too.)
+  // (signup + confirm-signup verified redirect=/d; this confirms the login path.)
+  // fix(smoke) #116: confirm-signup used stepOffset=0, so use offset=1 here to
+  // avoid replay rejection by the counter guard (PR #99).
   cookieHeader = "";
   const loginA = await request("/api/auth/login", {
     method: "POST",
     body: {
       email: "smoke.driver.a@example.com",
       password: "SmokeDriverA1!",
-      token: totp(driverA.totpSecret),
+      token: totp(driverA.totpSecret, 1),
     },
   });
   if (loginA.redirect !== "/d") {
@@ -2061,6 +2138,11 @@ try {
       password: "SmokeDriverB2!",
     },
   });
+  // fix(smoke) #116: confirm TOTP to stamp totp_confirmed_at and create session.
+  if (!driverB2.pendingConfirmationToken) {
+    throw new Error("P1 driverB2 signup did not return pendingConfirmationToken");
+  }
+  await confirmTotpSignup(driverB2.pendingConfirmationToken, driverB2.totpSecret);
   const driverB2Cookie = cookieHeader;
   cookieHeader = driverB2Cookie;
   try {
@@ -2523,6 +2605,11 @@ try {
       password: "SmokeDriverDisp1!",
     },
   });
+  // fix(smoke) #116: confirm TOTP to stamp totp_confirmed_at and create session.
+  if (!dispDriver.pendingConfirmationToken) {
+    throw new Error("P4 P0 dispDriver signup did not return pendingConfirmationToken");
+  }
+  await confirmTotpSignup(dispDriver.pendingConfirmationToken, dispDriver.totpSecret);
   const dispDriverCookie = cookieHeader;
   console.log("[OK] P4 P0 setup: driver linked to dispatcher-assigned client");
 
