@@ -1102,7 +1102,7 @@ export interface UserInternal {
   // Phase 7 presence — last authenticated /api hit.
   lastSeenAt?: string;
   // i18n — last UI language picked. NULL until first explicit choice.
-  preferredLang?: "ru" | "en";
+  preferredLang?: "ru" | "en" | "es" | "fr";
   // Henry QA Bug #5 — truck unit number (drivers only). NULL = not assigned.
   unitNumber?: string;
   // fix/totp-onboarding-verify — NULL until confirmed; blocks login if NULL and totpSecret is set.
@@ -1574,7 +1574,7 @@ export const storage = {
   },
 
   /** i18n — persist the user's UI language choice (cross-device). */
-  setUserPreferredLang(id: string, lang: "ru" | "en"): void {
+  setUserPreferredLang(id: string, lang: "ru" | "en" | "es" | "fr"): void {
     sqlite
       .prepare("UPDATE users SET preferred_lang = ?, updated_at = ? WHERE id = ?")
       .run(lang, now(), id);
