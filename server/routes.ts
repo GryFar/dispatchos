@@ -14,6 +14,8 @@ import {
   insertLoadFullSchema,
   signupSchema,
   telegramCommandSchema,
+  totpConfirmSignupSchema,
+  totpResumeSetupSchema,
   updateLocationSchema,
   updateMyPreferencesSchema,
   updateOnboardingProgressSchema,
@@ -62,6 +64,50 @@ import crypto from "node:crypto";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// fix/totp-onboarding-verify — pending-confirmation token helpers
+// ---------------------------------------------------------------------------
+// Short-lived (10 min) HMAC-SHA256-signed tokens used during TOTP onboarding.
+// Issued by POST /api/auth/signup (instead of a full session), consumed by
+// POST /api/auth/totp/confirm-signup once the user verifies their first code.
+// Derives from SESSION_SECRET — no new env var needed.
+const PENDING_TOKEN_SECRET = crypto
+  .createHash("sha256")
+  .update(`pending-totp-${process.env.SESSION_SECRET || "dispatchos-dev-secret"}`)
+  .digest();
+
+function makePendingConfirmationToken(userId: string): string {
+  const expiresAt = Date.now() + 10 * MINUTE;
+  const payload = `${userId}:${expiresAt}`;
+  const sig = crypto
+    .createHmac("sha256", PENDING_TOKEN_SECRET)
+    .update(payload)
+    .digest("base64url");
+  return Buffer.from(`${payload}.${sig}`).toString("base64url");
+}
+
+function verifyPendingConfirmationToken(token: string): { userId: string } | null {
+  try {
+    const decoded = Buffer.from(token, "base64url").toString("utf8");
+    const lastDot = decoded.lastIndexOf(".");
+    if (lastDot < 0) return null;
+    const payload = decoded.slice(0, lastDot);
+    const sig = decoded.slice(lastDot + 1);
+    const expectedSig = crypto
+      .createHmac("sha256", PENDING_TOKEN_SECRET)
+      .update(payload)
+      .digest("base64url");
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) return null;
+    const [userId, expiresAtStr] = payload.split(":");
+    if (!userId || !expiresAtStr) return null;
+    const expiresAt = Number(expiresAtStr);
+    if (Date.now() > expiresAt) return null;
+    return { userId };
+  } catch {
+    return null;
+  }
+}
 
 const seedClients: Client[] = [
   {
@@ -1055,6 +1101,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error("[auth] password rehash upgrade failed:", err);
       }
     }
+    // fix/totp-onboarding-verify — block login if TOTP secret exists but was
+    // never verified during signup. The user skipped the verification step,
+    // so their authenticator may not be set up correctly. Direct them to the
+    // resume-setup flow which re-shows the QR + requires a valid code.
+    if (user.totpSecret && !user.totpConfirmedAt) {
+      storage.audit("auth.login_failed", "user", user.id, { reason: "totp_setup_required" });
+      return res.status(401).json({
+        message: "Завершите настройку 2FA — отсканируйте QR и подтвердите код.",
+        code: "totp_setup_required",
+      });
+    }
+
     if (user.totpSecret) {
       const submittedToken = String(body.token || "").trim();
 
@@ -1199,37 +1257,135 @@ export async function registerRoutes(app: Express): Promise<Server> {
       role: created.role,
     });
 
-    // Audit V2-2 — regenerate session id before binding userId on signup auto-login.
-    // Done synchronously via a one-shot Promise so we can keep returning a typed
-    // response below without restructuring the whole handler.
+    // fix/totp-onboarding-verify (2026-05-27) — do NOT log the user in yet.
+    // Instead, issue a short-lived pending-confirmation token (10 min).
+    // The frontend will show the QR + a 6-digit verification input.
+    // Only after the user successfully enters a valid TOTP code does
+    // POST /api/auth/totp/confirm-signup stamp totp_confirmed_at and
+    // create the real session. This prevents the "scanned the QR but
+    // skipped verification" lockout that Henry (QA) hit.
+    const pendingConfirmationToken = makePendingConfirmationToken(created.id);
+    const redirect =
+      created.role === "admin" ? "/admin" : created.role === "dispatcher" ? "/dispatch" : "/d";
+    storage.audit("auth.signup_pending_totp", "user", created.id, { role: created.role });
+    return res.status(201).json({
+      id: created.id,
+      email: created.email,
+      role: created.role,
+      totpSecret,
+      otpauthUrl: buildOtpAuthUrl(created.email, totpSecret),
+      redirect,
+      pendingConfirmationToken,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/auth/totp/confirm-signup — fix/totp-onboarding-verify
+  // -------------------------------------------------------------------------
+  // Called by the PostSignupTotp component after the user enters a valid
+  // 6-digit code for the first time. Validates the pending-confirmation token
+  // (10-min HMAC), verifies the TOTP code, stamps totp_confirmed_at, then
+  // creates a full session just like login does.
+  // -------------------------------------------------------------------------
+  app.post("/api/auth/totp/confirm-signup", (req, res) => {
+    let body: { pendingConfirmationToken: string; token: string };
+    try {
+      body = totpConfirmSignupSchema.parse(req.body);
+    } catch (error) {
+      return handleZodError(error, res);
+    }
+
+    const claimed = verifyPendingConfirmationToken(body.pendingConfirmationToken);
+    if (!claimed) {
+      return res.status(401).json({
+        message: "Ссылка истекла — повторите регистрацию.",
+        code: "token_expired",
+      });
+    }
+
+    const user = storage.getUserById(claimed.userId);
+    if (!user || !user.totpSecret) {
+      return res.status(404).json({ message: "User not found or 2FA not configured" });
+    }
+
+    const minCounter = storage.getLastUsedTotpCounter(user.id);
+    const acceptedCounter = verifyTotp(user.totpSecret, body.token.trim(), minCounter);
+    if (acceptedCounter === null) {
+      storage.audit("auth.confirm_signup_failed", "user", user.id, { reason: "bad_totp" });
+      return res.status(401).json({
+        message: "Неверный код — проверьте цифры в приложении и повторите.",
+        code: "totp_invalid",
+      });
+    }
+
+    storage.setLastUsedTotpCounter(user.id, acceptedCounter);
+    storage.confirmTotpSetup(user.id);
+    storage.audit("auth.totp_confirmed", "user", user.id, {});
+
     req.session.regenerate((regenErr) => {
       if (regenErr) {
-        console.error("[auth] signup regenerate failed:", regenErr);
-        return res.status(500).json({ message: "Signup failed after user create" });
+        console.error("[auth] confirm-signup regenerate failed:", regenErr);
+        return res.status(500).json({ message: "Session create failed" });
       }
-      req.session.userId = created.id;
-      req.session.role = created.role;
+      req.session.userId = user.id;
+      req.session.role = user.role;
       req.session.authenticated = true;
       req.session.save((saveErr) => {
         if (saveErr) {
-          console.error("[auth] signup save failed:", saveErr);
-          return res.status(500).json({ message: "Signup failed after user create" });
+          console.error("[auth] confirm-signup save failed:", saveErr);
+          return res.status(500).json({ message: "Session create failed" });
         }
-        storage.recordUserLogin(created.id);
-        storage.audit("auth.signup_login", "user", created.id, { role: created.role });
-
+        storage.recordUserLogin(user.id);
+        storage.audit("auth.signup_login", "user", user.id, { role: user.role });
         const redirect =
-          created.role === "admin" ? "/admin" : created.role === "dispatcher" ? "/dispatch" : "/d";
-
-        return res.status(201).json({
-          id: created.id,
-          email: created.email,
-          role: created.role,
-          totpSecret,
-          otpauthUrl: buildOtpAuthUrl(created.email, totpSecret),
-          redirect,
-        });
+          user.role === "admin" ? "/admin" : user.role === "dispatcher" ? "/dispatch" : "/d";
+        return res.json({ ok: true, role: user.role, redirect });
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/auth/totp/resume-setup — fix/totp-onboarding-verify
+  // -------------------------------------------------------------------------
+  // For users who signed up but never completed TOTP verification and are now
+  // locked out (totp_setup_required). They call this with email + password to
+  // re-fetch their QR code / TOTP URI and a fresh pending-confirmation token.
+  // The same confirm-signup endpoint is then used to verify and create a session.
+  // -------------------------------------------------------------------------
+  app.post("/api/auth/totp/resume-setup", (req, res) => {
+    let body: { email: string; password: string };
+    try {
+      body = totpResumeSetupSchema.parse(req.body);
+    } catch (error) {
+      return handleZodError(error, res);
+    }
+
+    const lookupEmail = body.email.toLowerCase();
+    const user = storage.getUserByEmail(lookupEmail);
+    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+    if (user.blocked) return res.status(403).json({ message: "Account is blocked" });
+
+    const pwResult = verifyPassword(body.password, user.passwordSalt, user.passwordHash);
+    if (!pwResult.ok) return res.status(401).json({ message: "Invalid credentials" });
+
+    // Only allow resume if they genuinely haven't confirmed yet.
+    if (user.totpConfirmedAt) {
+      return res.status(409).json({
+        message: "2FA is already confirmed. Please log in normally.",
+        code: "already_confirmed",
+      });
+    }
+
+    if (!user.totpSecret) {
+      return res.status(409).json({ message: "No TOTP configured for this account" });
+    }
+
+    const pendingConfirmationToken = makePendingConfirmationToken(user.id);
+    storage.audit("auth.totp_resume_setup", "user", user.id, {});
+    return res.json({
+      otpauthUrl: buildOtpAuthUrl(user.email, user.totpSecret),
+      totpSecret: user.totpSecret,
+      pendingConfirmationToken,
     });
   });
 

@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { type ChangeEvent, useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { Link } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { AlertTriangle, Loader2, Truck } from "lucide-react";
-import type { LoginResponse } from "@shared/schema";
+import { AlertCircle, AlertTriangle, CheckCircle2, Copy, Loader2, ShieldCheck, Truck } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
+import type { LoginResponse, TotpResumeSetupResponse } from "@shared/schema";
 import { ApiError, apiJson } from "@/lib/queryClient";
 import { refreshAuth, useAuth } from "@/lib/use-auth";
 import { defaultRouteForRole } from "@/components/role-gate";
@@ -59,6 +60,9 @@ export default function LoginPage() {
   const { user, isLoading: authLoading } = useAuth();
   const [needsTotp, setNeedsTotp] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  // fix/totp-onboarding-verify — for users who signed up but never verified TOTP
+  const [resumeSetupEmail, setResumeSetupEmail] = useState<string | null>(null);
+  const [resumeSetupPassword, setResumeSetupPassword] = useState<string | null>(null);
 
   // Recompute schema when language changes so validation messages localize too.
   const schema = useMemo(() => buildSchema(t), [t]);
@@ -110,6 +114,13 @@ export default function LoginPage() {
         // for any in-flight deploys that haven't picked up the new code
         // yet, so we don't strand a user on a half-rolled-out version.
         const errBody = err.body as { code?: string } | null;
+        // fix/totp-onboarding-verify — user signed up but skipped TOTP verification.
+        // Show the resume-setup flow so they can scan the QR and verify their code.
+        if (err.status === 401 && errBody?.code === "totp_setup_required") {
+          setResumeSetupEmail(values.email);
+          setResumeSetupPassword(values.password);
+          return;
+        }
         const isTotpRequired =
           err.status === 401 &&
           (errBody?.code === "totp_required" ||
@@ -137,6 +148,25 @@ export default function LoginPage() {
       }
       setGlobalError(t("login.errorNetwork"));
     }
+  }
+
+  // fix/totp-onboarding-verify — show resume flow if user needs to complete 2FA setup
+  if (resumeSetupEmail && resumeSetupPassword) {
+    return (
+      <AuthShell>
+        <Resume2FASetup
+          email={resumeSetupEmail}
+          password={resumeSetupPassword}
+          onBack={() => {
+            setResumeSetupEmail(null);
+            setResumeSetupPassword(null);
+          }}
+          onDone={(role: string, redirect: string) =>
+            setLocation(redirectTo || redirect || defaultRouteForRole(role as any))
+          }
+        />
+      </AuthShell>
+    );
   }
 
   return (
@@ -227,6 +257,162 @@ export default function LoginPage() {
         {t("login.noAccount")} <Link href="/signup" className="text-foreground underline-offset-4 hover:underline">{t("login.signupLink")}</Link>
       </div>
     </AuthShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Resume2FASetup — fix/totp-onboarding-verify
+// ---------------------------------------------------------------------------
+// Shown when login returns totp_setup_required (user signed up but never
+// verified their TOTP code). Calls resume-setup to get the QR + a fresh
+// pending token, then calls confirm-signup to verify and create a session.
+// ---------------------------------------------------------------------------
+function Resume2FASetup({
+  email,
+  password,
+  onBack,
+  onDone,
+}: {
+  email: string;
+  password: string;
+  onBack: () => void;
+  onDone: (role: string, redirect: string) => void;
+}) {
+  const { t } = useT();
+  const [setupData, setSetupData] = useState<TotpResumeSetupResponse | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // Fetch QR data on mount
+  useEffect(() => {
+    let cancelled = false;
+    apiJson<TotpResumeSetupResponse>("POST", "/api/auth/totp/resume-setup", { email, password })
+      .then((d) => { if (!cancelled) setSetupData(d); })
+      .catch(() => { if (!cancelled) setLoadError(t("totp.setup.invalidCode")); });
+    return () => { cancelled = true; };
+  }, [email, password]);
+
+  async function handleVerify() {
+    if (!setupData || code.length !== 6) return;
+    setVerifyError(null);
+    setVerifying(true);
+    try {
+      const result = await apiJson<{ ok: boolean; role: string; redirect: string }>(
+        "POST",
+        "/api/auth/totp/confirm-signup",
+        { pendingConfirmationToken: setupData.pendingConfirmationToken, token: code },
+      );
+      await refreshAuth();
+      onDone(result.role, result.redirect);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        const errBody = err.body as { code?: string } | null;
+        if (errBody?.code === "token_expired") {
+          setVerifyError(t("totp.setup.tokenExpired"));
+        } else {
+          setVerifyError(t("totp.setup.invalidCode"));
+        }
+      } else {
+        setVerifyError(t("totp.setup.invalidCode"));
+      }
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  async function copySecret() {
+    if (!setupData?.totpSecret) return;
+    try {
+      await navigator.clipboard.writeText(setupData.totpSecret);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* ignore */ }
+  }
+
+  if (loadError) {
+    return (
+      <div className="space-y-4 text-center">
+        <AlertCircle className="mx-auto h-10 w-10 text-destructive" />
+        <p className="text-sm text-destructive">{loadError}</p>
+        <Button variant="outline" onClick={onBack} className="w-full">
+          {t("totp.setup.back")}
+        </Button>
+      </div>
+    );
+  }
+
+  if (!setupData) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-8">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">{t("totp.setup.loading")}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col items-center gap-2 text-center">
+        <ShieldCheck className="h-10 w-10 text-primary" />
+        <h1 className="text-xl font-semibold tracking-tight">{t("totp.setup.resumeTitle")}</h1>
+        <p className="text-sm text-muted-foreground">{t("totp.setup.resumeSubtitle")}</p>
+      </div>
+
+      <div className="flex justify-center rounded-md border border-border bg-card p-3">
+        <QRCodeSVG value={setupData.otpauthUrl} size={176} level="M" aria-label="TOTP QR" />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label className="text-xs">{t("signup.totpManual")}</Label>
+        <div className="flex items-center gap-2">
+          <Input readOnly value={setupData.totpSecret} className="font-mono text-xs" />
+          <Button type="button" variant="outline" size="icon" onClick={copySecret}>
+            {copied ? <CheckCircle2 className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="resume-totp-code">{t("totp.setup.enterCode")}</Label>
+        <Input
+          id="resume-totp-code"
+          type="text"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          maxLength={6}
+          placeholder="000000"
+          autoFocus
+          className="font-mono tracking-widest text-center text-lg"
+          value={code}
+          onChange={(e: ChangeEvent<HTMLInputElement>) =>
+            setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+          }
+        />
+      </div>
+
+      {verifyError && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="text-xs">{verifyError}</AlertDescription>
+        </Alert>
+      )}
+
+      <Button
+        onClick={handleVerify}
+        className="w-full"
+        disabled={code.length !== 6 || verifying}
+      >
+        {verifying && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+        {t("totp.setup.verify")}
+      </Button>
+
+      <Button variant="ghost" onClick={onBack} className="w-full text-xs">
+        {t("totp.setup.back")}
+      </Button>
+    </div>
   );
 }
 

@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useEffect, useMemo, useState } from "react";
 import { useLocation, Link } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { CheckCircle2, Copy, Loader2, ShieldCheck } from "lucide-react";
+import { AlertCircle, CheckCircle2, Copy, Loader2, ShieldCheck } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { SignupResponse } from "@shared/schema";
 import { ApiError, apiJson } from "@/lib/queryClient";
@@ -78,7 +78,10 @@ export default function SignupPage() {
         fullName: values.fullName,
         password: values.password,
       });
-      await refreshAuth();
+      // fix/totp-onboarding-verify: do NOT call refreshAuth() here.
+      // The user is NOT logged in yet — the backend returns a pendingConfirmationToken
+      // instead of a session. refreshAuth() will be called by PostSignupTotp after
+      // the TOTP code is successfully verified.
       setSuccessData(data);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -213,11 +216,24 @@ export default function SignupPage() {
   );
 }
 
-/** Post-signup TOTP setup — show QR + secret, ask user to scan before continuing. */
+/**
+ * Post-signup TOTP setup — show QR + secret, then require a 6-digit code
+ * before the account is considered fully set up.
+ *
+ * fix/totp-onboarding-verify: this component now calls
+ * POST /api/auth/totp/confirm-signup with the pendingConfirmationToken from
+ * the signup response. Only after a valid code is entered does the server
+ * create a real session and stamp totp_confirmed_at. If the user had skipped
+ * this step before (Henry's QA scenario) they would have been permanently
+ * locked out on next login.
+ */
 function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue: () => void }) {
   const { t } = useT();
   const hasTotp = Boolean(data.totpSecret && data.otpauthUrl);
   const [copied, setCopied] = useState(false);
+  const [code, setCode] = useState("");
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
 
   if (!hasTotp) {
     return (
@@ -237,6 +253,34 @@ function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue
       setTimeout(() => setCopied(false), 1500);
     } catch {
       // clipboard blocked — пользователь скопирует руками
+    }
+  }
+
+  async function handleVerify() {
+    if (code.length !== 6) return;
+    setVerifyError(null);
+    setVerifying(true);
+    try {
+      await apiJson("POST", "/api/auth/totp/confirm-signup", {
+        pendingConfirmationToken: data.pendingConfirmationToken,
+        token: code,
+      });
+      // Session is now created server-side — sync auth state then continue.
+      await refreshAuth();
+      onContinue();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        const errBody = err.body as { code?: string } | null;
+        if (errBody?.code === "token_expired") {
+          setVerifyError(t("totp.setup.tokenExpired"));
+        } else {
+          setVerifyError(t("totp.setup.invalidCode"));
+        }
+      } else {
+        setVerifyError(t("totp.setup.invalidCode"));
+      }
+    } finally {
+      setVerifying(false);
     }
   }
 
@@ -266,8 +310,38 @@ function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue
         <AlertDescription className="text-xs">{t("signup.totpWarning")}</AlertDescription>
       </Alert>
 
-      <Button onClick={onContinue} className="w-full">
-        {t("signup.totpContinue")}
+      {/* Verification step — required before account is activated */}
+      <div className="space-y-1.5">
+        <Label htmlFor="totp-verify-code">{t("totp.setup.enterCode")}</Label>
+        <Input
+          id="totp-verify-code"
+          type="text"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          maxLength={6}
+          placeholder="000000"
+          className="font-mono tracking-widest text-center text-lg"
+          value={code}
+          onChange={(e: ChangeEvent<HTMLInputElement>) =>
+            setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+          }
+        />
+      </div>
+
+      {verifyError && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="text-xs">{verifyError}</AlertDescription>
+        </Alert>
+      )}
+
+      <Button
+        onClick={handleVerify}
+        className="w-full"
+        disabled={code.length !== 6 || verifying}
+      >
+        {verifying && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+        {t("totp.setup.verify")}
       </Button>
     </div>
   );

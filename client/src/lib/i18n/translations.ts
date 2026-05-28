@@ -185,6 +185,16 @@ const ru: Dict = {
   "lang.switch": "Язык интерфейса",
   "lang.ru": "Русский",
   "lang.en": "English",
+
+  // fix/totp-onboarding-verify — TOTP setup verification strings
+  "totp.setup.enterCode": "Введите 6-значный код из аутентификатора",
+  "totp.setup.verify": "Подтвердить и продолжить",
+  "totp.setup.invalidCode": "Неверный код. Проверьте цифры в приложении и повторите.",
+  "totp.setup.tokenExpired": "Ссылка истекла. Повторите регистрацию или воспользуйтесь восстановлением.",
+  "totp.setup.resumeTitle": "Завершите настройку 2FA",
+  "totp.setup.resumeSubtitle": "Отсканируйте QR-код в аутентификаторе и введите полученный код для входа.",
+  "totp.setup.loading": "Загрузка данных 2FA…",
+  "totp.setup.back": "Назад ко входу",
 };
 
 const en: Dict = {
@@ -352,6 +362,16 @@ const en: Dict = {
   "lang.switch": "Interface language",
   "lang.ru": "Русский",
   "lang.en": "English",
+
+  // fix/totp-onboarding-verify — TOTP setup verification strings
+  "totp.setup.enterCode": "Enter the 6-digit code from your authenticator",
+  "totp.setup.verify": "Verify & continue",
+  "totp.setup.invalidCode": "Invalid code. Check the digits in your app and try again.",
+  "totp.setup.tokenExpired": "Link expired. Re-register or use the resume-setup option.",
+  "totp.setup.resumeTitle": "Complete 2FA setup",
+  "totp.setup.resumeSubtitle": "Scan the QR code in your authenticator app and enter the code to sign in.",
+  "totp.setup.loading": "Loading 2FA data…",
+  "totp.setup.back": "Back to sign in",
 };
 
 export const TRANSLATIONS: Record<Lang, Dict> = { ru, en };

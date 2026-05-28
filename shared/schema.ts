@@ -44,6 +44,11 @@ export const driverLocationSchema = z.object({
 export const clientSchema = z.object({
   id: z.string(),
   name: z.string(),
+  // Henry QA Bug #6+7 — contact person. All optional; set via admin client-detail.
+  // Display pattern: "TRUCKING — John Smith" via formatClientDisplay() in shared/format-client.ts.
+  contactPersonName: z.string().optional(),
+  contactPersonEmail: z.string().email().optional(),
+  contactPersonPhone: z.string().optional(),
   mc: z.string(),
   equipment: equipmentSchema,
   targetPpm: z.number(),
@@ -351,14 +356,17 @@ export const userPublicSchema = z.object({
   // i18n — last UI language the user picked. Synced across devices via
   // PATCH /api/me/preferences. Frontend falls back to localStorage when
   // this is null (e.g. legacy users who never picked).
-  preferredLang: z.enum(["ru", "en"]).nullable().optional(),
+  preferredLang: z.enum(["ru", "en", "es", "fr"]).nullable().optional(),
+  // Henry QA Bug #5 — truck unit number. Only meaningful for role=driver;
+  // dispatchers/admins can set it on driver detail pages. Null = not assigned.
+  unitNumber: z.string().nullable().optional(),
 });
 
 // Body schema for PATCH /api/me/preferences— currently only carries
 // preferredLang but kept open for future per-user prefs (theme, density,
 // notification opts, etc.).
 export const updateMyPreferencesSchema = z.object({
-  preferredLang: z.enum(["ru", "en"]).optional(),
+  preferredLang: z.enum(["ru", "en", "es", "fr"]).optional(),
 });
 
 // Input schema for admin creating a new user (no password — set via invite
@@ -379,6 +387,8 @@ export const updateUserSchema = z.object({
   role: userRoleSchema.optional(),
   blocked: z.boolean().optional(),
   linkedClientId: z.string().nullable().optional(),
+  // Henry QA Bug #5 — truck unit number for drivers.
+  unitNumber: z.string().max(50).nullable().optional(),
 });
 
 // ===========================================================================
@@ -713,8 +723,33 @@ export const signupResponseSchema = z.object({
   totpSecret: z.string().optional(),
   otpauthUrl: z.string().optional(),
   redirect: z.string(),
+  // fix/totp-onboarding-verify: short-lived token (10 min) for the confirm-signup
+  // step. Required for new users; absent for legacy bootstrapped users.
+  pendingConfirmationToken: z.string().optional(),
 });
 export type SignupResponse = z.infer<typeof signupResponseSchema>;
+
+/** Body for POST /api/auth/totp/confirm-signup */
+export const totpConfirmSignupSchema = z.object({
+  pendingConfirmationToken: z.string().min(1),
+  token: z.string().length(6),
+});
+export type TotpConfirmSignupInput = z.infer<typeof totpConfirmSignupSchema>;
+
+/** Body for POST /api/auth/totp/resume-setup */
+export const totpResumeSetupSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+export type TotpResumeSetupInput = z.infer<typeof totpResumeSetupSchema>;
+
+/** Response from POST /api/auth/totp/resume-setup */
+export const totpResumeSetupResponseSchema = z.object({
+  otpauthUrl: z.string(),
+  totpSecret: z.string(),
+  pendingConfirmationToken: z.string(),
+});
+export type TotpResumeSetupResponse = z.infer<typeof totpResumeSetupResponseSchema>;
 
 // ===========================================================================
 // PHASE 3 P2 ADDITIONS — load <-> client booking link

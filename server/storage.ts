@@ -412,6 +412,30 @@ function ensureUserDriverColumns() {
     // client falls back to localStorage / browser locale. 'ru' | 'en'.
     sqlite.exec("ALTER TABLE users ADD COLUMN preferred_lang TEXT");
   }
+  // Henry QA Bug #5 — truck unit number. Only meaningful for role='driver';
+  // dispatchers/admins see it in the user list and can set it on driver cards.
+  // NULL = not assigned. Short free-form string (e.g. "Unit 42", "T-07").
+  if (!names.has("unit_number")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN unit_number TEXT");
+  }
+  // fix/totp-onboarding-verify (2026-05-27) — Henry's QA bug.
+  // NULL = user has never successfully entered a TOTP code after signup.
+  // New signups stay NULL until POST /api/auth/totp/confirm-signup succeeds.
+  // Existing users who have logged in before are backfilled to created_at
+  // (they obviously set up TOTP successfully at some point).
+  if (!names.has("totp_confirmed_at")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN totp_confirmed_at TEXT");
+    // Backfill: anyone who has logged in at least once AND has a totp_secret
+    // has clearly completed 2FA setup — auto-confirm them so they aren't
+    // retroactively locked out by the new gate.
+    sqlite.exec(`
+      UPDATE users
+      SET totp_confirmed_at = created_at
+      WHERE totp_secret IS NOT NULL
+        AND last_login_at IS NOT NULL
+        AND totp_confirmed_at IS NULL
+    `);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -731,6 +755,30 @@ sqlite.exec(`
 // here (post-create) keeps the ALTER idempotent on existing DBs and correct on
 // new ones.
 ensureDriverDocumentsColumns();
+
+// ---------------------------------------------------------------------------
+// Henry QA Bug #6+7 — Client contact person columns.
+// ---------------------------------------------------------------------------
+// The clients table primarily stores data as a JSON payload (per v1.2.7
+// design). These flat columns mirror the contact-person fields for potential
+// future SQL queries / joins. The JSON payload is always the source of truth
+// for reads (getClient / listClients parse payload); these columns are
+// populated on each upsertClient call for indexability.
+function ensureClientContactColumns() {
+  const cols = sqlite.prepare("PRAGMA table_info(clients)").all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("contact_person_name")) {
+    sqlite.exec("ALTER TABLE clients ADD COLUMN contact_person_name TEXT");
+  }
+  if (!names.has("contact_person_email")) {
+    sqlite.exec("ALTER TABLE clients ADD COLUMN contact_person_email TEXT");
+  }
+  if (!names.has("contact_person_phone")) {
+    sqlite.exec("ALTER TABLE clients ADD COLUMN contact_person_phone TEXT");
+  }
+}
+ensureClientContactColumns();
+
 // ---------------------------------------------------------------------------
 // Phase 6.1 — Broker safety audit snapshots (SCOTUS Montgomery v. Caribe, 2026-05-14)
 // ---------------------------------------------------------------------------
@@ -1015,6 +1063,10 @@ interface UserRow {
   last_seen_at: string | null;
   // i18n — last UI language chosen ('ru' | 'en'). NULL until first choice.
   preferred_lang: string | null;
+  // Henry QA Bug #5 — truck unit number. Drivers only; nullable.
+  unit_number: string | null;
+  // fix/totp-onboarding-verify — NULL until user enters a valid code after signup.
+  totp_confirmed_at: string | null;
 }
 
 export interface UserInternal {
@@ -1050,7 +1102,11 @@ export interface UserInternal {
   // Phase 7 presence — last authenticated /api hit.
   lastSeenAt?: string;
   // i18n — last UI language picked. NULL until first explicit choice.
-  preferredLang?: "ru" | "en";
+  preferredLang?: "ru" | "en" | "es" | "fr";
+  // Henry QA Bug #5 — truck unit number (drivers only). NULL = not assigned.
+  unitNumber?: string;
+  // fix/totp-onboarding-verify — NULL until confirmed; blocks login if NULL and totpSecret is set.
+  totpConfirmedAt?: string;
 }
 
 // Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
@@ -1117,6 +1173,8 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
       row.preferred_lang === "ru" || row.preferred_lang === "en"
         ? row.preferred_lang
         : undefined,
+    unitNumber: row.unit_number ?? undefined,
+    totpConfirmedAt: row.totp_confirmed_at ?? undefined,
   };
 }
 
@@ -1139,6 +1197,10 @@ function toUserPublic(user: UserInternal, extras?: { assignedClientIds?: string[
     lastSeenAt: user.lastSeenAt,
     deletedAt: user.deletedAt ?? null,
     preferredLang: user.preferredLang ?? null,
+    // Henry QA Bug #5 — truck unit number. Only surfaced for role=driver;
+    // admin UI reads it for all roles to show in user tables, but it is
+    // semantically a driver-only field.
+    unitNumber: user.unitNumber ?? null,
   };
 }
 
@@ -1391,6 +1453,8 @@ export const storage = {
       // Phase 4 P2: settable by driver via TG bot (/status) or dispatcher.
       driverStatus?: DriverStatus;
       phone?: string | null;
+      // Henry QA Bug #5 — truck unit number (drivers only).
+      unitNumber?: string | null;
     },
     actorUserId?: string,
   ): UserInternal | undefined {
@@ -1436,6 +1500,10 @@ export const storage = {
     if (patch.phone !== undefined) {
       sets.push("phone = ?");
       params.push(patch.phone);
+    }
+    if (patch.unitNumber !== undefined) {
+      sets.push("unit_number = ?");
+      params.push(patch.unitNumber);
     }
     if (sets.length === 0) return existing;
     sets.push("updated_at = ?");
@@ -1492,8 +1560,21 @@ export const storage = {
       .run(counter, id);
   },
 
+  /** fix/totp-onboarding-verify — stamp totp_confirmed_at for a user who
+   *  just entered a valid 6-digit code for the first time. Idempotent:
+   *  if already set, the existing timestamp is preserved. */
+  confirmTotpSetup(id: string): UserInternal | undefined {
+    const ts = now();
+    sqlite
+      .prepare(
+        "UPDATE users SET totp_confirmed_at = COALESCE(totp_confirmed_at, ?), updated_at = ? WHERE id = ?",
+      )
+      .run(ts, ts, id);
+    return this.getUserById(id);
+  },
+
   /** i18n — persist the user's UI language choice (cross-device). */
-  setUserPreferredLang(id: string, lang: "ru" | "en"): void {
+  setUserPreferredLang(id: string, lang: "ru" | "en" | "es" | "fr"): void {
     sqlite
       .prepare("UPDATE users SET preferred_lang = ?, updated_at = ? WHERE id = ?")
       .run(lang, now(), id);
@@ -2847,15 +2928,30 @@ export const storage = {
     const client = { ...input, id } as Client;
     const timestamp = now();
 
+    // Henry QA Bug #6+7: mirror contact person fields to flat columns for
+    // potential future SQL queries. JSON payload remains the source of truth.
     sqlite
       .prepare(
         `
-        INSERT INTO clients (id, payload, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
+        INSERT INTO clients (id, payload, created_at, updated_at, contact_person_name, contact_person_email, contact_person_phone)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          payload = excluded.payload,
+          updated_at = excluded.updated_at,
+          contact_person_name = excluded.contact_person_name,
+          contact_person_email = excluded.contact_person_email,
+          contact_person_phone = excluded.contact_person_phone
       `,
       )
-      .run(id, JSON.stringify(client), existing ? timestamp : timestamp, timestamp);
+      .run(
+        id,
+        JSON.stringify(client),
+        existing ? timestamp : timestamp,
+        timestamp,
+        (client as any).contactPersonName ?? null,
+        (client as any).contactPersonEmail ?? null,
+        (client as any).contactPersonPhone ?? null,
+      );
 
     this.audit(existing ? "client.updated" : "client.created", "client", id, client);
     return client;
