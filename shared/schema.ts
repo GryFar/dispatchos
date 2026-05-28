@@ -44,6 +44,11 @@ export const driverLocationSchema = z.object({
 export const clientSchema = z.object({
   id: z.string(),
   name: z.string(),
+  // Henry QA Bug #6+7 — contact person. All optional; set via admin client-detail.
+  // Display pattern: "TRUCKING — John Smith" via formatClientDisplay() in shared/format-client.ts.
+  contactPersonName: z.string().optional(),
+  contactPersonEmail: z.string().email().optional(),
+  contactPersonPhone: z.string().optional(),
   mc: z.string(),
   equipment: equipmentSchema,
   targetPpm: z.number(),

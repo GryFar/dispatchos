@@ -755,6 +755,30 @@ sqlite.exec(`
 // here (post-create) keeps the ALTER idempotent on existing DBs and correct on
 // new ones.
 ensureDriverDocumentsColumns();
+
+// ---------------------------------------------------------------------------
+// Henry QA Bug #6+7 — Client contact person columns.
+// ---------------------------------------------------------------------------
+// The clients table primarily stores data as a JSON payload (per v1.2.7
+// design). These flat columns mirror the contact-person fields for potential
+// future SQL queries / joins. The JSON payload is always the source of truth
+// for reads (getClient / listClients parse payload); these columns are
+// populated on each upsertClient call for indexability.
+function ensureClientContactColumns() {
+  const cols = sqlite.prepare("PRAGMA table_info(clients)").all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("contact_person_name")) {
+    sqlite.exec("ALTER TABLE clients ADD COLUMN contact_person_name TEXT");
+  }
+  if (!names.has("contact_person_email")) {
+    sqlite.exec("ALTER TABLE clients ADD COLUMN contact_person_email TEXT");
+  }
+  if (!names.has("contact_person_phone")) {
+    sqlite.exec("ALTER TABLE clients ADD COLUMN contact_person_phone TEXT");
+  }
+}
+ensureClientContactColumns();
+
 // ---------------------------------------------------------------------------
 // Phase 6.1 — Broker safety audit snapshots (SCOTUS Montgomery v. Caribe, 2026-05-14)
 // ---------------------------------------------------------------------------
@@ -2904,15 +2928,30 @@ export const storage = {
     const client = { ...input, id } as Client;
     const timestamp = now();
 
+    // Henry QA Bug #6+7: mirror contact person fields to flat columns for
+    // potential future SQL queries. JSON payload remains the source of truth.
     sqlite
       .prepare(
         `
-        INSERT INTO clients (id, payload, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
+        INSERT INTO clients (id, payload, created_at, updated_at, contact_person_name, contact_person_email, contact_person_phone)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          payload = excluded.payload,
+          updated_at = excluded.updated_at,
+          contact_person_name = excluded.contact_person_name,
+          contact_person_email = excluded.contact_person_email,
+          contact_person_phone = excluded.contact_person_phone
       `,
       )
-      .run(id, JSON.stringify(client), existing ? timestamp : timestamp, timestamp);
+      .run(
+        id,
+        JSON.stringify(client),
+        existing ? timestamp : timestamp,
+        timestamp,
+        (client as any).contactPersonName ?? null,
+        (client as any).contactPersonEmail ?? null,
+        (client as any).contactPersonPhone ?? null,
+      );
 
     this.audit(existing ? "client.updated" : "client.created", "client", id, client);
     return client;
