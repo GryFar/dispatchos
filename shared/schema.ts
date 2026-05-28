@@ -173,6 +173,8 @@ export const loadSchema = z.object({
   fraudRisk: z.number(),
   marketQuality: z.number(),
   notes: z.string().optional(),
+  /** First-class driver assignment. Replaces the additive loadDriverFieldsSchema addon. */
+  driverId: z.string().optional(),
 });
 
 export const insertLoadSchema = loadSchema.partial({ id: true }).extend({
@@ -847,19 +849,22 @@ export const updateDriverProfileSchema = z
 export type UpdateDriverProfileInput = z.infer<typeof updateDriverProfileSchema>;
 
 /**
- * Optional driver-link field for loads. Like loadBookingFieldsSchema, this is
- * additive — POST /api/loads keeps accepting bodies without it.
+ * @deprecated driverId is now a first-class field on loadSchema.
+ * Kept for backward compatibility with any external code referencing this
+ * schema name, but the field no longer needs to be merged additively.
  */
 export const loadDriverFieldsSchema = z.object({
   driverId: z.string().optional(),
 });
 
-/** loadSchema + booking + driver. Full Phase 4 read shape. */
-export const loadFullSchema = loadWithBookingSchema.merge(loadDriverFieldsSchema);
+/** loadSchema + booking. Full Phase 4 read shape.
+ * driverId is already part of loadSchema, so no explicit merge needed.
+ */
+export const loadFullSchema = loadWithBookingSchema;
 export type LoadFull = z.infer<typeof loadFullSchema>;
 
-/** insertLoadSchema + booking + driver. POST /api/loads accepts this body. */
-export const insertLoadFullSchema = insertLoadWithBookingSchema.merge(loadDriverFieldsSchema);
+/** insertLoadSchema + booking. POST /api/loads accepts this body. */
+export const insertLoadFullSchema = insertLoadWithBookingSchema;
 export type InsertLoadFull = z.infer<typeof insertLoadFullSchema>;
 
 /**
@@ -887,6 +892,8 @@ export const driverDashboardSchema = z.object({
       id: z.string(),
       name: z.string(),
       mc: z.string(),
+      /** Carrier persona — used by driver portal to show self-dispatch UI. */
+      persona: z.enum(["owner_operator", "fleet", "enterprise"]).optional(),
     })
     .nullable(),
   /** Active dispatcher for the driver's client (first active assignment). */

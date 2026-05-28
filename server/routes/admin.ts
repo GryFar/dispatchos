@@ -1616,17 +1616,15 @@ export function registerAdminRoutes(app: Express): void {
     if (!rawLoad) {
       return res.status(404).json({ message: "Load not found" });
     }
-    // Cast through `any` to read the additive fields (clientId, driverId,
-    // bookedAt) that live in loadFullSchema but not in the narrow Phase 1
-    // loadSchema. Same pattern used in storage.upsertLoad.
+    // driverId is now a first-class field on loadSchema (PR feat/owner-operator-self-dispatch).
+    // clientId and bookedAt are still additive (loadBookingFieldsSchema), cast for those.
     const load = rawLoad as typeof rawLoad & {
       clientId?: string;
-      driverId?: string;
       bookedAt?: string;
     };
 
     const client = load.clientId ? storage.getClient(load.clientId) : undefined;
-    const driver = load.driverId ? storage.getUserById(load.driverId) : undefined;
+    const driver = rawLoad.driverId ? storage.getUserById(rawLoad.driverId) : undefined;
 
     const checkins = storage.listCheckinsForLoad(id);
 
@@ -1673,7 +1671,7 @@ export function registerAdminRoutes(app: Express): void {
     // Audit V3-5 — pass GPS pings so detention helper can mark events as
     // verified / unverified. We pull pings for the load's driver only,
     // bounded by the load's lifetime.
-    const driverId = (load as { driverId?: string }).driverId;
+    const driverId = rawLoad.driverId;
     const gpsPings: Array<{ lat: number; lng: number; capturedAt: string }> = [];
     if (driverId) {
       // Bound pings to a reasonable window — 30 days back from now is enough
@@ -1766,9 +1764,9 @@ export function registerAdminRoutes(app: Express): void {
 
     const rawLoad = storage.getLoad(id);
     if (!rawLoad) return res.status(404).json({ message: "Load not found" });
+    // clientId and bookedAt are still additive (loadBookingFieldsSchema); cast for those.
     const load = rawLoad as typeof rawLoad & {
       clientId?: string;
-      driverId?: string | null;
     };
 
     if (driverId !== null) {
@@ -1793,7 +1791,7 @@ export function registerAdminRoutes(app: Express): void {
       }
     }
 
-    const previousDriverId = load.driverId ?? null;
+    const previousDriverId = rawLoad.driverId ?? null;
     const updated = storage.upsertLoad({
       ...load,
       driverId: driverId ?? undefined,
@@ -1857,9 +1855,10 @@ export function registerAdminRoutes(app: Express): void {
     for (const load of all) {
       const checkins = storage.listCheckinsForLoad(load.id);
       if (!checkins.length) continue;
-      const lid = (load as unknown as { clientId?: string; driverId?: string });
+      // clientId is still additive; driverId is now first-class on Load.
+      const lid = (load as unknown as { clientId?: string });
       const client = lid.clientId ? storage.getClient(lid.clientId) : undefined;
-      const driver = lid.driverId ? storage.getUserById(lid.driverId) : undefined;
+      const driver = load.driverId ? storage.getUserById(load.driverId) : undefined;
       const payload = (client ?? {}) as unknown as {
         detentionFreeHours?: number;
         detentionRatePerHourCents?: number;

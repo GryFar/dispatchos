@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Building2,
   UserCircle,
+  PlusCircle,
 } from "lucide-react";
 import type { DriverDashboard, DriverStatus, LoadFull, UserPublic } from "@shared/schema";
 import { apiJson, ApiError } from "@/lib/queryClient";
@@ -87,6 +88,7 @@ export default function DriverDashboardPage() {
       />
       <PendingDocsCard docs={data.pendingDocs ?? []} />
       <ContextCard client={data.client} dispatcher={data.dispatcher} />
+      {data.client?.persona === "owner_operator" && <SelfDispatchButton />}
       <QuickActions
         phone={data.driver.phone}
         currentLoadId={data.currentLoad?.id ?? null}
@@ -560,5 +562,20 @@ function ContextCard({
         )}
       </div>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Self-dispatch button — only shown for owner-operators.
+// ---------------------------------------------------------------------------
+function SelfDispatchButton() {
+  const { t } = useT();
+  return (
+    <Link href="/loads/new">
+      <Button className="w-full gap-2" variant="default">
+        <PlusCircle className="h-4 w-4" />
+        {t("driver.selfDispatch.createLoad")}
+      </Button>
+    </Link>
   );
 }
