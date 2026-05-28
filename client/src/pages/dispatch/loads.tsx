@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { ArrowRight, Loader2, Package } from "lucide-react";
@@ -37,11 +37,12 @@ interface ListResponse {
  */
 export default function DispatchLoadsPage() {
   const { t } = useT();
-  const [location, setLocation] = useLocation();
-
-  // Parse status + clientId from the URL search part.
-  const { status, clientId } = useMemo(() => {
-    // wouter location doesn't carry search by default; pull from window.location.hash.
+  // Initial status + clientId come from the URL once (deep-link from /clients
+  // uses ?clientId=...). After mount the tab lives in React state: wouter's
+  // setLocation drops the query string, so parsing it back from the hash on
+  // every render left status stuck on "all" and the tabs did nothing. Driving
+  // the tab from useState makes the click re-render -> refetch with the filter.
+  const initial = useMemo(() => {
     const hash = window.location.hash; // e.g. #/dispatch/loads?status=booked
     const qIdx = hash.indexOf("?");
     const params = new URLSearchParams(qIdx >= 0 ? hash.slice(qIdx + 1) : "");
@@ -51,7 +52,10 @@ export default function DispatchLoadsPage() {
       status: (valid.includes(s as Status) ? s : "all") as Status,
       clientId: params.get("clientId") || undefined,
     };
-  }, [location]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const [status, setStatus] = useState<Status>(initial.status);
+  const clientId = initial.clientId;
 
   const queryStr = useMemo(() => {
     const params = new URLSearchParams();
@@ -66,13 +70,7 @@ export default function DispatchLoadsPage() {
     queryFn: () => apiJson("GET", queryStr),
   });
 
-  function setStatus(next: Status) {
-    const params = new URLSearchParams();
-    if (next !== "all") params.set("status", next);
-    if (clientId) params.set("clientId", clientId);
-    const qs = params.toString();
-    setLocation(`/loads${qs ? `?${qs}` : ""}`);
-  }
+  // setStatus is the useState setter; the Tabs onValueChange calls it directly.
 
   return (
     <div className="space-y-5">
