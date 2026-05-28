@@ -1791,7 +1791,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/loads/import-csv", requireRole("admin", "dispatcher"), (req, res) => {
+  app.post("/api/loads/import-csv", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
     try {
       const { csv } = csvImportSchema.parse(req.body);
       res.status(201).json(importLoadsFromCsv(csv));
@@ -1804,7 +1804,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(storage.listDocuments());
   });
 
-  app.post("/api/documents", requireRole("admin", "dispatcher"), (req, res) => {
+  app.post("/api/documents", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
     try {
       const document = storage.upsertDocument(insertDocumentSchema.parse(req.body));
       res.status(201).json(document);
@@ -1831,7 +1831,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(buildDrivePlan(String(req.query.clientId || "")));
   });
 
-  app.post("/api/drive/create-local-folders", requireRole("admin", "dispatcher"), (req, res) => {
+  app.post("/api/drive/create-local-folders", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
     try {
       const input = driveCreateSchema.parse(req.body);
       res.status(201).json(createLocalDriveFolders(input.clientId));
@@ -1840,7 +1840,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/documents/upload", requireRole("admin", "dispatcher"), upload.single("file"), (req, res) => {
+  app.post("/api/documents/upload", requireRole("admin", "dispatcher"), requireActiveBilling, upload.single("file"), (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ message: "file is required" });
       const safeOriginal = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");

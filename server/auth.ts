@@ -280,12 +280,17 @@ export function requireActiveBilling(
   if (user.role === "driver") {
     clientId = user.linkedClientId ?? null;
   } else {
+    // V4-009: resolve the carrier from an EXPLICIT signal only — query param or
+    // request body clientId. NEVER fall back to listClients()[0]: that applied
+    // one tenant's billing status to every caller (multi-tenant collapse). With
+    // no explicit carrier context we let the request through (it's not a
+    // carrier-scoped mutation, or the route validates clientId itself).
     const q = typeof req.query.clientId === "string" ? req.query.clientId : null;
-    if (q) clientId = q;
-    else {
-      const clients = storage.listClients();
-      clientId = clients[0]?.id ?? null;
-    }
+    const bodyClientId =
+      req.body && typeof req.body === "object" && typeof (req.body as { clientId?: unknown }).clientId === "string"
+        ? (req.body as { clientId: string }).clientId
+        : null;
+    clientId = q ?? bodyClientId;
   }
   if (!clientId) return next(); // No carrier context — let through (bootstrap/onboarding)
 
