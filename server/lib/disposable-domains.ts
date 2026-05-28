@@ -13,6 +13,8 @@
 // subdomains (e.g. "foo.mailinator.com" -> blocked because it ends with
 // ".mailinator.com").
 
+import { domainToASCII } from "node:url";
+
 const DISPOSABLE_DOMAINS: ReadonlySet<string> = new Set([
   "mailinator.com",
   "guerrillamail.com",
@@ -67,7 +69,15 @@ const DISPOSABLE_DOMAINS: ReadonlySet<string> = new Set([
 export function isDisposableEmail(email: string): boolean {
   const at = email.lastIndexOf("@");
   if (at < 0) return false;
-  const domain = email.slice(at + 1).trim().toLowerCase();
+  // V4-008: normalize IDN / punycode / unicode lookalikes to canonical ASCII
+  // before matching. Without this, "máilinator.com", the punycode form
+  // "xn--milinator-..." , or a Turkish-İ variant ("MAİLINATOR.COM") would all
+  // slip past a plain lowercase compare against the ASCII blocklist.
+  // domainToASCII handles the IDNA mapping (and returns "" on garbage, which
+  // we treat as "not disposable" — the schema's .email() rejects bad formats).
+  const rawDomain = email.slice(at + 1).trim();
+  const asciiDomain = domainToASCII(rawDomain);
+  const domain = (asciiDomain || rawDomain).toLowerCase();
   if (!domain) return false;
   // Check the full domain, then progressively strip leftmost labels so a
   // subdomain like "x.mailinator.com" still matches "mailinator.com" — all via
