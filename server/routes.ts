@@ -60,6 +60,14 @@ import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
 import { fetchByMc } from "./lib/ai/fmcsa";
 import { isDisposableEmail } from "./lib/disposable-domains";
+import {
+  TWILIO_VERIFY_CONFIGURED,
+  sendVerificationCode,
+  checkVerificationCode,
+  sendEmailVerificationCode,
+  checkEmailVerificationCode,
+  lookupLineType,
+} from "./lib/twilio/verify";
 import crypto from "node:crypto";
 
 const HOUR = 60 * 60 * 1000;
@@ -2054,6 +2062,179 @@ export async function registerRoutes(app: Express): Promise<Server> {
       `attachment; filename="dispatchos-backup-${new Date().toISOString().slice(0, 10)}.json"`,
     );
     res.json(backup);
+  });
+
+  // =========================================================================
+  // feat/twilio-verify-phone-email — in-memory rate-limit buckets
+  // =========================================================================
+  // 1 send per phone/email per 60 s; max 5 per phone/email per 24 h.
+  // Keyed by E.164 number or email address — not by IP (so the same number
+  // can't be throttled by a different user on a shared IP).
+  // =========================================================================
+  const VERIFY_COOLDOWN_MS   = 60_000;
+  const VERIFY_MAX_PER_24H   = 5;
+  const VERIFY_WINDOW_24H_MS = 24 * 60 * 60 * 1_000;
+
+  interface VerifyBucket { lastSentAt: number; count24h: number; windowStart: number }
+  const verifyBuckets = new Map<string, VerifyBucket>();
+
+  function verifyRateCheck(key: string): { allowed: boolean; cooldownSec: number } {
+    const now = Date.now();
+    let b = verifyBuckets.get(key);
+    if (!b) {
+      verifyBuckets.set(key, { lastSentAt: now, count24h: 1, windowStart: now });
+      return { allowed: true, cooldownSec: 0 };
+    }
+    if (now - b.windowStart > VERIFY_WINDOW_24H_MS) {
+      b.count24h = 0;
+      b.windowStart = now;
+    }
+    if (b.count24h >= VERIFY_MAX_PER_24H) {
+      return { allowed: false, cooldownSec: Math.ceil((VERIFY_WINDOW_24H_MS - (now - b.windowStart)) / 1000) };
+    }
+    const remaining = VERIFY_COOLDOWN_MS - (now - b.lastSentAt);
+    if (remaining > 0) {
+      return { allowed: false, cooldownSec: Math.ceil(remaining / 1000) };
+    }
+    b.lastSentAt = now;
+    b.count24h++;
+    return { allowed: true, cooldownSec: 0 };
+  }
+
+  function undoVerifyRateBucket(key: string) {
+    const b = verifyBuckets.get(key);
+    if (b) { b.count24h = Math.max(0, b.count24h - 1); b.lastSentAt = 0; }
+  }
+
+  const E164_RE = /^\+\d{8,15}$/;
+
+  // -------------------------------------------------------------------------
+  // POST /api/auth/phone/send-code — send SMS verification code
+  // -------------------------------------------------------------------------
+  app.post("/api/auth/phone/send-code", async (req, res) => {
+    if (!TWILIO_VERIFY_CONFIGURED) {
+      return res.status(503).json({ ok: false, error: "twilio_not_configured" });
+    }
+    const phone = String((req.body as { phone?: unknown })?.phone ?? "").trim();
+    if (!E164_RE.test(phone)) {
+      return res.status(400).json({ ok: false, error: "invalid_phone" });
+    }
+    const { allowed, cooldownSec } = verifyRateCheck(phone);
+    if (!allowed) {
+      return res.status(429).json({ ok: false, cooldownSec });
+    }
+    const lineType = await lookupLineType(phone);
+    if (lineType === "voip" || lineType === "landline") {
+      undoVerifyRateBucket(phone);
+      return res.status(422).json({ ok: false, error: "phone_type_not_allowed", lineType });
+    }
+    const result = await sendVerificationCode(phone);
+    if (!result.ok) {
+      undoVerifyRateBucket(phone);
+      return res.status(502).json({ ok: false, error: result.error });
+    }
+    try {
+      const user = getCurrentUser(req);
+      if (user) storage.audit("phone.code_sent", "user", user.id, { phone });
+    } catch { /* no session yet during signup flow */ }
+    return res.json({ ok: true, cooldownSec: Math.ceil(VERIFY_COOLDOWN_MS / 1000) });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/auth/phone/check-code — verify SMS code + mark verified
+  // -------------------------------------------------------------------------
+  app.post("/api/auth/phone/check-code", async (req, res) => {
+    if (!TWILIO_VERIFY_CONFIGURED) {
+      return res.status(503).json({ ok: false, error: "twilio_not_configured" });
+    }
+    const phone = String((req.body as { phone?: unknown })?.phone ?? "").trim();
+    const code  = String((req.body as { code?: unknown })?.code  ?? "").trim();
+    if (!E164_RE.test(phone)) return res.status(400).json({ ok: false, error: "invalid_phone" });
+    if (!/^\d{6}$/.test(code))  return res.status(400).json({ ok: false, error: "invalid_code" });
+
+    const result = await checkVerificationCode(phone, code);
+    if (!result.ok) {
+      try {
+        const user = getCurrentUser(req);
+        if (user) storage.audit("phone.code_failed", "user", user.id, { phone });
+      } catch { /* ok */ }
+      return res.status(401).json({ ok: false, verified: false, error: result.error });
+    }
+    try {
+      const user = getCurrentUser(req);
+      if (user) {
+        storage.markPhoneVerified(user.id, phone);
+        storage.audit("phone.verified", "user", user.id, { phone });
+      }
+    } catch { /* session may not exist during signup — UI will persist on next auth */ }
+    return res.json({ ok: true, verified: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/auth/email/send-code — send email verification code via Twilio
+  // -------------------------------------------------------------------------
+  // Requires SendGrid integration on the Twilio Verify Service.
+  // If absent, Twilio returns error 60220 → we return 503 email_channel_not_configured.
+  // Frontend shows "verify later" banner instead of hard-blocking signup.
+  // -------------------------------------------------------------------------
+  app.post("/api/auth/email/send-code", async (req, res) => {
+    if (!TWILIO_VERIFY_CONFIGURED) {
+      return res.status(503).json({ ok: false, error: "twilio_not_configured" });
+    }
+    const email = String((req.body as { email?: unknown })?.email ?? "").trim().toLowerCase();
+    if (!email || !email.includes("@")) {
+      return res.status(400).json({ ok: false, error: "invalid_email" });
+    }
+    const { allowed, cooldownSec } = verifyRateCheck(`email:${email}`);
+    if (!allowed) {
+      return res.status(429).json({ ok: false, cooldownSec });
+    }
+    const result = await sendEmailVerificationCode(email);
+    if (!result.ok) {
+      undoVerifyRateBucket(`email:${email}`);
+      if (result.error === "email_channel_not_configured") {
+        return res.status(503).json({ ok: false, error: "email_channel_not_configured" });
+      }
+      return res.status(502).json({ ok: false, error: result.error });
+    }
+    try {
+      const user = getCurrentUser(req);
+      if (user) storage.audit("email.code_sent", "user", user.id, { email });
+    } catch { /* no session yet during signup flow */ }
+    return res.json({ ok: true, cooldownSec: Math.ceil(VERIFY_COOLDOWN_MS / 1000) });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/auth/email/check-code — verify email code + mark verified
+  // -------------------------------------------------------------------------
+  app.post("/api/auth/email/check-code", async (req, res) => {
+    if (!TWILIO_VERIFY_CONFIGURED) {
+      return res.status(503).json({ ok: false, error: "twilio_not_configured" });
+    }
+    const email = String((req.body as { email?: unknown })?.email ?? "").trim().toLowerCase();
+    const code  = String((req.body as { code?: unknown })?.code  ?? "").trim();
+    if (!email || !email.includes("@")) return res.status(400).json({ ok: false, error: "invalid_email" });
+    if (!/^\d{6}$/.test(code)) return res.status(400).json({ ok: false, error: "invalid_code" });
+
+    const result = await checkEmailVerificationCode(email, code);
+    if (!result.ok) {
+      if (result.error === "email_channel_not_configured") {
+        return res.status(503).json({ ok: false, error: "email_channel_not_configured" });
+      }
+      try {
+        const user = getCurrentUser(req);
+        if (user) storage.audit("email.code_failed", "user", user.id, { email });
+      } catch { /* ok */ }
+      return res.status(401).json({ ok: false, verified: false, error: result.error });
+    }
+    try {
+      const user = getCurrentUser(req);
+      if (user) {
+        storage.markEmailVerified(user.id);
+        storage.audit("email.verified", "user", user.id, { email });
+      }
+    } catch { /* session may not exist during signup */ }
+    return res.json({ ok: true, verified: true });
   });
 
   app.get("/api/health", (_req, res) => {

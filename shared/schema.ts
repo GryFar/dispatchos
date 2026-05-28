@@ -362,6 +362,9 @@ export const userPublicSchema = z.object({
   // Henry QA Bug #5 — truck unit number. Only meaningful for role=driver;
   // dispatchers/admins can set it on driver detail pages. Null = not assigned.
   unitNumber: z.string().nullable().optional(),
+  // feat/twilio-verify-phone-email — verification timestamps.
+  phoneVerifiedAt: z.string().nullable().optional(),
+  emailVerifiedAt: z.string().nullable().optional(),
 });
 
 // Body schema for PATCH /api/me/preferences— currently only carries
