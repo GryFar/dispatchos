@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/dispatch/EmptyState";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
+import { useT } from "@/lib/i18n";
 
 /**
  * Driver loads list (`/d/loads`).
@@ -22,6 +23,7 @@ import { StatusBadge } from "@/components/dispatch/StatusBadge";
  * (см. deriveLoadStatus в server/routes/me.ts) — реальный статус в БД нет.
  */
 export default function DriverLoadsListPage() {
+  const { t } = useT();
   const [statusFilter, setStatusFilter] = useState<"all" | "available" | "booked">("all");
   const [pages, setPages] = useState<MeLoadsResponse[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -50,9 +52,9 @@ export default function DriverLoadsListPage() {
     <div className="space-y-4">
       <header className="flex items-end justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Мои рейсы</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t("driver.loads_list.title")}</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {total === 0 ? "Пока нет рейсов" : `Всего: ${total}`}
+            {total === 0 ? t("driver.loads_list.empty") : `${t("common.loading")} ${total}`}
           </p>
         </div>
       </header>
@@ -66,7 +68,7 @@ export default function DriverLoadsListPage() {
             setCursor(null);
           }}
         >
-          Все
+          All
         </FilterPill>
         <FilterPill
           active={statusFilter === "booked"}
@@ -75,7 +77,7 @@ export default function DriverLoadsListPage() {
             setCursor(null);
           }}
         >
-          В работе
+          {t("driver.loads_list.status.booked")}
         </FilterPill>
         <FilterPill
           active={statusFilter === "available"}
@@ -84,7 +86,7 @@ export default function DriverLoadsListPage() {
             setCursor(null);
           }}
         >
-          Доступные
+          {t("driver.loads_list.status.available")}
         </FilterPill>
       </div>
 
@@ -96,7 +98,7 @@ export default function DriverLoadsListPage() {
         </div>
       ) : error ? (
         <Card className="border-destructive/40 bg-destructive/5 p-4 text-sm">
-          <p className="font-medium">Не удалось загрузить рейсы.</p>
+          <p className="font-medium">{t("driver.loads_list.empty")}</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {(error as Error).message}
           </p>
@@ -104,8 +106,8 @@ export default function DriverLoadsListPage() {
       ) : allLoads.length === 0 ? (
         <EmptyState
           icon={<Package className="h-6 w-6" />}
-          title="Нет рейсов"
-          description="Здесь появятся ваши рейсы, как только диспетчер закрепит первый."
+          title={t("driver.loads_list.empty")}
+          description={t("driver.loads_list.empty_desc")}
         />
       ) : (
         <ul className="space-y-3">
@@ -125,7 +127,7 @@ export default function DriverLoadsListPage() {
             disabled={isFetching}
             onClick={() => setCursor(data?.nextCursor ?? null)}
           >
-            {isFetching ? "Загружаю..." : "Показать ещё"}
+            {isFetching ? t("common.loading") : "Load more"}
           </Button>
         </div>
       )}
@@ -158,6 +160,7 @@ function FilterPill({
 }
 
 function LoadRow({ load }: { load: LoadFull }) {
+  const { t } = useT();
   const isBooked = Boolean(load.driverId && load.bookedAt);
   return (
     <Link
@@ -175,14 +178,14 @@ function LoadRow({ load }: { load: LoadFull }) {
           </p>
           <div className="mt-2">
             <StatusBadge variant={isBooked ? "active" : "info"}>
-              {isBooked ? "В работе" : "Доступен"}
+              {isBooked ? t("driver.loads_list.status.booked") : t("driver.loads_list.status.available")}
             </StatusBadge>
           </div>
         </div>
         <div className="shrink-0 text-right">
           <p className="font-mono text-base font-semibold">{formatMoney(load.rate)}</p>
           <p className="mt-2 inline-flex items-center text-xs text-muted-foreground">
-            Открыть <ChevronRight className="ml-0.5 h-3 w-3" />
+            Open <ChevronRight className="ml-0.5 h-3 w-3" />
           </p>
         </div>
       </div>

@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/dispatch/EmptyState";
 import { useToast } from "@/hooks/use-toast";
+import { useT } from "@/lib/i18n";
 
 // ---------------------------------------------------------------------------
 // Killer #4 — Predictive Load Hunting UI (/dispatch/predictions).
@@ -68,11 +69,20 @@ interface Prediction {
   dowDistribution: Record<string, number>;
 }
 
-const DOW_LABELS = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
-
 export default function DispatchPredictionsPage() {
+  const { t } = useT();
   const [clientId, setClientId] = useState<string>("");
   const [addOpen, setAddOpen] = useState(false);
+
+  const DOW_KEYS = [
+    "dispatch.predictions.dow.sun",
+    "dispatch.predictions.dow.mon",
+    "dispatch.predictions.dow.tue",
+    "dispatch.predictions.dow.wed",
+    "dispatch.predictions.dow.thu",
+    "dispatch.predictions.dow.fri",
+    "dispatch.predictions.dow.sat",
+  ];
 
   const { data: clientsData, isLoading: clientsLoading } = useQuery<{
     items: AssignedClient[];
@@ -117,17 +127,17 @@ export default function DispatchPredictionsPage() {
       <header className="flex items-end justify-between gap-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            dispatcher / прогнозы
+            {t("dispatch.predictions.header_sub")}
           </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Поиск грузов</h1>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("dispatch.predictions.title")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Следите за лейнами — система уведомит о подходящих грузах и копит статистику.
+            {t("dispatch.predictions.subtitle")}
           </p>
         </div>
         {activeClientId && (
           <Button onClick={() => setAddOpen(true)} className="shrink-0">
             <Plus className="h-4 w-4" />
-            Добавить
+            {t("dispatch.predictions.add_btn")}
           </Button>
         )}
       </header>
@@ -136,8 +146,8 @@ export default function DispatchPredictionsPage() {
         <Card className="p-2">
           <EmptyState
             icon={<Target className="h-6 w-6" />}
-            title="Нет клиентов"
-            description="К вам пока не привязан ни один клиент."
+            title={t("dispatch.predictions.no_clients")}
+            description={t("dispatch.predictions.no_clients_desc")}
           />
         </Card>
       ) : (
@@ -146,7 +156,7 @@ export default function DispatchPredictionsPage() {
           <div className="max-w-xs">
             <Select value={activeClientId} onValueChange={setClientId}>
               <SelectTrigger>
-                <SelectValue placeholder="Выберите клиента" />
+                <SelectValue placeholder={t("dispatch.predictions.select_client")} />
               </SelectTrigger>
               <SelectContent>
                 {clients.map((c) => (
@@ -166,8 +176,8 @@ export default function DispatchPredictionsPage() {
             <Card className="p-2">
               <EmptyState
                 icon={<Target className="h-6 w-6" />}
-                title="Нет отслеживаемых лейнов"
-                description="Добавьте лейн — и система начнёт ловить подходящие грузы."
+                title={t("dispatch.predictions.no_watches")}
+                description={t("dispatch.predictions.no_watches_desc")}
               />
             </Card>
           ) : (
@@ -178,6 +188,7 @@ export default function DispatchPredictionsPage() {
                   watch={w}
                   prediction={predByLane.get(`${w.originState}->${w.destinationState}`)}
                   clientId={activeClientId}
+                  dowKeys={DOW_KEYS}
                 />
               ))}
             </div>
@@ -199,22 +210,25 @@ function WatchCard({
   watch,
   prediction,
   clientId,
+  dowKeys,
 }: {
   watch: Watch;
   prediction: Prediction | undefined;
   clientId: string;
+  dowKeys: string[];
 }) {
+  const { t } = useT();
   const { toast } = useToast();
   const qc = useQueryClient();
 
   const deleteMutation = useMutation({
     mutationFn: () => apiJson("DELETE", `/api/dispatch/watchlist/${watch.id}`),
     onSuccess: () => {
-      toast({ title: "Лейн удалён" });
+      toast({ title: t("dispatch.predictions.lane_deleted") });
       qc.invalidateQueries({ queryKey: ["/api/dispatch/watchlist", clientId] });
     },
     onError: (err: Error) =>
-      toast({ title: "Не удалось удалить", description: err.message, variant: "destructive" }),
+      toast({ title: t("dispatch.predictions.delete_error"), description: err.message, variant: "destructive" }),
   });
 
   const dow = prediction?.dowDistribution ?? {};
@@ -231,10 +245,13 @@ function WatchCard({
             {watch.destinationState}
           </p>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            {typeof watch.minPpm === "number" && <span>мин. ${watch.minPpm.toFixed(2)}/mi</span>}
+            {typeof watch.minPpm === "number" && (
+              <span>{t("dispatch.predictions.min_rate", { rate: watch.minPpm.toFixed(2) })}</span>
+            )}
             {watch.equipment && <span>{watch.equipment.replace(/_/g, " ")}</span>}
             <span>
-              Совпадений: <span className="font-medium text-foreground">{watch.matchCount}</span>
+              {t("dispatch.predictions.matches")}{" "}
+              <span className="font-medium text-foreground">{watch.matchCount}</span>
             </span>
           </div>
         </div>
@@ -257,17 +274,17 @@ function WatchCard({
       <div className="mt-3">
         <p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           <TrendingUp className="h-3 w-3" />
-          По дням недели
+          {t("dispatch.predictions.by_dow")}
           {prediction && prediction.loadsSeen > 0 ? (
             <span className="font-normal normal-case">
-              · {prediction.loadsSeen} набл. · ${prediction.avgPpm.toFixed(2)}/mi сред.
+              · {t("dispatch.predictions.obs", { n: prediction.loadsSeen })} · {t("dispatch.predictions.avg", { avg: prediction.avgPpm.toFixed(2) })}
             </span>
           ) : (
-            <span className="font-normal normal-case">· данные копятся</span>
+            <span className="font-normal normal-case">· {t("dispatch.predictions.accumulating")}</span>
           )}
         </p>
         <div className="mt-2 flex items-end gap-1.5">
-          {DOW_LABELS.map((label, i) => {
+          {dowKeys.map((key, i) => {
             const count = dow[String(i)] ?? 0;
             const heightPct = Math.round((count / maxDow) * 100);
             return (
@@ -276,10 +293,10 @@ function WatchCard({
                   <div
                     className="w-full rounded-sm bg-primary/70"
                     style={{ height: `${count > 0 ? Math.max(8, heightPct) : 2}%` }}
-                    title={`${count} грузов`}
+                    title={t("dispatch.predictions.loads_count", { n: count })}
                   />
                 </div>
-                <span className="text-[10px] text-muted-foreground">{label}</span>
+                <span className="text-[10px] text-muted-foreground">{t(key)}</span>
               </div>
             );
           })}
@@ -310,6 +327,7 @@ function AddWatchDialog({
   clientId: string;
   onClose: () => void;
 }) {
+  const { t } = useT();
   const { toast } = useToast();
   const qc = useQueryClient();
   const [originState, setOriginState] = useState("");
@@ -327,12 +345,12 @@ function AddWatchDialog({
         equipment: equipment || null,
       }),
     onSuccess: () => {
-      toast({ title: "Лейн добавлен", description: "Будем ловить подходящие грузы." });
+      toast({ title: t("dispatch.predictions.lane_added"), description: t("dispatch.predictions.lane_added_desc") });
       qc.invalidateQueries({ queryKey: ["/api/dispatch/watchlist", clientId] });
       onClose();
     },
     onError: (err: Error) =>
-      toast({ title: "Не удалось добавить", description: err.message, variant: "destructive" }),
+      toast({ title: t("dispatch.predictions.add_error"), description: err.message, variant: "destructive" }),
   });
 
   const canSubmit = originState.length === 2 && destinationState.length === 2;
@@ -341,16 +359,16 @@ function AddWatchDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Отслеживать лейн</DialogTitle>
+          <DialogTitle>{t("dispatch.predictions.add_dialog.title")}</DialogTitle>
           <DialogDescription>
-            Укажите штаты отправления и назначения. Минимальная ставка и тип — опционально.
+            {t("dispatch.predictions.add_dialog.desc")}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>Откуда (штат)</Label>
+              <Label>{t("dispatch.predictions.add_dialog.origin_state")}</Label>
               <Select value={originState} onValueChange={setOriginState}>
                 <SelectTrigger>
                   <SelectValue placeholder="—" />
@@ -365,7 +383,7 @@ function AddWatchDialog({
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>Куда (штат)</Label>
+              <Label>{t("dispatch.predictions.add_dialog.dest_state")}</Label>
               <Select value={destinationState} onValueChange={setDestinationState}>
                 <SelectTrigger>
                   <SelectValue placeholder="—" />
@@ -383,20 +401,20 @@ function AddWatchDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>Мин. $/миля</Label>
+              <Label>{t("dispatch.predictions.add_dialog.min_rate")}</Label>
               <Input
                 type="number"
                 step="0.01"
-                placeholder="напр. 2.00"
+                placeholder={t("dispatch.predictions.add_dialog.min_rate_placeholder")}
                 value={minPpm}
                 onChange={(e) => setMinPpm(e.target.value)}
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Тип (опц.)</Label>
+              <Label>{t("dispatch.predictions.add_dialog.equipment")}</Label>
               <Select value={equipment} onValueChange={setEquipment}>
                 <SelectTrigger>
-                  <SelectValue placeholder="любой" />
+                  <SelectValue placeholder={t("dispatch.predictions.add_dialog.equipment_any")} />
                 </SelectTrigger>
                 <SelectContent>
                   {EQUIPMENT_OPTIONS.map((e) => (
@@ -412,14 +430,14 @@ function AddWatchDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={createMutation.isPending}>
-            Отмена
+            {t("common.cancel")}
           </Button>
           <Button
             onClick={() => createMutation.mutate()}
             disabled={!canSubmit || createMutation.isPending}
           >
             {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            Добавить
+            {t("dispatch.predictions.add_dialog.submit")}
           </Button>
         </DialogFooter>
       </DialogContent>

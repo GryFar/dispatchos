@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useT } from "@/lib/i18n";
 
 /**
  * Driver profile (`/d/profile`).
@@ -23,6 +24,7 @@ import { Skeleton } from "@/components/ui/skeleton";
  * это видит, RoleGate выкидывает на /login.
  */
 export default function DriverProfilePage() {
+  const { t } = useT();
   const { user, isLoading } = useAuth();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
@@ -49,11 +51,11 @@ export default function DriverProfilePage() {
       queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
       queryClient.invalidateQueries({ queryKey: ["me", "dashboard"] });
       setDirty(false);
-      toast({ title: "Профиль обновлён" });
+      toast({ title: t("driver.profile.saved") });
     },
     onError: (err) => {
       toast({
-        title: "Не удалось сохранить",
+        title: t("driver.profile.save_error"),
         description: err instanceof ApiError ? err.message : String(err),
         variant: "destructive",
       });
@@ -68,7 +70,7 @@ export default function DriverProfilePage() {
     },
     onError: (err) => {
       toast({
-        title: "Не удалось выйти",
+        title: t("common.error"),
         description: err instanceof ApiError ? err.message : String(err),
         variant: "destructive",
       });
@@ -93,15 +95,15 @@ export default function DriverProfilePage() {
       // skip the PATCH for now if cleared. Phase 1 enhancement: accept null.
       if (phone.trim().length === 0) {
         toast({
-          title: "Очистить телефон нельзя в P0",
-          description: "Сейчас можно только заменить на другой номер. Поправим в P1.",
+          title: t("common.error"),
+          description: "Phone cannot be cleared in P0 — replace with a new number instead.",
         });
         return;
       }
       patch.phone = phone.trim();
     }
     if (Object.keys(patch).length === 0) {
-      toast({ title: "Нет изменений" });
+      toast({ title: t("common.success") });
       return;
     }
     updateProfile.mutate(patch);
@@ -110,9 +112,9 @@ export default function DriverProfilePage() {
   return (
     <div className="space-y-5">
       <header>
-        <h1 className="text-xl font-semibold tracking-tight">Профиль</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{t("driver.profile.title")}</h1>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          Управление личной информацией
+          {t("driver.profile.header_sub")}
         </p>
       </header>
 
@@ -131,7 +133,7 @@ export default function DriverProfilePage() {
           <div className="space-y-3 border-t border-border pt-4">
             <div>
               <Label htmlFor="fullName" className="text-xs">
-                Полное имя
+                {t("driver.profile.full_name")}
               </Label>
               <Input
                 id="fullName"
@@ -147,7 +149,7 @@ export default function DriverProfilePage() {
 
             <div>
               <Label htmlFor="phone" className="text-xs">
-                Телефон
+                {t("driver.profile.phone")}
               </Label>
               <div className="relative mt-1">
                 <Phone className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -168,7 +170,8 @@ export default function DriverProfilePage() {
 
             <div>
               <Label htmlFor="email" className="text-xs">
-                Email <span className="text-muted-foreground">(только админ может изменить)</span>
+                {t("common.email")}{" "}
+                <span className="text-muted-foreground">(admin-only)</span>
               </Label>
               <div className="relative mt-1">
                 <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -190,7 +193,7 @@ export default function DriverProfilePage() {
               disabled={!dirty || updateProfile.isPending}
             >
               <Save className="mr-2 h-4 w-4" />
-              {updateProfile.isPending ? "Сохраняю..." : "Сохранить"}
+              {updateProfile.isPending ? t("common.loading") : t("common.save")}
             </Button>
           </div>
         </Card>
@@ -205,7 +208,7 @@ export default function DriverProfilePage() {
           disabled={logout.isPending}
         >
           <LogOut className="mr-2 h-4 w-4" />
-          {logout.isPending ? "Выходим..." : "Выйти"}
+          {logout.isPending ? t("common.loading") : t("common.signOut")}
         </Button>
       </Card>
     </div>

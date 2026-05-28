@@ -23,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /**
  * DispatchShell — общий layout для всех экранов /dispatch/*.
@@ -37,19 +38,10 @@ import { cn } from "@/lib/utils";
 
 interface NavItem {
   href: string;
-  label: string;
+  labelKey: string;
   icon: typeof LayoutDashboard;
   badgeKey?: "queueCount";
 }
-
-const NAV: NavItem[] = [
-  { href: "/", label: "Дашборд", icon: LayoutDashboard },
-  { href: "/cockpit", label: "Кокпит", icon: LayoutGrid },
-  { href: "/clients", label: "Клиенты", icon: Briefcase },
-  { href: "/loads", label: "Грузы", icon: Truck },
-  { href: "/predictions", label: "Прогнозы", icon: Target },
-  { href: "/queue", label: "Очередь", icon: Inbox, badgeKey: "queueCount" },
-];
 
 export function DispatchShell({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -100,6 +92,17 @@ function SidebarContent({
   currentPath: string;
   onNavigate?: () => void;
 }) {
+  const { t } = useT();
+
+  const NAV: NavItem[] = [
+    { href: "/", labelKey: "dispatch._shell.nav.dashboard", icon: LayoutDashboard },
+    { href: "/cockpit", labelKey: "dispatch._shell.nav.cockpit", icon: LayoutGrid },
+    { href: "/clients", labelKey: "dispatch._shell.nav.clients", icon: Briefcase },
+    { href: "/loads", labelKey: "dispatch._shell.nav.loads", icon: Truck },
+    { href: "/predictions", labelKey: "dispatch._shell.nav.predictions", icon: Target },
+    { href: "/queue", labelKey: "dispatch._shell.nav.queue", icon: Inbox, badgeKey: "queueCount" },
+  ];
+
   // Poll the dispatcher's open queue size for the sidebar badge. 30 s same
   // as admin queue — driver issues are low-volume.
   const { data: queueData } = useQuery<{ total: number }>({
@@ -123,7 +126,7 @@ function SidebarContent({
       </div>
 
       {/* Nav */}
-      <nav className="sidebar-scroll flex-1 overflow-y-auto px-2 py-3">
+      <nav className="sidebar-scroll flex-1 overflow-y-auto px-2 py-3" aria-label={t("dispatch._shell.nav.aria_label")}>
         <ul className="space-y-0.5">
           {NAV.map((item) => {
             const Icon = item.icon;
@@ -150,7 +153,7 @@ function SidebarContent({
                       active ? "text-primary" : "group-hover:scale-110",
                     )}
                   />
-                  <span className="flex-1">{item.label}</span>
+                  <span className="flex-1">{t(item.labelKey)}</span>
                   {badgeCount > 0 && (
                     <span
                       className={cn(
@@ -178,6 +181,7 @@ function SidebarContent({
 }
 
 function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
+  const { t } = useT();
   const { user } = useAuth();
   const handleLogout = async () => {
     try {
@@ -194,7 +198,7 @@ function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
         size="icon"
         className="md:hidden"
         onClick={onMobileMenu}
-        aria-label="Меню"
+        aria-label={t("dispatch._shell.menu")}
       >
         <Menu className="h-5 w-5" />
       </Button>
@@ -212,7 +216,7 @@ function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={handleLogout} className="text-destructive">
               <LogOut className="mr-2 h-4 w-4" />
-              Выйти
+              {t("common.signOut")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

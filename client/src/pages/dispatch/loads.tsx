@@ -10,6 +10,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
 import { EmptyState } from "@/components/dispatch/EmptyState";
 import { TrustBadge } from "@/components/dispatch/TrustBadge";
+import { useT } from "@/lib/i18n";
 
 type Status = "all" | "available" | "booked";
 
@@ -30,11 +31,12 @@ interface ListResponse {
 /**
  * /dispatch/loads — loads across the dispatcher's assigned clients.
  *
- * Filter: status tabs (Все / Доступные / В работе). clientId is read from
+ * Filter: status tabs (All / Available / Active). clientId is read from
  * the URL query (?clientId=...) to support deep-linking from /clients page.
  * P0 read-only — no booking flow yet.
  */
 export default function DispatchLoadsPage() {
+  const { t } = useT();
   const [location, setLocation] = useLocation();
 
   // Parse status + clientId from the URL search part.
@@ -76,14 +78,14 @@ export default function DispatchLoadsPage() {
     <div className="space-y-5">
       <header>
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          dispatcher / грузы
+          {t("dispatch.loads.header_sub")}
         </p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Грузы</h1>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("dispatch.loads.title")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Все рейсы по вашим клиентам.
+          {t("dispatch.loads.subtitle")}
           {clientId && (
             <>
-              {" Фильтр: client "}
+              {" Filter: client "}
               <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
                 {clientId}
               </code>
@@ -94,9 +96,9 @@ export default function DispatchLoadsPage() {
 
       <Tabs value={status} onValueChange={(v) => setStatus(v as Status)}>
         <TabsList>
-          <TabsTrigger value="all">Все</TabsTrigger>
-          <TabsTrigger value="available">Доступные</TabsTrigger>
-          <TabsTrigger value="booked">В работе</TabsTrigger>
+          <TabsTrigger value="all">All</TabsTrigger>
+          <TabsTrigger value="available">{t("dispatch.loads.status.available")}</TabsTrigger>
+          <TabsTrigger value="booked">{t("dispatch.loads.status.booked")}</TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -108,14 +110,8 @@ export default function DispatchLoadsPage() {
         <Card className="p-2">
           <EmptyState
             icon={<Package className="h-6 w-6" />}
-            title="Нет рейсов"
-            description={
-              status === "booked"
-                ? "Нет активных рейсов."
-                : status === "available"
-                ? "Нет свободных рейсов."
-                : "По этому фильтру пусто."
-            }
+            title={t("dispatch.loads.empty")}
+            description={t("dispatch.loads.empty_desc")}
           />
         </Card>
       ) : (
@@ -134,7 +130,7 @@ export default function DispatchLoadsPage() {
                           {load.destinationCity}, {load.destinationState}
                         </p>
                         <StatusBadge variant={isBooked ? "active" : "info"}>
-                          {isBooked ? "В работе" : "Доступен"}
+                          {isBooked ? t("dispatch.loads.status.booked") : t("dispatch.loads.status.available")}
                         </StatusBadge>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">
@@ -146,13 +142,13 @@ export default function DispatchLoadsPage() {
                       </div>
                       {load.clientName && (
                         <p className="mt-1 text-xs font-medium text-foreground">
-                          Клиент: {load.clientName}
+                          Client: {load.clientName}
                         </p>
                       )}
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Pickup: {formatDateFull(load.pickupAt)}
+                        {t("dispatch.loads.pickup")} {formatDateFull(load.pickupAt)}
                         {isBooked && load.driverName && (
-                          <> · Водитель: {load.driverName}</>
+                          <> · Driver: {load.driverName}</>
                         )}
                       </p>
                     </div>
@@ -169,7 +165,7 @@ export default function DispatchLoadsPage() {
           })}
           {data.total > data.items.length && (
             <p className="px-1 text-center text-xs text-muted-foreground">
-              Показано {data.items.length} из {data.total}
+              Showing {data.items.length} of {data.total}
             </p>
           )}
         </div>

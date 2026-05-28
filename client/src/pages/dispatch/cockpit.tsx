@@ -17,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
 import { EmptyState } from "@/components/dispatch/EmptyState";
+import { useT } from "@/lib/i18n";
 
 // ---------------------------------------------------------------------------
 // Killer #6 — Multi-Driver Cockpit. Single-screen terminal: every assigned
@@ -65,6 +66,7 @@ interface AiRecommendation {
   confidence: number;
 }
 export default function DispatchCockpitPage() {
+  const { t } = useT();
   const { data, isLoading, isFetching, dataUpdatedAt, refetch } =
     useQuery<CockpitResponse>({
       queryKey: ["/api/dispatch/cockpit"],
@@ -86,16 +88,16 @@ export default function DispatchCockpitPage() {
       <header className="flex items-end justify-between gap-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            dispatcher
+            {t("dispatch.cockpit.header_sub")}
           </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Кокпит</h1>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("dispatch.cockpit.title")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Все перевозчики, лучшие грузы и подсказки на одном экране.
+            {t("dispatch.cockpit.subtitle")}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <span className="text-xs text-muted-foreground">
-            Обновлено <RelativeClock since={dataUpdatedAt} />
+            Updated <RelativeClock since={dataUpdatedAt} />
           </span>
           <Button
             variant="outline"
@@ -104,7 +106,7 @@ export default function DispatchCockpitPage() {
             disabled={isFetching}
           >
             <RefreshCw className={isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-            Обновить
+            Refresh
           </Button>
         </div>
       </header>
@@ -114,14 +116,14 @@ export default function DispatchCockpitPage() {
         <section className="space-y-2">
           <ColumnHeader
             icon={<Truck className="h-4 w-4" />}
-            label="Перевозчики"
+            label={t("dispatch.cockpit.carrier.title")}
             count={data.carriers.length}
           />
           {data.carriers.length === 0 ? (
             <EmptyState
               icon={<Truck className="h-5 w-5" />}
-              title="Нет перевозчиков"
-              description="К вам пока не привязан ни один клиент."
+              title={t("dispatch.cockpit.empty")}
+              description={t("dispatch.cockpit.empty_desc")}
             />
           ) : (
             data.carriers.map((c) => <CarrierCard key={c.id} carrier={c} />)
@@ -132,14 +134,14 @@ export default function DispatchCockpitPage() {
         <section className="space-y-2">
           <ColumnHeader
             icon={<Package className="h-4 w-4" />}
-            label="Топ грузы"
+            label={t("dispatch.loads.title")}
             count={data.topLoads.length}
           />
           {data.topLoads.length === 0 ? (
             <EmptyState
               icon={<Package className="h-5 w-5" />}
-              title="Нет грузов"
-              description="Нет доступных грузов под ваших перевозчиков."
+              title={t("dispatch.loads.empty")}
+              description={t("dispatch.loads.empty_desc")}
             />
           ) : (
             data.topLoads.map((l) => <TopLoadCard key={l.id} load={l} />)
@@ -150,14 +152,14 @@ export default function DispatchCockpitPage() {
         <section className="space-y-2">
           <ColumnHeader
             icon={<Sparkles className="h-4 w-4" />}
-            label="Подсказки"
+            label="Suggestions"
             count={data.suggestions.length}
           />
           {data.suggestions.length === 0 ? (
             <EmptyState
               icon={<Sparkles className="h-5 w-5" />}
-              title="Нет подсказок"
-              description="Появятся, когда будут грузы под перевозчиков."
+              title={t("dispatch.cockpit.empty")}
+              description={t("dispatch.cockpit.empty_desc")}
             />
           ) : (
             data.suggestions.map((s) => (
@@ -168,7 +170,7 @@ export default function DispatchCockpitPage() {
       </div>
 
       <p className="px-1 pb-2 text-center text-[11px] text-muted-foreground">
-        Автообновление каждые 30 секунд
+        Auto-refresh every 30 seconds
       </p>
     </div>
   );
@@ -213,9 +215,9 @@ function CarrierCard({ carrier }: { carrier: CockpitCarrier }) {
         </div>
         <StatusBadge variant={statusVariant(carrier.status)} className="shrink-0">
           {carrier.status === "empty"
-            ? "Пустой"
+            ? "Empty"
             : carrier.status === "loaded"
-              ? "Гружёный"
+              ? "Loaded"
               : "—"}
         </StatusBadge>
       </div>
@@ -228,14 +230,14 @@ function CarrierCard({ carrier }: { carrier: CockpitCarrier }) {
           </span>
         )}
         {typeof carrier.hoursAvailable === "number" && (
-          <span>HOS: {carrier.hoursAvailable}ч</span>
+          <span>HOS: {carrier.hoursAvailable}h</span>
         )}
         {carrier.equipment && <span>{carrier.equipment.replace(/_/g, " ")}</span>}
       </div>
 
       <div className="mt-2 flex items-center gap-3 text-[11px] text-muted-foreground">
-        <span>Грузы: {carrier.activeLoadsCount}</span>
-        <span>Водители: {carrier.activeDriversCount}</span>
+        <span>Loads: {carrier.activeLoadsCount}</span>
+        <span>Drivers: {carrier.activeDriversCount}</span>
       </div>
 
       {hasAlerts && (
@@ -249,13 +251,14 @@ function CarrierCard({ carrier }: { carrier: CockpitCarrier }) {
               {a}
             </li>
           ))}
-</ul>
+        </ul>
       )}
       <CarrierAiPanel clientId={carrier.id} />
     </Card>
   );
 }
 function CarrierAiPanel({ clientId }: { clientId: string }) {
+  const { t } = useT();
   const [state, setState] = useState<{
     loading: boolean;
     rec?: AiRecommendation;
@@ -288,7 +291,7 @@ function CarrierAiPanel({ clientId }: { clientId: string }) {
         ) : (
           <Sparkles className="h-3.5 w-3.5" />
         )}
-        AI-анализ
+        AI analysis
       </Button>
       {state.rec && (
         <div className="mt-2 space-y-1.5 rounded-md bg-primary/5 p-2 text-[11px]">
@@ -304,13 +307,13 @@ function CarrierAiPanel({ clientId }: { clientId: string }) {
             </ul>
           )}
           <p className="text-[10px] text-muted-foreground">
-            Уверенность: {Math.round(state.rec.confidence * 100)}%
+            Confidence: {Math.round(state.rec.confidence * 100)}%
           </p>
         </div>
       )}
       {state.failed && (
         <p className="mt-2 text-[11px] text-muted-foreground">
-          AI-анализ временно недоступен.
+          {t("dispatch.cockpit.ai.error")}
         </p>
       )}
     </div>
@@ -375,9 +378,10 @@ function SuggestionCard({ suggestion }: { suggestion: CockpitSuggestion }) {
 }
 
 function RelativeClock({ since }: { since: number }) {
+  const { t } = useT();
   const sec = Math.max(0, Math.round((Date.now() - since) / 1000));
-  if (sec < 5) return <>только что</>;
-  if (sec < 60) return <>{sec} сек назад</>;
+  if (sec < 5) return <>{t("dispatch.cockpit.just_now")}</>;
+  if (sec < 60) return <>{t("dispatch.cockpit.sec_ago", { n: sec })}</>;
   const min = Math.round(sec / 60);
-  return <>{min} мин назад</>;
+  return <>{t("dispatch.cockpit.min_ago", { n: min })}</>;
 }

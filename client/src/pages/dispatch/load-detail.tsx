@@ -46,6 +46,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useT } from "@/lib/i18n";
 
 type DispatchDriver = {
   id: string;
@@ -55,24 +56,26 @@ type DispatchDriver = {
   driverStatus: "available" | "on_route" | "off_duty";
 };
 
-const CHECKIN_LABELS: Record<CheckinKind, string> = {
-  pickup_arrived: "Прибыл на pickup",
-  loaded: "Загружен",
-  in_transit: "В пути",
-  delivery_arrived: "Прибыл на delivery",
-  delivered: "Доставлен",
-  note: "Заметка",
-};
-
 /**
  * /dispatch/loads/:id — load detail for the dispatcher. Route headline,
  * pickup/delivery stops, broker info + trust score, broker quick-feedback,
  * driver assignment (reassign), check-ins timeline.
  */
 export default function DispatchLoadDetailPage() {
+  const { t } = useT();
   const [match, params] = useRoute("/loads/:id");
   const [, setLocation] = useLocation();
   const loadId = match ? params?.id : null;
+
+  // CHECKIN_LABELS_KEYS defined inside component so t() is available
+  const CHECKIN_LABELS_KEYS: Record<CheckinKind, string> = {
+    pickup_arrived: "dispatch.load_detail.checkin.pickup_arrived",
+    loaded: "dispatch.load_detail.checkin.loaded",
+    in_transit: "dispatch.load_detail.checkin.in_transit",
+    delivery_arrived: "dispatch.load_detail.checkin.delivery_arrived",
+    delivered: "dispatch.load_detail.checkin.delivered",
+    note: "dispatch.load_detail.checkin.note",
+  };
 
   const { data, isLoading, error } = useQuery<LoadFull>({
     queryKey: ["dispatch", "load", loadId],
@@ -93,7 +96,7 @@ export default function DispatchLoadDetailPage() {
   if (isLoading) {
     return (
       <div className="space-y-4">
-        <BackBar onClick={() => setLocation("/loads")} />
+        <BackBar onClick={() => setLocation("/loads")} label={t("dispatch.load_detail.back")} />
         <Card className="flex h-32 items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </Card>
@@ -105,15 +108,13 @@ export default function DispatchLoadDetailPage() {
     const is404 = error instanceof ApiError && error.status === 404;
     return (
       <div className="space-y-4">
-        <BackBar onClick={() => setLocation("/loads")} />
+        <BackBar onClick={() => setLocation("/loads")} label={t("dispatch.load_detail.back")} />
         <Card className="border-destructive/40 bg-destructive/5 p-4 text-sm">
           <p className="font-medium">
-            {is404 ? "Рейс не найден." : "Не удалось загрузить рейс."}
+            {is404 ? t("dispatch.load_detail.not_found") : t("dispatch.load_detail.load_error")}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {is404
-              ? "Возможно, он принадлежит другому клиенту или удалён."
-              : (error as Error).message}
+            {is404 ? t("dispatch.load_detail.not_found_hint") : (error as Error).message}
           </p>
         </Card>
       </div>
@@ -126,13 +127,13 @@ export default function DispatchLoadDetailPage() {
 
   return (
     <div className="space-y-4">
-      <BackBar onClick={() => setLocation("/loads")} />
+      <BackBar onClick={() => setLocation("/loads")} label={t("dispatch.load_detail.back")} />
 
       <Card className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Маршрут
+              {t("dispatch.load_detail.route")}
             </p>
             <p className="mt-1 text-lg font-semibold tracking-tight">
               {data.originCity}, {data.originState}
@@ -149,7 +150,7 @@ export default function DispatchLoadDetailPage() {
             </p>
             <div className="mt-2">
               <StatusBadge variant={isBooked ? "active" : "info"}>
-                {isBooked ? "В работе" : "Доступен"}
+                {isBooked ? t("dispatch.load_detail.status.booked") : t("dispatch.load_detail.status.available")}
               </StatusBadge>
             </div>
           </div>
@@ -175,7 +176,7 @@ export default function DispatchLoadDetailPage() {
 
       <Card className="p-4">
         <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          <Building2 className="h-3.5 w-3.5" /> Брокер
+          <Building2 className="h-3.5 w-3.5" /> {t("dispatch.load_detail.broker")}
         </p>
         <p className="mt-2 text-sm font-medium">{data.brokerName}</p>
         <p className="mt-0.5 font-mono text-xs text-muted-foreground">
@@ -201,14 +202,14 @@ export default function DispatchLoadDetailPage() {
       {checkinsData && checkinsData.items.length > 0 && (
         <Card className="p-4">
           <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            <Clock className="h-3.5 w-3.5" /> Хронология
+            <Clock className="h-3.5 w-3.5" /> {t("dispatch.load_detail.timeline")}
           </p>
           <ul className="mt-3 space-y-2">
             {checkinsData.items.map((c) => (
               <li key={c.id} className="flex items-start gap-2 text-xs">
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
                 <div className="flex-1">
-                  <p className="font-medium">{CHECKIN_LABELS[c.kind]}</p>
+                  <p className="font-medium">{t(CHECKIN_LABELS_KEYS[c.kind])}</p>
                   <p className="text-muted-foreground">
                     {formatDateFull(c.createdAt)}
                     {typeof c.lat === "number" && typeof c.lng === "number" && (
@@ -235,14 +236,14 @@ export default function DispatchLoadDetailPage() {
   );
 }
 
-function BackBar({ onClick }: { onClick: () => void }) {
+function BackBar({ onClick, label }: { onClick: () => void; label: string }) {
   return (
     <button
       onClick={onClick}
       className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
     >
       <ArrowLeft className="h-4 w-4" />
-      Назад к грузам
+      {label}
     </button>
   );
 }
@@ -273,23 +274,24 @@ function StopBlock({
 
 // Quick-tap broker trust signals. Each button POSTs one signal and refreshes
 // the TrustBadge (same query key). Killer #1 stage 4.
-const FEEDBACK_BUTTONS: {
-  signalType: string;
-  positive: boolean;
-  label: string;
-  icon: typeof ThumbsUp;
-  variant: "good" | "bad";
-}[] = [
-  { signalType: "paid_on_time", positive: true, label: "Заплатил вовремя", icon: ThumbsUp, variant: "good" },
-  { signalType: "ratecon_reduced_post_bol", positive: false, label: "Срезал ставку", icon: TrendingDown, variant: "bad" },
-  { signalType: "no_response", positive: false, label: "Не отвечает", icon: PhoneOff, variant: "bad" },
-  { signalType: "fraud_attempt", positive: false, label: "Мошенничество", icon: ShieldAlert, variant: "bad" },
-];
-
 function BrokerFeedbackCard({ brokerMc, loadId }: { brokerMc: string; loadId: string }) {
+  const { t } = useT();
   const { toast } = useToast();
   const qc = useQueryClient();
   const [pending, setPending] = useState<string | null>(null);
+
+  const FEEDBACK_BUTTONS: {
+    signalType: string;
+    positive: boolean;
+    labelKey: string;
+    icon: typeof ThumbsUp;
+    variant: "good" | "bad";
+  }[] = [
+    { signalType: "paid_on_time", positive: true, labelKey: "dispatch.load_detail.feedback.paid_on_time", icon: ThumbsUp, variant: "good" },
+    { signalType: "ratecon_reduced_post_bol", positive: false, labelKey: "dispatch.load_detail.feedback.rate_cut", icon: TrendingDown, variant: "bad" },
+    { signalType: "no_response", positive: false, labelKey: "dispatch.load_detail.feedback.no_response", icon: PhoneOff, variant: "bad" },
+    { signalType: "fraud_attempt", positive: false, labelKey: "dispatch.load_detail.feedback.fraud", icon: ShieldAlert, variant: "bad" },
+  ];
 
   const mutation = useMutation({
     mutationFn: (input: { signalType: string; positive: boolean }) =>
@@ -301,21 +303,21 @@ function BrokerFeedbackCard({ brokerMc, loadId }: { brokerMc: string; loadId: st
       }),
     onMutate: (input) => setPending(input.signalType),
     onSuccess: () => {
-      toast({ title: "Оценка записана", description: "Спасибо — это улучшает данные о брокерах." });
+      toast({ title: t("dispatch.load_detail.saved"), description: t("dispatch.load_detail.saved_desc") });
       qc.invalidateQueries({ queryKey: ["/api/broker-trust", brokerMc] });
     },
     onError: (err: Error) =>
-      toast({ title: "Не удалось записать", description: err.message, variant: "destructive" }),
+      toast({ title: t("dispatch.load_detail.save_error"), description: err.message, variant: "destructive" }),
     onSettled: () => setPending(null),
   });
 
   return (
     <Card className="p-4">
       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        Оценить брокера
+        {t("dispatch.load_detail.rate_broker")}
       </p>
       <p className="mt-1 text-xs text-muted-foreground">
-        Один тап — и сигнал идёт в Trust Score. Помогает всем диспетчерам.
+        {t("dispatch.load_detail.rate_broker_hint")}
       </p>
       <div className="mt-3 grid grid-cols-2 gap-2">
         {FEEDBACK_BUTTONS.map((b) => {
@@ -335,7 +337,7 @@ function BrokerFeedbackCard({ brokerMc, loadId }: { brokerMc: string; loadId: st
               }
             >
               {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
-              {b.label}
+              {t(b.labelKey)}
             </Button>
           );
         })}
@@ -345,6 +347,7 @@ function BrokerFeedbackCard({ brokerMc, loadId }: { brokerMc: string; loadId: st
 }
 
 function DriverAssignmentCard({ load }: { load: LoadFull }) {
+  const { t } = useT();
   const [reassignOpen, setReassignOpen] = useState(false);
   const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null);
   const { toast } = useToast();
@@ -372,10 +375,10 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
       apiJson("PATCH", `/api/dispatch/loads/${load.id}`, { driverId }),
     onSuccess: () => {
       toast({
-        title: "Водитель обновлён",
+        title: t("dispatch.load_detail.updated"),
         description: selectedDriverId
-          ? "Рейс назначен новому водителю."
-          : "Водитель снят с рейса.",
+          ? t("dispatch.load_detail.assigned_desc")
+          : t("dispatch.load_detail.unassigned_desc"),
       });
       // Refetch the load to pull fresh driverId
       qc.invalidateQueries({ queryKey: ["dispatch", "load", load.id] });
@@ -385,7 +388,7 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
     },
     onError: (err: Error) => {
       toast({
-        title: "Не удалось обновить",
+        title: t("dispatch.load_detail.update_error"),
         description: err.message,
         variant: "destructive",
       });
@@ -398,12 +401,12 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Назначение
+              {t("dispatch.load_detail.assignment.label")}
             </p>
             {load.driverId ? (
               <>
                 <p className="mt-2 text-sm font-medium">
-                  {currentDriver?.fullName || "Водитель"}
+                  {currentDriver?.fullName || t("dispatch.load_detail.assignment.driver_fallback")}
                 </p>
                 <p className="mt-0.5 font-mono text-xs text-muted-foreground">
                   {load.driverId}
@@ -416,7 +419,7 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
               </>
             ) : (
               <p className="mt-2 text-sm text-muted-foreground">
-                Водитель не назначен
+                {t("dispatch.load_detail.assignment.no_driver")}
               </p>
             )}
           </div>
@@ -427,7 +430,9 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
             disabled={!clientId}
           >
             <UserCircle2 className="h-4 w-4" />
-            {load.driverId ? "Сменить" : "Назначить"}
+            {load.driverId
+              ? t("dispatch.load_detail.assignment.reassign")
+              : t("dispatch.load_detail.assignment.assign")}
           </Button>
         </div>
       </Card>
@@ -436,10 +441,12 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {load.driverId ? "Сменить водителя" : "Назначить водителя"}
+              {load.driverId
+                ? t("dispatch.load_detail.dialog.title_reassign")
+                : t("dispatch.load_detail.dialog.title_assign")}
             </DialogTitle>
             <DialogDescription>
-              Выберите водителя клиента, привязанного к этому рейсу.
+              {t("dispatch.load_detail.dialog.desc")}
             </DialogDescription>
           </DialogHeader>
 
@@ -450,7 +457,7 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
               </div>
             ) : driversQuery.data?.items.length === 0 ? (
               <p className="py-4 text-sm text-muted-foreground">
-                У этого клиента нет доступных водителей.
+                {t("dispatch.load_detail.dialog.no_drivers")}
               </p>
             ) : (
               <Select
@@ -458,7 +465,7 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
                 onValueChange={setSelectedDriverId}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Выберите водителя" />
+                  <SelectValue placeholder={t("dispatch.load_detail.dialog.select_driver")} />
                 </SelectTrigger>
                 <SelectContent>
                   {driversQuery.data?.items.map((d) => (
@@ -485,7 +492,7 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
                 className="mr-auto"
               >
                 <UserX className="h-4 w-4" />
-                Снять водителя
+                {t("dispatch.load_detail.assignment.unassign")}
               </Button>
             )}
             <Button
@@ -493,7 +500,7 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
               onClick={() => setReassignOpen(false)}
               disabled={reassignMutation.isPending}
             >
-              Отмена
+              {t("common.cancel")}
             </Button>
             <Button
               onClick={() => {
@@ -510,7 +517,7 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
               {reassignMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : null}
-              Назначить
+              {t("dispatch.load_detail.assignment.assign")}
             </Button>
           </DialogFooter>
         </DialogContent>

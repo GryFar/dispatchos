@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/dispatch/EmptyState";
+import { useT } from "@/lib/i18n";
 
 /**
  * /dispatch/queue — dispatcher's approval-task inbox. Same UX as
@@ -51,42 +52,16 @@ interface ListResponse {
   total: number;
 }
 
-const STATUS_TABS: Array<{ value: ApprovalTaskStatus | "all"; label: string }> = [
-  { value: "open", label: "Открытые" },
-  { value: "resolved", label: "Решённые" },
-  { value: "dismissed", label: "Отклонённые" },
-  { value: "all", label: "Все" },
-];
-
-const TASK_TYPE_LABELS: Record<ApprovalTaskType, string> = {
-  driver_issue: "Жалоба водителя",
-  driver_booking_request: "Запрос booking",
-  signup_lead: "Заявка на регистрацию",
-};
-
-const SEVERITY_META: Record<
-  string,
-  { label: string; cls: string; icon: typeof AlertTriangle }
-> = {
-  info: {
-    label: "Информация",
-    cls: "bg-blue-500/15 text-blue-500 border-blue-500/30",
-    icon: AlertTriangle,
-  },
-  warn: {
-    label: "Внимание",
-    cls: "bg-yellow-500/15 text-yellow-600 border-yellow-500/40",
-    icon: AlertTriangle,
-  },
-  urgent: {
-    label: "СРОЧНО",
-    cls: "bg-destructive/15 text-destructive border-destructive/40",
-    icon: AlertTriangle,
-  },
-};
-
 export default function DispatchQueuePage() {
+  const { t } = useT();
   const [status, setStatus] = useState<ApprovalTaskStatus | "all">("open");
+
+  const STATUS_TABS: Array<{ value: ApprovalTaskStatus | "all"; labelKey: string }> = [
+    { value: "open", labelKey: "dispatch.queue.tab.open" },
+    { value: "resolved", labelKey: "dispatch.queue.tab.resolved" },
+    { value: "dismissed", labelKey: "dispatch.queue.tab.dismissed" },
+    { value: "all", labelKey: "dispatch.queue.tab.all" },
+  ];
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -105,11 +80,11 @@ export default function DispatchQueuePage() {
     <div className="space-y-5">
       <header>
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          dispatcher / очередь
+          {t("dispatch.queue.header_sub")}
         </p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Очередь задач</h1>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("dispatch.queue.title")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Жалобы и запросы от водителей ваших клиентов.
+          {t("dispatch.queue.subtitle")}
         </p>
       </header>
 
@@ -117,7 +92,7 @@ export default function DispatchQueuePage() {
         <TabsList>
           {STATUS_TABS.map((tab) => (
             <TabsTrigger key={tab.value} value={tab.value}>
-              {tab.label}
+              {t(tab.labelKey)}
             </TabsTrigger>
           ))}
         </TabsList>
@@ -131,11 +106,11 @@ export default function DispatchQueuePage() {
         <Card className="p-2">
           <EmptyState
             icon={<Inbox className="h-6 w-6" />}
-            title={status === "open" ? "Очередь пуста" : "Нет задач"}
+            title={status === "open" ? t("dispatch.queue.empty_open") : t("dispatch.queue.empty_other")}
             description={
               status === "open"
-                ? "Когда водители ваших клиентов сообщат о проблемах, они появятся здесь."
-                : "Попробуйте сменить вкладку."
+                ? t("dispatch.queue.empty_open_desc")
+                : t("dispatch.queue.empty_other_desc")
             }
           />
         </Card>
@@ -151,18 +126,46 @@ export default function DispatchQueuePage() {
 }
 
 function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
+  const { t } = useT();
   const { toast } = useToast();
   const qc = useQueryClient();
   const [resolveOpen, setResolveOpen] = useState(false);
   const [dismissOpen, setDismissOpen] = useState(false);
   const [resolution, setResolution] = useState("");
 
+  const TASK_TYPE_LABELS: Record<ApprovalTaskType, string> = {
+    driver_issue: t("dispatch.queue.task_type.driver_issue"),
+    driver_booking_request: t("dispatch.queue.task_type.driver_booking_request"),
+    signup_lead: t("dispatch.queue.task_type.signup_lead"),
+  };
+
+  const SEVERITY_META: Record<
+    string,
+    { label: string; cls: string; icon: typeof AlertTriangle }
+  > = {
+    info: {
+      label: t("dispatch.queue.severity.info"),
+      cls: "bg-blue-500/15 text-blue-500 border-blue-500/30",
+      icon: AlertTriangle,
+    },
+    warn: {
+      label: t("dispatch.queue.severity.warn"),
+      cls: "bg-yellow-500/15 text-yellow-600 border-yellow-500/40",
+      icon: AlertTriangle,
+    },
+    urgent: {
+      label: t("dispatch.queue.severity.urgent"),
+      cls: "bg-destructive/15 text-destructive border-destructive/40",
+      icon: AlertTriangle,
+    },
+  };
+
   const mutation = useMutation({
     mutationFn: (vars: { action: "resolve" | "dismiss"; resolution?: string }) =>
       apiJson("PATCH", `/api/dispatch/approval-tasks/${task.id}`, vars),
     onSuccess: (_, vars) => {
       toast({
-        title: vars.action === "resolve" ? "Решено" : "Отклонено",
+        title: vars.action === "resolve" ? t("dispatch.queue.resolved") : t("dispatch.queue.dismissed"),
       });
       qc.invalidateQueries({
         queryKey: ["/api/dispatch/approval-tasks", "open-count"],
@@ -176,7 +179,7 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
       setResolution("");
     },
     onError: (err: ApiError) =>
-      toast({ variant: "destructive", title: "Не удалось", description: err.message }),
+      toast({ variant: "destructive", title: t("dispatch.queue.action_failed"), description: err.message }),
   });
 
   const payload = task.payload as {
@@ -227,7 +230,7 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
               disabled={mutation.isPending}
             >
               <XCircle className="mr-1.5 h-3.5 w-3.5" />
-              Отклонить
+              {t("dispatch.queue.btn.dismiss")}
             </Button>
             <Button
               size="sm"
@@ -235,7 +238,7 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
               disabled={mutation.isPending}
             >
               <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
-              Решить
+              {t("dispatch.queue.btn.resolve")}
             </Button>
           </div>
         )}
@@ -262,7 +265,7 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
       {!isOpen && (
         <div className="rounded-md border border-border bg-muted/30 p-3 text-xs">
           <p className="font-medium">
-            {task.status === "resolved" ? "Решено" : "Отклонено"}
+            {task.status === "resolved" ? t("dispatch.queue.resolved") : t("dispatch.queue.dismissed")}
             {task.resolvedByEmail && ` — ${task.resolvedByEmail}`}
             {task.resolvedAt && ` · ${formatRelativeAgo(task.resolvedAt)}`}
           </p>
@@ -277,25 +280,25 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
       <Dialog open={resolveOpen} onOpenChange={setResolveOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Отметить решённым</DialogTitle>
+            <DialogTitle>{t("dispatch.queue.resolve_dialog.title")}</DialogTitle>
             <DialogDescription>
-              Опционально добавьте заметку — что именно вы сделали.
+              {t("dispatch.queue.resolve_dialog.desc")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5">
-            <Label htmlFor="resolution">Заметка (опц.)</Label>
+            <Label htmlFor="resolution">{t("dispatch.queue.resolve_dialog.note")}</Label>
             <Textarea
               id="resolution"
               value={resolution}
               maxLength={1000}
               onChange={(e) => setResolution(e.target.value)}
-              placeholder="Связался с брокером, рейс перенесён на завтра 9:00."
+              placeholder={t("dispatch.queue.resolve_dialog.placeholder")}
               rows={4}
             />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setResolveOpen(false)}>
-              Отмена
+              {t("common.cancel")}
             </Button>
             <Button
               onClick={() =>
@@ -307,7 +310,7 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
               disabled={mutation.isPending}
             >
               {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Подтвердить
+              {t("dispatch.queue.resolve_dialog.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -316,25 +319,25 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
       <Dialog open={dismissOpen} onOpenChange={setDismissOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Отклонить задачу</DialogTitle>
+            <DialogTitle>{t("dispatch.queue.dismiss_dialog.title")}</DialogTitle>
             <DialogDescription>
-              Используйте, если задача — дубликат, спам или не требует действий.
+              {t("dispatch.queue.dismiss_dialog.desc")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5">
-            <Label htmlFor="dismiss-reason">Причина (опц.)</Label>
+            <Label htmlFor="dismiss-reason">{t("dispatch.queue.dismiss_dialog.reason")}</Label>
             <Textarea
               id="dismiss-reason"
               value={resolution}
               maxLength={1000}
               onChange={(e) => setResolution(e.target.value)}
-              placeholder="Дубликат, та же проблема в задаче #..."
+              placeholder={t("dispatch.queue.dismiss_dialog.placeholder")}
               rows={3}
             />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDismissOpen(false)}>
-              Отмена
+              {t("common.cancel")}
             </Button>
             <Button
               variant="destructive"
@@ -347,7 +350,7 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
               disabled={mutation.isPending}
             >
               {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Отклонить
+              {t("dispatch.queue.btn.dismiss")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -357,18 +360,19 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
 }
 
 function StatusChip({ status }: { status: ApprovalTaskStatus }) {
-  const map: Record<ApprovalTaskStatus, { label: string; cls: string }> = {
-    open: { label: "Открыто", cls: "bg-primary/15 text-primary" },
-    in_progress: { label: "В работе", cls: "bg-blue-500/15 text-blue-500" },
-    resolved: { label: "Решено", cls: "bg-emerald-500/15 text-emerald-600" },
-    dismissed: { label: "Отклонено", cls: "bg-muted text-muted-foreground" },
+  const { t } = useT();
+  const map: Record<ApprovalTaskStatus, { labelKey: string; cls: string }> = {
+    open: { labelKey: "dispatch.queue.status.open", cls: "bg-primary/15 text-primary" },
+    in_progress: { labelKey: "dispatch.queue.status.in_progress", cls: "bg-blue-500/15 text-blue-500" },
+    resolved: { labelKey: "dispatch.queue.status.resolved", cls: "bg-emerald-500/15 text-emerald-600" },
+    dismissed: { labelKey: "dispatch.queue.status.dismissed", cls: "bg-muted text-muted-foreground" },
   };
   const m = map[status];
   return (
     <span
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${m.cls}`}
     >
-      {m.label}
+      {t(m.labelKey)}
     </span>
   );
 }
