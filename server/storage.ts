@@ -529,6 +529,12 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS mc_registry_user_idx
     ON mc_account_registry(user_id);
+
+  CREATE TABLE IF NOT EXISTS stripe_processed_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT,
+    processed_at TEXT NOT NULL
+  );
 `);
 ensureUserDriverColumns();
 // Compliance documents — add optional client_id scope so admins can attach a
@@ -1960,6 +1966,16 @@ export const storage = {
 
   releaseMcForUser(userId: string): void {
     sqlite.prepare("DELETE FROM mc_account_registry WHERE user_id = ?").run(userId);
+  },
+  /** V4-004: claim a Stripe event id. Returns true the FIRST time (process it),
+      false if already seen (duplicate delivery — skip). Atomic via INSERT OR IGNORE. */
+  markStripeEventProcessed(eventId: string, eventType: string): boolean {
+    const r = sqlite
+      .prepare(
+        "INSERT OR IGNORE INTO stripe_processed_events (event_id, event_type, processed_at) VALUES (?, ?, ?)",
+      )
+      .run(eventId, eventType, now());
+    return r.changes > 0;
   },
 
   /**
