@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import type { Client, Equipment } from "@shared/schema";
+import { formatClientDisplay } from "@shared/format-client";
 import { apiJson } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -137,7 +138,10 @@ export default function ClientDetailPage() {
             <Briefcase className="h-5 w-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{client.name}</h1>
+            {/* Henry QA Bug #6+7: show combined 'Company — Contact' in header */}
+            <h1 className="text-2xl font-semibold tracking-tight">
+              {formatClientDisplay(client as any)}
+            </h1>
             <p className="mt-0.5 text-sm text-muted-foreground">
               MC {client.mc} ·{" "}
               {EQUIPMENT_OPTIONS.find((e) => e.value === client.equipment)?.label ?? client.equipment}
@@ -219,6 +223,10 @@ function ProfileTab({ client }: { client: Client }) {
   // мульти-секционной формы избыточен)
   const [form, setForm] = useState({
     name: client.name,
+    // Henry QA Bug #6+7 — contact person fields
+    contactPersonName: (client as any).contactPersonName ?? "",
+    contactPersonEmail: (client as any).contactPersonEmail ?? "",
+    contactPersonPhone: (client as any).contactPersonPhone ?? "",
     mc: client.mc,
     equipment: client.equipment,
     targetPpm: client.targetPpm,
@@ -261,6 +269,10 @@ function ProfileTab({ client }: { client: Client }) {
   useEffect(() => {
     setForm({
       name: client.name,
+      // Henry QA Bug #6+7 — contact person fields
+      contactPersonName: (client as any).contactPersonName ?? "",
+      contactPersonEmail: (client as any).contactPersonEmail ?? "",
+      contactPersonPhone: (client as any).contactPersonPhone ?? "",
       mc: client.mc,
       equipment: client.equipment,
       targetPpm: client.targetPpm,
@@ -316,6 +328,8 @@ function ProfileTab({ client }: { client: Client }) {
   function handleSave() {
     const patch: Partial<Client> = {
       name: form.name,
+      // Henry QA Bug #6+7 — contact person: send empty string as undefined to clear.
+      ...({} as any),
       mc: form.mc,
       equipment: form.equipment,
       targetPpm: Number(form.targetPpm),
@@ -329,6 +343,9 @@ function ProfileTab({ client }: { client: Client }) {
         .filter(Boolean),
       avoidStates: form.avoidStates,
     };
+    (patch as any).contactPersonName = form.contactPersonName.trim() || undefined;
+    (patch as any).contactPersonEmail = form.contactPersonEmail.trim() || undefined;
+    (patch as any).contactPersonPhone = form.contactPersonPhone.trim() || undefined;
 
     // Smart-matching fields — отправляем ТОЛЬКО заполненные
     if (form.equipmentTypes.length > 0) patch.equipmentTypes = form.equipmentTypes;
@@ -412,6 +429,40 @@ function ProfileTab({ client }: { client: Client }) {
                 ))}
               </SelectContent>
             </Select>
+          </Field>
+        </CardContent>
+      </Card>
+
+      {/* Block 1b — Henry QA Bug #6+7: Contact person */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Contact person</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Manager or primary contact at this carrier. Shown as “Company — Name” throughout the app.
+          </p>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-2">
+          <Field label="Contact name">
+            <Input
+              placeholder="e.g. John Smith"
+              value={form.contactPersonName}
+              onChange={(e) => setForm({ ...form, contactPersonName: e.target.value })}
+            />
+          </Field>
+          <Field label="Contact email">
+            <Input
+              type="email"
+              placeholder="john@example.com"
+              value={form.contactPersonEmail}
+              onChange={(e) => setForm({ ...form, contactPersonEmail: e.target.value })}
+            />
+          </Field>
+          <Field label="Contact phone">
+            <Input
+              placeholder="(555) 123-4567"
+              value={form.contactPersonPhone}
+              onChange={(e) => setForm({ ...form, contactPersonPhone: e.target.value })}
+            />
           </Field>
         </CardContent>
       </Card>

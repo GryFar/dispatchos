@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/command";
 import { RoleBadge } from "@/components/dispatch/RoleBadge";
 import { formatDateFull } from "@/lib/format";
+import { formatUsPhone, toE164Us, fromE164Us } from "@/lib/format-phone";
 import { cn } from "@/lib/utils";
 import { ResetTotpDialog } from "@/pages/admin/users";
 import { DriverLocationCard } from "@/components/tracking/DriverLocationCard";
@@ -70,6 +71,8 @@ type FormState = {
   role: UserRole;
   linkedClientId: string;
   phone: string;
+  // Henry QA Bug #5 — truck unit number (shown/editable for drivers only).
+  unitNumber: string;
   /**
    * UI-only field for drivers. When false (owner-operator), we send
    * linkedClientId=null to the backend regardless of the combobox value.
@@ -97,6 +100,7 @@ export default function UserDetailPage() {
     role: "driver",
     linkedClientId: "",
     phone: "",
+    unitNumber: "",
     driverIsEmployee: true,
   });
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -110,7 +114,10 @@ export default function UserDetailPage() {
         email: data.email,
         role: data.role,
         linkedClientId: data.linkedClientId ?? "",
-        phone: data.phone ?? "",
+        // Convert stored E.164 (+11234567890) to display format ("(123) 456-7890").
+        // Falls back to empty string for non-US / legacy freeform phone values.
+        phone: fromE164Us(data.phone) || (data.phone && !data.phone.startsWith("+1") ? data.phone : ""),
+        unitNumber: (data as any).unitNumber ?? "",
         // For drivers: employee if a linkedClientId is set, otherwise owner-op.
         driverIsEmployee: Boolean(data.linkedClientId),
       });
@@ -119,10 +126,15 @@ export default function UserDetailPage() {
 
   const saveMutation = useMutation({
     mutationFn: () => {
+      // Convert display format "(123) 456-7890" → E.164 "+11234567890" for storage.
+      // toE164Us returns null for incomplete/empty inputs — we send null to clear the field.
+      const phoneE164 = form.phone ? (toE164Us(form.phone) ?? form.phone) : null;
       const body: Record<string, unknown> = {
         fullName: form.fullName,
         role: form.role,
-        phone: form.phone || null,
+        phone: phoneE164,
+        // Henry QA Bug #5 — only send unitNumber for drivers; send null to clear.
+        unitNumber: form.role === "driver" ? (form.unitNumber.trim() || null) : undefined,
       };
       // Only send email if it actually changed — saves an audit event and
       // avoids the uniqueness check round-trip for no-op saves.
@@ -338,15 +350,42 @@ export default function UserDetailPage() {
           )}
 
           <div className="space-y-1.5">
-            <Label htmlFor="phone">Телефон</Label>
+            <Label htmlFor="phone">Phone (US)</Label>
             <Input
               id="phone"
               value={form.phone}
               disabled={isDeleted}
-              placeholder="+1 555 123 4567"
-              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+              placeholder="(555) 123-4567"
+              maxLength={14}
+              onChange={(e) => {
+                // Apply US phone mask on every keystroke.
+                // The raw value is kept as display format; E.164 conversion
+                // happens in the save handler (toE164Us).
+                setForm((f) => ({ ...f, phone: formatUsPhone(e.target.value) }));
+              }}
             />
+            <p className="text-[11px] text-muted-foreground">
+              US format: (XXX) XXX-XXXX. Stored as +1XXXXXXXXXX (E.164).
+            </p>
           </div>
+
+          {/* Henry QA Bug #5 — truck unit number, drivers only */}
+          {form.role === "driver" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="unitNumber">Truck unit #</Label>
+              <Input
+                id="unitNumber"
+                value={form.unitNumber}
+                disabled={isDeleted}
+                placeholder="e.g. Unit 42 or T-07"
+                maxLength={50}
+                onChange={(e) => setForm((f) => ({ ...f, unitNumber: e.target.value }))}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Identifies the driver’s truck in dispatch cockpit and driver lists.
+              </p>
+            </div>
+          )}
 
           <div className="flex items-center justify-between rounded-md border border-border p-3">
             <div>

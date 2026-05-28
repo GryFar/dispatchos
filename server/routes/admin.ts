@@ -416,6 +416,8 @@ export function registerAdminRoutes(app: Express): void {
           role: patch.role,
           blocked: patch.blocked,
           linkedClientId: dropLinkedClient ? null : patch.linkedClientId,
+          // Henry QA Bug #5 — unit number passthrough.
+          unitNumber: patch.unitNumber,
         },
         actor.id,
       );

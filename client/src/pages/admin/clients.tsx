@@ -6,6 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Briefcase, Plus, Search } from "lucide-react";
 import type { Client } from "@shared/schema";
+import { formatClientDisplay } from "@shared/format-client";
 import { apiJson } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatMc, formatPpm } from "@/lib/format";
@@ -140,7 +141,8 @@ function ClientsTable({ rows, loading }: { rows: Client[]; loading: boolean }) {
           href={`/clients/${c.id}`}
           className="block min-w-0 transition-colors hover:text-primary"
         >
-          <p className="truncate font-medium">{c.name}</p>
+          {/* Henry QA Bug #6+7: show combined 'Company — Contact' */}
+          <p className="truncate font-medium">{formatClientDisplay(c as any)}</p>
           <p className="truncate text-xs text-muted-foreground">
             <McCell value={c.mc} />
           </p>
