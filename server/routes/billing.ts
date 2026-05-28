@@ -28,11 +28,20 @@ import {
   getClientPlan,
 } from "../lib/stripe";
 
+// V4-005: successPath/cancelPath flow into the Stripe return URL, so they must
+// be constrained to internal hash-route paths only — start with a single "/",
+// safe path chars only, no protocol/host/@/dot/double-slash. Blocks
+// open-redirect and query/fragment injection into the checkout return URL.
+const safeInternalPath = z
+  .string()
+  .regex(/^\/[A-Za-z0-9/_-]*$/, "must be an internal path, e.g. /admin/billing")
+  .max(128);
+
 const checkoutBodySchema = z.object({
   tier: z.string().min(1).max(64),
-  /** Optional override; defaults to /admin if absent. */
-  successPath: z.string().optional(),
-  cancelPath: z.string().optional(),
+  /** Optional override; defaults to /admin/billing if absent. Internal path only. */
+  successPath: safeInternalPath.optional(),
+  cancelPath: safeInternalPath.optional(),
 });
 
 /**
