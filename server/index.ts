@@ -159,16 +159,46 @@ app.use("/api", (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
-// Global /api per-IP rate limit.
+// Rate limiting (Audit v4 V4-001 — re-enabling by default).
 //
-// 2026-05-27 hotfix (user request): completely disabled by default. All
-// admins for the design-partner deployments share a single office NAT IP,
-// and the previous 240/min cap was occasionally tripping legitimate
-// dashboard refresh storms. Set DISPATCHOS_RATE_LIMIT=on to re-enable
-// once we have real-IP diversity in production.
+// History:
+//   - #75 (v1 Critical #4) introduced auth brute-force limiter.
+//   - #97/#98 flipped both limiters to opt-in because the design-partner
+//     office NAT was tripping limits with legitimate admin activity.
+//   - V4-001: that flip left production completely unprotected against
+//     login bombing / TOTP brute-force. We must re-enable by default.
+//
+// Fix: limiters are ON by default. Office NAT problem is solved via an
+// IP allow-list (DISPATCHOS_RATE_LIMIT_TRUSTED_IPS) rather than disabling
+// the whole protection. Trusted IPs (the team's office, Vlad's home,
+// etc.) are listed in env, comma-separated; their requests skip both
+// limiters but still go through every other security check.
+//
+// Backward compat: setting DISPATCHOS_RATE_LIMIT=off / DISPATCHOS_AUTH_RATE_LIMIT=off
+// explicitly is still honoured, in case ops needs to disable in a hurry
+// during an incident. Default is now "on".
 // ---------------------------------------------------------------------------
+
+const TRUSTED_IPS = new Set(
+  (process.env.DISPATCHOS_RATE_LIMIT_TRUSTED_IPS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+if (TRUSTED_IPS.size > 0) {
+  console.log(
+    `[ratelimit] ${TRUSTED_IPS.size} trusted IP(s) will skip rate limits ` +
+      "(office NAT, dev machines)",
+  );
+}
+
+/** Per-IP skip predicate — trusted IPs bypass the limiter, everyone else hits it. */
+function skipTrusted(req: import("express").Request): boolean {
+  return TRUSTED_IPS.has(req.ip || "");
+}
+
 const GLOBAL_RATE_LIMIT_ENABLED =
-  (process.env.DISPATCHOS_RATE_LIMIT || "off").toLowerCase() === "on";
+  (process.env.DISPATCHOS_RATE_LIMIT || "on").toLowerCase() === "on";
 if (GLOBAL_RATE_LIMIT_ENABLED) {
   app.use(
     "/api",
@@ -177,26 +207,25 @@ if (GLOBAL_RATE_LIMIT_ENABLED) {
       limit: Number(process.env.DISPATCHOS_RATE_LIMIT_PER_MINUTE || 240),
       standardHeaders: true,
       legacyHeaders: false,
+      skip: skipTrusted,
     }),
   );
-  console.log("[ratelimit] global /api limiter ENABLED (per-IP)");
+  console.log(
+    `[ratelimit] global /api limiter ENABLED (per-IP, ` +
+      `${process.env.DISPATCHOS_RATE_LIMIT_PER_MINUTE || 240}/min)`,
+  );
 } else {
   console.log(
-    "[ratelimit] global /api limiter DISABLED (set DISPATCHOS_RATE_LIMIT=on to enable).",
+    "[ratelimit] global /api limiter DISABLED (set DISPATCHOS_RATE_LIMIT=on to re-enable).",
   );
 }
 
-// ---------------------------------------------------------------------------
-// Audit Critical #4 — per-IP brute-force limiter on /api/auth/login and
-// /api/me/totp/confirm.
-//
-// Disabled by default since 2026-05-27 — see commit message and the
-// `DISPATCHOS_RATE_LIMIT` block above for the same office-NAT reasoning.
-// To re-enable:
-//   flyctl secrets set DISPATCHOS_AUTH_RATE_LIMIT=on -a dispatchos-demo
-// ---------------------------------------------------------------------------
+// Per-IP brute-force limiter on credential endpoints.
+// 15-minute window, 20 attempts per (IP, email) tuple. Tuple is important
+// because raw per-IP would lock out an entire office NAT if any one user
+// mistyped their password.
 const AUTH_RATE_LIMIT_ENABLED =
-  (process.env.DISPATCHOS_AUTH_RATE_LIMIT || "off").toLowerCase() === "on";
+  (process.env.DISPATCHOS_AUTH_RATE_LIMIT || "on").toLowerCase() === "on";
 
 if (AUTH_RATE_LIMIT_ENABLED) {
   const authBruteLimiter = rateLimit({
@@ -204,6 +233,7 @@ if (AUTH_RATE_LIMIT_ENABLED) {
     limit: Number(process.env.DISPATCHOS_AUTH_RATE_LIMIT_PER_15MIN || 20),
     standardHeaders: true,
     legacyHeaders: false,
+    skip: skipTrusted,
     keyGenerator: (req) => {
       const ip = req.ip || "unknown";
       const body = (req.body || {}) as { email?: string; username?: string; token?: string };
@@ -212,12 +242,19 @@ if (AUTH_RATE_LIMIT_ENABLED) {
     },
     message: { message: "Too many attempts. Try again in 15 minutes." },
   });
+  // Cover ALL credential / 2FA / bootstrap paths, not just login.
+  // V4-001 noted that signup/bootstrap/setup were quietly uncovered after #98.
   app.use("/api/auth/login", authBruteLimiter);
+  app.use("/api/auth/signup", authBruteLimiter);
+  app.use("/api/auth/bootstrap", authBruteLimiter);
+  app.use("/api/auth/setup", authBruteLimiter);
   app.use("/api/me/totp/confirm", authBruteLimiter);
-  console.log("[auth] brute-force limiter ENABLED (15min / 20 attempts per IP+email)");
+  console.log(
+    "[auth] brute-force limiter ENABLED (15min / 20 attempts per IP+email)",
+  );
 } else {
   console.log(
-    "[auth] brute-force limiter DISABLED (set DISPATCHOS_AUTH_RATE_LIMIT=on to enable).",
+    "[auth] brute-force limiter DISABLED (set DISPATCHOS_AUTH_RATE_LIMIT=on to re-enable).",
   );
 }
 
