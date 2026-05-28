@@ -192,9 +192,18 @@ if (TRUSTED_IPS.size > 0) {
   );
 }
 
-/** Per-IP skip predicate — trusted IPs bypass the limiter, everyone else hits it. */
-function skipTrusted(req: import("express").Request): boolean {
-  return TRUSTED_IPS.has(req.ip || "");
+// V5-007: the IP-based trusted-skip was a spoofable OFF-switch for the rate
+// limiter. req.ip is derived from X-Forwarded-For, and with Cloudflare in
+// front of Fly the XFF chain has multiple hops an attacker can partly control
+// — so a request could present the documented office IP (it's in the runbook)
+// and skip rate limiting entirely, re-opening V4-001. We remove the bypass
+// rather than trying to out-guess the XFF chain: it's unnecessary because the
+// auth limiter keys on (IP, email), so a shared office NAT is NOT locked out
+// (each user gets their own bucket), and the global /api limiter (240/min) is
+// generous for legitimate office traffic. TRUSTED_IPS is retained but no
+// longer grants a bypass; re-introduce only with a non-spoofable signal.
+function skipTrusted(_req: import("express").Request): boolean {
+  return false;
 }
 
 const GLOBAL_RATE_LIMIT_ENABLED =
