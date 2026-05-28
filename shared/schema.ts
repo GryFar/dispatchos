@@ -1252,3 +1252,39 @@ export const dispatchLoadsListFiltersSchema = paginationParamsSchema.extend({
   status: z.enum(["available", "booked", "all"]).optional(),
 });
 export type DispatchLoadsListFilters = z.infer<typeof dispatchLoadsListFiltersSchema>;
+// ===========================================================================
+// Broker Trust Signals — Killer Feature #1 (auto write-paths MVP)
+// ===========================================================================
+
+export const BROKER_TRUST_SIGNAL_TYPES = [
+  "paid_on_time", "paid_late", "paid_never",
+  "ratecon_honored", "ratecon_reduced_post_bol",
+  "rate_negotiation_fair", "rate_negotiation_aggressive",
+  "fast_response", "slow_response", "no_response",
+  "detention_paid", "detention_disputed",
+  "tonu_paid", "tonu_disputed",
+  "lumper_reimbursed", "lumper_not_reimbursed",
+  "fraud_attempt", "double_brokered",
+  "factoring_friendly", "factoring_blocked",
+  // Auto write-path signals
+  "load_booked", "load_completed", "load_cancelled_by_broker", "load_refused_by_carrier",
+  "authority_revoked", "authority_restored",
+] as const;
+export type BrokerTrustSignalType = typeof BROKER_TRUST_SIGNAL_TYPES[number];
+
+export const brokerTrustSignalSchema = z.object({
+  id: z.string(),
+  brokerMc: z.string().min(1),
+  brokerName: z.string().nullable().optional(),
+  loadId: z.string().nullable().optional(),
+  clientId: z.string().nullable().optional(),
+  signalType: z.enum(BROKER_TRUST_SIGNAL_TYPES),
+  positive: z.boolean(),
+  valueJson: z.unknown().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  reportedByUserId: z.string().nullable().optional(),
+  source: z.enum(["automatic", "dispatcher", "driver", "fmcsa", "integration"]),
+  reportedAt: z.string(),
+  createdAt: z.string(),
+});
+export type BrokerTrustSignal = z.infer<typeof brokerTrustSignalSchema>;

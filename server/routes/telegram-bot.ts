@@ -360,6 +360,23 @@ async function handleApprovalLog(
     args,
   });
 
+  // Broker Trust Signal: /no = carrier refusing a load — auto-collect.
+  if (verb === "/no" && user.linkedClientId) {
+    const loadId = args.trim() || null;
+    const loadRec = loadId
+      ? (storage.getLoad?.(loadId) as { brokerMc?: string; broker_mc?: string } | undefined)
+      : undefined;
+    const brokerMc = (loadRec?.brokerMc ?? loadRec?.broker_mc ?? "") as string;
+    if (brokerMc) {
+      storage.appendBrokerTrustSignal({
+        brokerMc, loadId, clientId: user.linkedClientId,
+        signalType: "load_refused_by_carrier", positive: false,
+        reportedByUserId: user.id, source: "driver",
+        notes: `Driver /no via Telegram (chatId=${chatId})`,
+      });
+    }
+  }
+
   const reply =
     verb === "/yes"
       ? "👍 Approval logged. Dispatcher confirms with broker / rate con."

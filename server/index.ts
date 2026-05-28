@@ -12,7 +12,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
-import { storage } from "./storage";
+import { storage, backfillBrokerTrustSignals } from "./storage";
 
 const app = express();
 const isVdsMode = process.env.DISPATCHOS_DEPLOYMENT_MODE === "vds";
@@ -313,6 +313,12 @@ app.use((req, res, next) => {
       "migration",
     );
   }
+
+  // Broker Trust #1: one-shot backfill from existing loads.
+  try {
+    const bf = backfillBrokerTrustSignals();
+    if (bf.backfilled > 0) log(`[broker-trust] backfilled ${bf.backfilled} signals`, "migration");
+  } catch (err) { log(`[broker-trust] backfill error: ${String(err)}`, "migration"); }
 
   const httpServer = await registerRoutes(app);
 
