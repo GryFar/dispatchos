@@ -525,6 +525,9 @@ function ContextCard({
                 {t("driver.dashboard.context.broker")}
               </p>
               <p className="mt-0.5 truncate text-sm font-medium">{client.name}</p>
+              {(client as any).contactPersonName && (
+                <p className="text-xs text-muted-foreground">{(client as any).contactPersonName}</p>
+              )}
               <p className="font-mono text-[11px] text-muted-foreground">
                 {client.mc}
               </p>

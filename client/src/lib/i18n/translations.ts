@@ -544,6 +544,11 @@ const ru: Dict = {
   "totp.setup.resumeSubtitle": "Отсканируйте QR-код в аутентификаторе и введите полученный код для входа.",
   "totp.setup.loading": "Загрузка данных 2FA…",
   "totp.setup.back": "Назад ко входу",
+
+  // Clients — company name vs contact person
+  "clients.companyName": "Название компании",
+  "clients.contactPerson": "Контактное лицо",
+  "onboarding.companyNameHint": "Если вы owner-operator — укажите название бизнеса, а не личное имя.",
 };
 
 const en: Dict = {
@@ -1068,6 +1073,11 @@ const en: Dict = {
   "totp.setup.resumeSubtitle": "Scan the QR code in your authenticator app and enter the code to sign in.",
   "totp.setup.loading": "Loading 2FA data…",
   "totp.setup.back": "Back to sign in",
+
+  // Clients — company name vs contact person
+  "clients.companyName": "Company name",
+  "clients.contactPerson": "Contact person",
+  "onboarding.companyNameHint": "If you\u2019re an owner-operator, use your business name, not your personal name.",
 };
 
 // ---------------------------------------------------------------------------

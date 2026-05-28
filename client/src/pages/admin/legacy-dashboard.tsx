@@ -573,7 +573,7 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
             <h3 className="font-semibold">5. Document Metadata</h3>
             <Field label="Client">
               <select className="form-select" value={documentForm.clientId || clientId} onChange={(e) => setDocumentForm({ ...documentForm, clientId: e.target.value })}>
-                {clients.map((client) => <option key={client.id} value={client.id}>{client.name} · {client.mc}</option>)}
+                {clients.map((client) => <option key={client.id} value={client.id}>{client.name}{(client as any).contactPersonName ? ` (${(client as any).contactPersonName})` : ""} · {client.mc}</option>)}
               </select>
             </Field>
             <Field label="Load optional">
@@ -644,7 +644,7 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
             <h3 className="font-semibold">8. Upload Rate Con / BOL / POD</h3>
             <Field label="Client">
               <select className="form-select" value={uploadForm.clientId || clientId} onChange={(e) => setUploadForm({ ...uploadForm, clientId: e.target.value })}>
-                {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+                {clients.map((client) => <option key={client.id} value={client.id}>{client.name}{(client as any).contactPersonName ? ` (${(client as any).contactPersonName})` : ""}</option>)}
               </select>
             </Field>
             <Field label="Load">
@@ -1051,6 +1051,9 @@ function DispatchDashboard() {
                   <p className="mt-1 text-lg font-semibold">
                     {client.name} · {client.mc}
                   </p>
+                  {(client as any).contactPersonName && (
+                    <p className="text-xs text-muted-foreground">{(client as any).contactPersonName}</p>
+                  )}
                   <p className="mt-1 text-sm text-muted-foreground">
                     {client.equipment.replaceAll("_", " ")} · status {client.currentLocation.status.replaceAll("_", " ")}
                   </p>

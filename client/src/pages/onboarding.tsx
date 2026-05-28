@@ -550,7 +550,7 @@ function CompanyStep({
   // a discrepancy with the docket).
   useEffect(() => {
     if (!mcLookup?.found) return;
-    if (isFleet && !companyName && mcLookup.legalName) {
+    if (!companyName && mcLookup.legalName) {
       setCompanyName(mcLookup.legalName);
     }
     if (!dot && mcLookup.dotNumber) {
@@ -569,17 +569,20 @@ function CompanyStep({
       </p>
 
       <div className="space-y-4 rounded-xl border border-[rgba(255,255,255,0.08)] bg-[#161c2e]/40 p-5">
-        {isFleet && (
-          <div className="space-y-1.5">
-            <Label className="text-xs text-[#9aa3ba]">Company legal name *</Label>
-            <Input
-              value={companyName}
-              onChange={(e) => setCompanyName(e.target.value)}
-              placeholder="Acme Trucking LLC"
-              className="border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-white placeholder:text-[#6b7390]"
-            />
-          </div>
-        )}
+        <div className="space-y-1.5">
+          <Label className="text-xs text-[#9aa3ba]">Company name (legal/DBA from MC filing) *</Label>
+          <Input
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            placeholder="e.g. ACME Trucking LLC"
+            className="border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-white placeholder:text-[#6b7390]"
+          />
+          <p className="text-[10px] text-[#6b7390]">
+            {persona === "owner_operator"
+              ? "If you're an owner-operator, use your business name, not your personal name."
+              : "Legal entity name as registered with FMCSA / your state."}
+          </p>
+        </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
