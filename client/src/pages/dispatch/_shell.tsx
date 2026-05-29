@@ -24,6 +24,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { ThemeToggle } from "@/components/dispatch/ThemeToggle";
 
 /**
  * DispatchShell — общий layout для всех экранов /dispatch/*.
@@ -48,7 +50,7 @@ export function DispatchShell({ children }: { children: ReactNode }) {
   const [location] = useLocation();
 
   return (
-    <div className="dark theme-jade">
+    <div>
       <div className="flex min-h-screen bg-background text-foreground">
         {/* Sidebar — desktop */}
         <aside className="sidebar-surface hidden w-60 shrink-0 border-r border-sidebar-border md:block">
@@ -202,7 +204,9 @@ function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
       >
         <Menu className="h-5 w-5" />
       </Button>
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-1">
+        <LanguageSwitcher variant="inline" />
+        <ThemeToggle />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" className="gap-2">

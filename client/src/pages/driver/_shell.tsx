@@ -3,6 +3,8 @@ import { Link, useLocation } from "wouter";
 import { Home, Package, FileText, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { ThemeToggle } from "@/components/dispatch/ThemeToggle";
 
 /**
  * DriverShell — общий layout для всех экранов /d/*.
@@ -22,7 +24,7 @@ import { useT } from "@/lib/i18n";
  */
 export function DriverShell({ children }: { children: ReactNode }) {
   return (
-    <div className="dark theme-orange">
+    <div>
       <div className="flex min-h-screen flex-col bg-background text-foreground">
         <DriverTopBar />
         <main
@@ -53,9 +55,13 @@ function DriverTopBar() {
           </span>
           <span className="text-base font-semibold tracking-tight">DispatchOS</span>
         </Link>
-        <span className="rounded-full bg-primary/15 px-2.5 py-0.5 text-xs font-medium text-primary">
-          Driver
-        </span>
+        <div className="flex items-center gap-1">
+          <LanguageSwitcher variant="inline" />
+          <ThemeToggle />
+          <span className="rounded-full bg-primary/15 px-2.5 py-0.5 text-xs font-medium text-primary">
+            Driver
+          </span>
+        </div>
       </div>
     </header>
   );
