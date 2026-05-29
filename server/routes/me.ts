@@ -92,6 +92,30 @@ function toLoadFull(load: unknown): LoadFull {
   return loadFullSchema.parse(load);
 }
 
+// V5-003: a hired driver must not see a load's commercial / risk internals.
+// rate, brokerScore, fraudRisk, marketQuality and notes are dispatcher-side
+// data — the driver only needs the route, dates, equipment and who to call
+// (brokerName/brokerMc). An owner-operator IS their own carrier, so they keep
+// the full record (their money, their risk view). We delete the keys rather
+// than zero them so nothing leaks in the JSON; the cast keeps the existing
+// loadFullSchema-typed response shape.
+const DRIVER_HIDDEN_LOAD_FIELDS = [
+  "rate",
+  "brokerScore",
+  "fraudRisk",
+  "marketQuality",
+  "notes",
+] as const;
+
+function driverSafeLoad(load: LoadFull, isOwnerOperator: boolean): LoadFull {
+  if (isOwnerOperator) return load;
+  const clone: Record<string, unknown> = { ...load };
+  for (const key of DRIVER_HIDDEN_LOAD_FIELDS) {
+    delete clone[key];
+  }
+  return clone as LoadFull;
+}
+
 /**
  * Build a short "Pickup today" / "Delivery today" panel item. Returns null if
  * the load's pickup (or delivery) is not on the current calendar date in UTC.
@@ -153,9 +177,13 @@ export function registerMeRoutes(app: Express): void {
       const page = storage.listLoadsForDriver(user.id, { limit: 20 });
       let loads = page.items.map(toLoadFull);
 
+      // V5-003: determine once whether this driver is an owner-operator (their
+      // own carrier) — only then are they entitled to the loads' commercial data.
+      let isOwnerOperator = false;
       if (user.linkedClientId) {
         const linkedClient = storage.getClient(user.linkedClientId);
         if ((linkedClient as any)?.persona === "owner_operator") {
+          isOwnerOperator = true;
           const clientPage = storage.listLoadsForClientIds([user.linkedClientId], { limit: 20 });
           const clientLoads = clientPage.items.map(toLoadFull);
           // Merge: deduplicate by id, keep order newest-first
@@ -234,10 +262,13 @@ export function registerMeRoutes(app: Express): void {
         },
         client: clientCard,
         dispatcher: dispatcherCard,
-        currentLoad,
+        // V5-003: strip commercial/risk fields for hired drivers (O-O keeps them).
+        // todayPickup/todayDelivery were already built above from the full load
+        // (they only use brokerName, which stays), so projecting here is safe.
+        currentLoad: currentLoad ? driverSafeLoad(currentLoad, isOwnerOperator) : null,
         todayPickup,
         todayDelivery,
-        recentLoads,
+        recentLoads: recentLoads.map((l) => driverSafeLoad(l, isOwnerOperator)),
         // P0 stub — message threads land in a future phase.
         hasUnreadMessages: false,
         // P1: compute from driver_documents.expires_at. PendingDoc has more
@@ -285,9 +316,11 @@ export function registerMeRoutes(app: Express): void {
       let items = page.items.map(toLoadFull);
 
       // Owner-operator: also include all loads for their carrier company
+      let isOwnerOperator = false;
       if (user.linkedClientId) {
         const linkedClient = storage.getClient(user.linkedClientId);
         if ((linkedClient as any)?.persona === "owner_operator") {
+          isOwnerOperator = true;
           const clientPage = storage.listLoadsForClientIds([user.linkedClientId], { limit: limit ?? 50 });
           const seen = new Set(items.map((l) => l.id));
           for (const cl of clientPage.items.map(toLoadFull)) {
@@ -303,6 +336,9 @@ export function registerMeRoutes(app: Express): void {
       if (statusFilter) {
         items = items.filter((l) => deriveLoadStatus(l) === statusFilter);
       }
+
+      // V5-003: strip commercial/risk fields for hired drivers (O-O keeps them).
+      items = items.map((l) => driverSafeLoad(l, isOwnerOperator));
 
       return res.json({
         items,
@@ -339,7 +375,17 @@ export function registerMeRoutes(app: Express): void {
       }
       const load = storage.getLoad(loadId);
       if (!load) return res.status(404).json({ message: "Load not found" });
-      return res.json(toLoadFull(load));
+
+      // V5-003: strip commercial/risk fields unless this driver is an
+      // owner-operator (their own carrier, entitled to the full record).
+      let isOwnerOperator = false;
+      if (user.linkedClientId) {
+        const linkedClient = storage.getClient(user.linkedClientId);
+        if ((linkedClient as any)?.persona === "owner_operator") {
+          isOwnerOperator = true;
+        }
+      }
+      return res.json(driverSafeLoad(toLoadFull(load), isOwnerOperator));
     }),
   );
 
