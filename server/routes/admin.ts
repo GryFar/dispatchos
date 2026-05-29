@@ -24,6 +24,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { generateInviteCode } from "../lib/invite-code";
 import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { getEnrichedIntegrationStatus, INTEGRATIONS } from "../lib/integrations";
@@ -150,18 +151,8 @@ function buildSignupUrl(req: Request, code: string): string {
  * 72-hour one-time code given that consume requires the matching email when
  * email-locked, and admins rate-limit creation.
  */
-const INVITE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"; // 30 chars: A–Z minus IOLU, 2–9 minus 01
-function inviteBlock(): string {
-  const bytes = crypto.randomBytes(4);
-  let out = "";
-  for (let i = 0; i < 4; i += 1) {
-    out += INVITE_ALPHABET[bytes[i] % INVITE_ALPHABET.length];
-  }
-  return out;
-}
-function generateInviteCode(): string {
-  return `DOS-${inviteBlock()}-${inviteBlock()}-${inviteBlock()}`;
-}
+// V5-006: invite code generation moved to server/lib/invite-code.ts
+// (single CSPRNG source, ~98 bits, no modulo bias). Imported below.
 
 /**
  * Stub password for the `POST /api/admin/users` flow. We intentionally write
