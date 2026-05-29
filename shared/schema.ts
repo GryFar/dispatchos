@@ -101,6 +101,12 @@ export const clientSchema = z.object({
   onboardingCompletedAt: z.string().optional(),
   /** "trial" | "oo_basic" | "oo_premium" | "fleet_starter" | "fleet_growth" | "fleet_scale" | "enterprise" */
   planTier: z.string().optional(),
+  // Soft-delete marker (mirrors the users pattern). Set to an ISO timestamp
+  // when an admin archives the client; the row + payload are kept for FK
+  // integrity (loads.clientId, assignments, driver.linkedClientId) and billing
+  // history. listClients() hides archived clients; getClient() still resolves
+  // them by id so Stripe webhooks / audit can reference them.
+  deletedAt: z.string().nullable().optional(),
   trialEndsAt: z.string().optional(),
   billingStatus: z.enum(["trial", "active", "past_due", "canceled", "expired"]).optional(),
   stripeCustomerId: z.string().optional(),

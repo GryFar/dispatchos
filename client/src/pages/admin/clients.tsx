@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Briefcase, Plus, Search } from "lucide-react";
+import { Archive, ArchiveRestore, Briefcase, Plus, Search } from "lucide-react";
 import type { Client } from "@shared/schema";
 import { formatClientDisplay } from "@shared/format-client";
 import { apiJson } from "@/lib/queryClient";
@@ -47,13 +47,47 @@ export default function ClientsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [q, setQ] = useState("");
   const [equipFilter, setEquipFilter] = useState<"all" | string>("all");
-
+  const [showArchived, setShowArchived] = useState(false);
+  const qc = useQueryClient();
+  const { toast } = useToast();
   const { data, isLoading, error } = useQuery<Client[]>({
-    queryKey: ["/api/clients"],
-    queryFn: () => apiJson<Client[]>("GET", "/api/clients"),
+    queryKey: ["/api/clients", showArchived],
+    queryFn: () =>
+      apiJson<Client[]>("GET", `/api/clients${showArchived ? "?includeDeleted=1" : ""}`),
     staleTime: 60_000,
   });
+  const archiveMutation = useMutation({
+    mutationFn: (id: string) => apiJson("DELETE", `/api/clients/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/clients"] });
+      toast({ title: "Клиент архивирован" });
+    },
+    onError: () => {
+      toast({ title: "Не удалось архивировать клиента", variant: "destructive" });
+    },
+  });
 
+  function handleArchive(client: Client) {
+    const ok = window.confirm(
+      `Архивировать клиента «${client.name}»? Он скроется из списка, но данные и история сохранятся — клиента можно будет восстановить.`,
+    );
+    if (ok) archiveMutation.mutate(client.id);
+  }
+
+  const restoreMutation = useMutation({
+    mutationFn: (id: string) => apiJson("POST", `/api/clients/${id}/restore`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/clients"] });
+      toast({ title: "Клиент восстановлен" });
+    },
+    onError: () => {
+      toast({ title: "Не удалось восстановить клиента", variant: "destructive" });
+    },
+  });
+
+  function handleRestore(client: Client) {
+    restoreMutation.mutate(client.id);
+  }
   const rows = useMemo(() => {
     let r = data ?? [];
     if (q) {
@@ -67,8 +101,10 @@ export default function ClientsPage() {
     if (equipFilter !== "all") {
       r = r.filter((c) => c.equipment === equipFilter);
     }
+    // showArchived ON => show ONLY archived clients; OFF => only active ones.
+    r = r.filter((c) => (showArchived ? Boolean(c.deletedAt) : !c.deletedAt));
     return r;
-  }, [data, q, equipFilter]);
+  }, [data, q, equipFilter, showArchived]);
 
   return (
     <div className="space-y-6">
@@ -109,6 +145,13 @@ export default function ClientsPage() {
             <SelectItem value="van">Van</SelectItem>
           </SelectContent>
         </Select>
+        <Button
+          variant={showArchived ? "secondary" : "outline"}
+          size="sm"
+          onClick={() => setShowArchived((v) => !v)}
+        >
+          {showArchived ? "Скрыть архив" : "Показать архив"}
+        </Button>
       </div>
 
       {error ? (
@@ -116,7 +159,14 @@ export default function ClientsPage() {
           <AlertDescription>Не удалось загрузить список: {(error as Error).message}</AlertDescription>
         </Alert>
       ) : (
-        <ClientsTable rows={rows} loading={isLoading} />
+        <ClientsTable
+          rows={rows}
+          loading={isLoading}
+          onArchive={handleArchive}
+          archiving={archiveMutation.isPending}
+          onRestore={handleRestore}
+          restoring={restoreMutation.isPending}
+        />
       )}
 
       {data && (
@@ -131,7 +181,21 @@ export default function ClientsPage() {
   );
 }
 
-function ClientsTable({ rows, loading }: { rows: Client[]; loading: boolean }) {
+function ClientsTable({
+  rows,
+  loading,
+  onArchive,
+  archiving,
+  onRestore,
+  restoring,
+}: {
+  rows: Client[];
+  loading: boolean;
+  onArchive: (client: Client) => void;
+  archiving: boolean;
+  onRestore: (client: Client) => void;
+  restoring: boolean;
+}) {
   const columns: DataTableColumn<Client>[] = [
     {
       key: "name",
@@ -200,7 +264,36 @@ function ClientsTable({ rows, loading }: { rows: Client[]; loading: boolean }) {
       width: "160px",
       hideOnMobile: true,
     },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      cell: (c) =>
+        c.deletedAt ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onRestore(c)}
+            disabled={restoring}
+            title="Восстановить клиента"
+          >
+            <ArchiveRestore className="h-4 w-4 text-muted-foreground" />
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onArchive(c)}
+            disabled={archiving}
+            title="Архивировать клиента"
+          >
+            <Archive className="h-4 w-4 text-muted-foreground" />
+          </Button>
+        ),
+      width: "60px",
+    },
   ];
+
 
   return (
     <DataTable
