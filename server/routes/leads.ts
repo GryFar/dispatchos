@@ -22,6 +22,7 @@ import {
   listLeadsQuerySchema,
 } from "@shared/schema";
 import crypto from "node:crypto";
+import { generateInviteCode } from "../lib/invite-code";
 
 // Simple in-memory rate-limit: max 5 subscriptions per IP per hour.
 // Replaced by proper rate-limiter once the load is non-trivial.
@@ -79,13 +80,8 @@ function hostFromReq(req: Request): string {
   return "https://dispatchos.co";
 }
 
-function generateInviteCode(): string {
-  // Match Phase 3 invite format: DOS-XXXX-XXXX-XXXX
-  const segments = [0, 0, 0].map(() =>
-    crypto.randomBytes(2).toString("hex").toUpperCase(),
-  );
-  return `DOS-${segments.join("-")}`;
-}
+// V5-006: was 48-bit (3×randomBytes(2)) — replaced by the shared ~98-bit
+// generator in server/lib/invite-code.ts (imported below).
 
 // Whitelist of origins allowed to POST to /api/public/* from the browser.
 // Landing on dispatchos.co posts cross-origin to demo.dispatchos.co.
