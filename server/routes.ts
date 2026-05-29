@@ -1739,8 +1739,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(buildDispatchBoard(String(req.query.clientId ?? "")));
   });
 
-  app.get("/api/clients", requireRole("admin", "dispatcher"), (_req, res) => {
-    res.json(storage.listClients());
+  app.get("/api/clients", requireRole("admin", "dispatcher"), (req, res) => {
+    // ?includeDeleted=1 returns archived clients too (admin "show archive" view).
+    const includeDeleted = req.query.includeDeleted === "1" || req.query.includeDeleted === "true";
+    res.json(storage.listClients({ includeDeleted }));
   });
 
   app.post("/api/clients", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
@@ -1750,6 +1752,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       handleZodError(error, res);
     }
+  });
+  // Soft-delete (archive) a client. Admin-only — archiving a carrier is
+  // destructive (hides it from listings) so dispatchers can't do it. The row,
+  // its loads, assignments and billing history are kept; listClients() simply
+  // stops returning it. Idempotent: archiving an already archived client 200s.
+  app.delete("/api/clients/:id", requireRole("admin"), (req, res) => {
+    const me = getCurrentUser(req);
+    const archived = storage.softDeleteClient(String(req.params.id), me?.id);
+    if (!archived) return res.status(404).json({ message: "Client not found" });
+    res.json({ ok: true, id: archived.id, archivedAt: archived.deletedAt ?? null });
+  });
+  // Restore an archived client (clears deletedAt). Admin-only, mirrors DELETE.
+  app.post("/api/clients/:id/restore", requireRole("admin"), (req, res) => {
+    const me = getCurrentUser(req);
+    const restored = storage.restoreClient(String(req.params.id), me?.id);
+    if (!restored) return res.status(404).json({ message: "Client not found" });
+    res.json({ ok: true, id: restored.id });
   });
 
   app.patch("/api/clients/:id/location", requireRole("admin", "dispatcher"), (req, res) => {

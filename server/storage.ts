@@ -2980,11 +2980,14 @@ export const storage = {
   // Clients (unchanged from v1.2.7)
   // -------------------------------------------------------------------------
 
-  listClients(): Client[] {
+  listClients(opts?: { includeDeleted?: boolean }): Client[] {
     const rows = sqlite
       .prepare("SELECT payload FROM clients ORDER BY created_at ASC")
       .all() as Array<{ payload: string }>;
-    return parsePayloads<Client>(rows);
+    const all = parsePayloads<Client>(rows);
+    // Soft-delete: hide archived clients from the default listing. Pass
+    // includeDeleted for admin tooling that needs the full set.
+    return opts?.includeDeleted ? all : all.filter((c) => !c.deletedAt);
   },
 
   getClient(id: string): Client | undefined {
@@ -2992,6 +2995,42 @@ export const storage = {
       | { payload: string }
       | undefined;
     return parsePayload<Client>(row);
+  },
+
+  /**
+   * Soft-delete a client: stamp deletedAt in the payload. The row is kept for
+   * FK integrity (loads.clientId, assignments, driver.linkedClientId) and
+   * billing history — mirrors softDeleteUser. Idempotent: archiving an already
+   * archived client is a no-op that returns it unchanged.
+   */
+  softDeleteClient(id: string, actorUserId?: string): Client | undefined {
+    const existing = this.getClient(id);
+    if (!existing) return undefined;
+    if (existing.deletedAt) return existing; // already archived, idempotent
+    const updated = this.upsertClient({
+      ...(existing as unknown as InsertClient),
+      deletedAt: now(),
+    });
+    this.audit("client.archived", "client", id, { actorUserId: actorUserId ?? null });
+    return updated;
+  },
+
+  /**
+   * Restore a soft-deleted client: clear deletedAt so it reappears in
+   * listClients(). Idempotent: restoring a non-archived client is a no-op.
+   * getClient resolves archived clients by id, so this works even though
+   * listClients hides them.
+   */
+  restoreClient(id: string, actorUserId?: string): Client | undefined {
+    const existing = this.getClient(id);
+    if (!existing) return undefined;
+    if (!existing.deletedAt) return existing; // not archived, idempotent
+    const updated = this.upsertClient({
+      ...(existing as unknown as InsertClient),
+      deletedAt: null,
+    });
+    this.audit("client.restored", "client", id, { actorUserId: actorUserId ?? null });
+    return updated;
   },
 
   upsertClient(input: InsertClient): Client {
