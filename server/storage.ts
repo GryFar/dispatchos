@@ -4949,6 +4949,30 @@ export const storage = {
     }));
   },
 
+  /**
+   * Latest check-in across ALL of a driver's loads (not load-scoped). Used by
+   * the dispatcher assign dialog to show "last activity". Returns null if the
+   * driver has never checked in.
+   */
+  getLatestCheckinForDriver(driverUserId: string): LoadCheckin | null {
+    const r = sqlite
+      .prepare(
+        "SELECT * FROM load_checkins WHERE driver_user_id = ? ORDER BY created_at DESC LIMIT 1",
+      )
+      .get(driverUserId) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return {
+      id: r.id as string,
+      loadId: r.load_id as string,
+      driverUserId: r.driver_user_id as string,
+      kind: r.kind as CheckinKind,
+      lat: (r.lat as number | null) ?? null,
+      lng: (r.lng as number | null) ?? null,
+      notes: (r.notes as string | null) ?? null,
+      createdAt: r.created_at as string,
+    };
+  },
+
   // =========================================================================
   // Phase 4 P1 — Driver expenses
   // =========================================================================
