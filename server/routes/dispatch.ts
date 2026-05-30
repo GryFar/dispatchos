@@ -22,6 +22,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError, z } from "zod";
 import {
   dispatchLoadsListFiltersSchema,
+  dispatchDriverSchema,
   resolveApprovalTaskSchema,
   type DispatchDashboard,
   type LoadFull,
@@ -29,6 +30,17 @@ import {
 } from "@shared/schema";
 import { getCurrentUser, requireRole } from "../auth";
 import { storage } from "../storage";
+// Nominal car-hauler slot counts per equipment type. NOT live capacity —
+// "used" is derived from active loads. Tune these to your real fleet.
+const NOMINAL_CAPACITY_BY_EQUIPMENT: Record<string, number> = {
+  enclosed_car_hauler: 6,
+  open_car_hauler: 9,
+  hotshot_flatbed: 3,
+  sprinter_van: 2,
+};
+
+// Phase 7 presence window — driver is "online" if seen within 2 minutes.
+const ONLINE_WINDOW_MS = 2 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Helpers (same conventions as admin.ts / me.ts)
@@ -399,17 +411,93 @@ export function registerDispatchRoutes(app: Express): void {
         return res.status(404).json({ message: "Client not found" });
       }
 
-      // Filter drivers by linkedClientId, exclude blocked
-      const allDrivers = storage.listUsers({ role: "driver" });
-      const items = allDrivers
+      // Resolve client equipment once → nominal capacity for all its drivers.
+      const client = storage.listClients().find((c) => c.id === clientId);
+      const nominalCapacity =
+        client && NOMINAL_CAPACITY_BY_EQUIPMENT[client.equipment] !== undefined
+          ? NOMINAL_CAPACITY_BY_EQUIPMENT[client.equipment]
+          : null;
+
+      const nowMs = Date.now();
+
+      // Fleet per client is small, so per-driver queries (loads + last
+      // check-in) are fine here. Revisit if a client ever has many drivers.
+      const items = storage
+        .listUsers({ role: "driver" })
         .filter((u) => u.linkedClientId === clientId && !u.blocked)
-        .map((u) => ({
-          id: u.id,
-          fullName: u.fullName,
-          email: u.email,
-          phone: u.phone ?? null,
-          driverStatus: u.driverStatus ?? "available",
-        }));
+        .map((u) => {
+          // Active (booked) loads → currentLoad + count. Loads come back with
+          // full payload at runtime, so bookedAt is present despite the narrow
+          // static type.
+          const driverLoads = storage.listLoadsForDriver(u.id, { limit: 200 }).items;
+          const bookedLoads = driverLoads.filter(
+            (l) => Boolean((l as any).driverId && (l as any).bookedAt),
+          );
+          const activeLoadsCount = bookedLoads.length;
+          const cur = bookedLoads[0];
+          const currentLoad = cur
+            ? {
+                id: cur.id,
+                originCity: cur.originCity,
+                originState: cur.originState,
+                destinationCity: cur.destinationCity,
+                destinationState: cur.destinationState,
+                status: "booked" as const,
+              }
+            : null;
+
+          // GPS last-known cache. Require lat, lng AND a timestamp to be useful.
+          const hasGps =
+            typeof u.lastLat === "number" &&
+            typeof u.lastLng === "number" &&
+            Boolean(u.lastLocationAt);
+          const location = hasGps
+            ? {
+                lat: u.lastLat as number,
+                lng: u.lastLng as number,
+                source: u.lastLocationSource ?? null,
+                accuracyM:
+                  typeof u.lastLocationAccuracyM === "number"
+                    ? u.lastLocationAccuracyM
+                    : null,
+                updatedAt: u.lastLocationAt as string,
+              }
+            : null;
+
+          const online = Boolean(
+            u.lastSeenAt && nowMs - new Date(u.lastSeenAt).getTime() < ONLINE_WINDOW_MS,
+          );
+
+          const capacity =
+            nominalCapacity !== null
+              ? {
+                  total: nominalCapacity,
+                  used: activeLoadsCount,
+                  free: Math.max(nominalCapacity - activeLoadsCount, 0),
+                }
+              : null;
+
+          const lc = storage.getLatestCheckinForDriver(u.id);
+          const lastCheckin = lc
+            ? { kind: lc.kind, lat: lc.lat, lng: lc.lng, createdAt: lc.createdAt }
+            : null;
+
+          return dispatchDriverSchema.parse({
+            id: u.id,
+            fullName: u.fullName,
+            email: u.email,
+            phone: u.phone ?? null,
+            unitNumber: u.unitNumber ?? null,
+            driverStatus: u.driverStatus ?? "available",
+            online,
+            lastSeenAt: u.lastSeenAt ?? null,
+            location,
+            currentLoad,
+            activeLoadsCount,
+            capacity,
+            lastCheckin,
+          });
+        });
 
       return res.json({ items });
     }),

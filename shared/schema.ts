@@ -1303,6 +1303,63 @@ export const dispatchLoadsListFiltersSchema = paginationParamsSchema.extend({
   status: z.enum(["available", "booked", "all"]).optional(),
 });
 export type DispatchLoadsListFilters = z.infer<typeof dispatchLoadsListFiltersSchema>;
+/** Enriched driver shape for the dispatcher assign/reassign dialog.
+ *  Returned by GET /api/dispatch/clients/:clientId/drivers. All "context"
+ *  fields are nullable — a driver may have never reported GPS, never run a
+ *  load, or belong to a client whose equipment we cannot map to a capacity. */
+export const dispatchDriverSchema = z.object({
+  id: z.string(),
+  fullName: z.string(),
+  email: z.string().email(),
+  phone: z.string().nullable(),
+  unitNumber: z.string().nullable(),
+  driverStatus: driverStatusSchema,
+  /** Phase 7 presence: lastSeenAt within 2 minutes. */
+  online: z.boolean(),
+  lastSeenAt: z.string().nullable(),
+  /** Phase 7 GPS last-known cache. Null = no fix on record. */
+  location: z
+    .object({
+      lat: z.number(),
+      lng: z.number(),
+      source: z.string().nullable(),
+      accuracyM: z.number().nullable(),
+      updatedAt: z.string(),
+    })
+    .nullable(),
+  /** First active (booked) load — gives the dispatcher route context. */
+  currentLoad: z
+    .object({
+      id: z.string(),
+      originCity: z.string(),
+      originState: z.string(),
+      destinationCity: z.string(),
+      destinationState: z.string(),
+      status: z.enum(["available", "booked"]),
+    })
+    .nullable(),
+  activeLoadsCount: z.number(),
+  /** Nominal trailer capacity by client equipment, minus active loads.
+   *  MVP assumption: 1 active load occupies 1 slot (loads carry no vehicle
+   *  count yet). Null when equipment/client cannot be resolved. */
+  capacity: z
+    .object({
+      total: z.number(),
+      used: z.number(),
+      free: z.number(),
+    })
+    .nullable(),
+  /** Most recent check-in across all the driver's loads (activity context). */
+  lastCheckin: z
+    .object({
+      kind: checkinKindSchema,
+      lat: z.number().nullable(),
+      lng: z.number().nullable(),
+      createdAt: z.string(),
+    })
+    .nullable(),
+});
+export type DispatchDriver = z.infer<typeof dispatchDriverSchema>;
 // ===========================================================================
 // Broker Trust Signals — Killer Feature #1 (auto write-paths MVP)
 // ===========================================================================
