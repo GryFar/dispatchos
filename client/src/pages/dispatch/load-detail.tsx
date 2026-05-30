@@ -13,9 +13,15 @@ import {
   TrendingDown,
   PhoneOff,
   ShieldAlert,
+  Navigation,
+  Truck,
+  Phone,
+  Hash,
+  Package,
 } from "lucide-react";
 import type {
   CheckinKind,
+  DispatchDriver,
   LoadCheckin,
   LoadFull,
 } from "@shared/schema";
@@ -48,12 +54,16 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useT } from "@/lib/i18n";
 
-type DispatchDriver = {
-  id: string;
-  fullName: string | null;
-  email: string;
-  phone: string | null;
-  driverStatus: "available" | "on_route" | "off_duty";
+const DRIVER_STATUS_KEYS: Record<DispatchDriver["driverStatus"], string> = {
+  available: "dispatch.load_detail.driver.status.available",
+  on_route: "dispatch.load_detail.driver.status.on_route",
+  off_duty: "dispatch.load_detail.driver.status.off_duty",
+};
+
+const DRIVER_STATUS_CLASS: Record<DispatchDriver["driverStatus"], string> = {
+  available: "text-success",
+  on_route: "text-primary",
+  off_duty: "text-muted-foreground",
 };
 
 /**
@@ -370,6 +380,12 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
     (d) => d.id === load.driverId,
   );
 
+  // Driver whose detail card we show: the pending selection, else the
+  // already-assigned one. Drives the rich card under the Select.
+  const selectedDriver = driversQuery.data?.items.find(
+    (d) => d.id === (selectedDriverId ?? load.driverId),
+  );
+
   const reassignMutation = useMutation({
     mutationFn: (driverId: string | null) =>
       apiJson("PATCH", `/api/dispatch/loads/${load.id}`, { driverId }),
@@ -470,18 +486,137 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
                 <SelectContent>
                   {driversQuery.data?.items.map((d) => (
                     <SelectItem key={d.id} value={d.id}>
-                      {d.fullName || d.email}
-                      {d.driverStatus !== "available" && (
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          ({d.driverStatus})
+                      <span className="flex items-center gap-2">
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                            d.online ? "bg-success" : "bg-muted-foreground/40"
+                          }`}
+                        />
+                        <span className="font-medium">{d.fullName || d.email}</span>
+                        <span className={`text-xs ${DRIVER_STATUS_CLASS[d.driverStatus]}`}>
+                          {t(DRIVER_STATUS_KEYS[d.driverStatus])}
                         </span>
-                      )}
+                        {d.currentLoad && (
+                          <span className="text-xs text-muted-foreground">
+                            · {d.currentLoad.originState} → {d.currentLoad.destinationState}
+                          </span>
+                        )}
+                        {d.capacity && (
+                          <span className="text-xs text-muted-foreground">
+                            · {d.capacity.free}/{d.capacity.total}
+                          </span>
+                        )}
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             )}
           </div>
+
+          {selectedDriver && (
+            <div className="rounded-md border border-border bg-muted/20 p-3 text-xs">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${
+                    selectedDriver.online ? "bg-success" : "bg-muted-foreground/40"
+                  }`}
+                />
+                <span className="font-medium text-foreground">
+                  {selectedDriver.fullName || selectedDriver.email}
+                </span>
+                <span className={DRIVER_STATUS_CLASS[selectedDriver.driverStatus]}>
+                  {t(DRIVER_STATUS_KEYS[selectedDriver.driverStatus])}
+                </span>
+                {selectedDriver.unitNumber && (
+                  <span className="ml-auto inline-flex items-center gap-1 font-mono text-muted-foreground">
+                    <Hash className="h-3 w-3" />
+                    {selectedDriver.unitNumber}
+                  </span>
+                )}
+              </div>
+
+              <dl className="mt-3 space-y-1.5">
+                <div className="flex items-start gap-2">
+                  <Truck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span>
+                    {selectedDriver.currentLoad ? (
+                      <>
+                        {selectedDriver.currentLoad.originCity},{" "}
+                        {selectedDriver.currentLoad.originState}
+                        <span className="mx-1 text-muted-foreground">→</span>
+                        {selectedDriver.currentLoad.destinationCity},{" "}
+                        {selectedDriver.currentLoad.destinationState}
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">
+                        {t("dispatch.load_detail.driver.no_load")}
+                      </span>
+                    )}
+                  </span>
+                </div>
+
+                {selectedDriver.capacity && (
+                  <div className="flex items-center gap-2">
+                    <Package className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span>
+                      {t("dispatch.load_detail.driver.capacity")}:{" "}
+                      <span className="font-medium">
+                        {selectedDriver.capacity.free}/{selectedDriver.capacity.total}
+                      </span>{" "}
+                      <span className="text-muted-foreground">
+                        ({selectedDriver.activeLoadsCount}{" "}
+                        {t("dispatch.load_detail.driver.in_work")})
+                      </span>
+                    </span>
+                  </div>
+                )}
+
+                <div className="flex items-start gap-2">
+                  <Navigation className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  {selectedDriver.location ? (
+                    <span>
+                      {selectedDriver.location.lat.toFixed(4)},{" "}
+                      {selectedDriver.location.lng.toFixed(4)}
+                      {selectedDriver.location.source && (
+                        <span className="ml-1 text-muted-foreground">
+                          · {selectedDriver.location.source}
+                        </span>
+                      )}
+                      <span className="block text-muted-foreground">
+                        {formatDateFull(selectedDriver.location.updatedAt)}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">
+                      {t("dispatch.load_detail.driver.gps_none")}
+                    </span>
+                  )}
+                </div>
+
+                {selectedDriver.phone && (
+                  <div className="flex items-center gap-2">
+                    <Phone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <a href={`tel:${selectedDriver.phone}`} className="hover:text-foreground">
+                      {selectedDriver.phone}
+                    </a>
+                  </div>
+                )}
+
+                {selectedDriver.lastCheckin && (
+                  <div className="flex items-start gap-2">
+                    <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span>
+                      {t(`dispatch.load_detail.checkin.${selectedDriver.lastCheckin.kind}`)}
+                      <span className="block text-muted-foreground">
+                        {formatDateFull(selectedDriver.lastCheckin.createdAt)}
+                      </span>
+                    </span>
+                  </div>
+                )}
+              </dl>
+            </div>
+          )}
 
           <DialogFooter className="gap-2 sm:gap-2">
             {load.driverId && (
