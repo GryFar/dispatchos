@@ -36,6 +36,7 @@ import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
 import { sendEmail } from "./email";
 import { daysBetween } from "./date-utils";
+import { pickAlertThreshold } from "./alert-thresholds";
 
 /** Alert thresholds in days-before-expiry. Mirrors insurance-monitor. */
 const ALERT_THRESHOLDS: number[] = [60, 30, 14, 7, 1, 0, -1, -7];
@@ -53,13 +54,6 @@ const KIND_PORTAL_URL: Record<ComplianceKind, string> = {
   // also includes the carrier's `irpBaseJurisdiction` so the user can search.
   irp: "https://www.fmcsa.dot.gov/registration/international-registration-plan",
 };
-
-function thresholdFor(daysUntil: number): number | null {
-  for (const t of ALERT_THRESHOLDS) {
-    if (daysUntil === t) return t;
-  }
-  return null;
-}
 
 interface RenewalLine {
   kind: ComplianceKind;
@@ -211,7 +205,7 @@ export async function runComplianceRenewalsCheck(): Promise<ComplianceAlertOutco
       // ISO-8601 date or datetime; treat both as midnight UTC for comparison.
       const expiresIsoDate = line.expiresAt.slice(0, 10);
       const daysUntil = daysBetween(todayIso, expiresIsoDate);
-      const threshold = thresholdFor(daysUntil);
+      const threshold = pickAlertThreshold(daysUntil, ALERT_THRESHOLDS);
       if (threshold === null) continue;
 
       if (

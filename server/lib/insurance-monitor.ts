@@ -18,6 +18,7 @@ import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
 import { sendEmail } from "./email";
 import { daysBetween } from "./date-utils";
+import { pickAlertThreshold } from "./alert-thresholds";
 
 /** Alert thresholds in days-before-expiry. 0 = expired today, -N = N days past. */
 const ALERT_THRESHOLDS: number[] = [14, 7, 3, 1, 0, -1, -7];
@@ -38,15 +39,6 @@ const TYPE_LABEL: Record<string, string> = {
   auto_liability: "Auto liability",
   general_liability: "General liability",
 };
-
-
-/** Find the threshold the given days-until-expiry triggers (or null). */
-function thresholdFor(daysUntil: number): number | null {
-  for (const t of ALERT_THRESHOLDS) {
-    if (daysUntil === t) return t;
-  }
-  return null;
-}
 
 function buildHeadline(insuranceLabel: string, daysBefore: number): string {
   if (daysBefore > 0) {
@@ -165,7 +157,7 @@ export async function runInsuranceCheck(
       if (!expiresAt) continue;
 
       const daysUntil = daysBetween(todayIso, expiresAt);
-      const threshold = thresholdFor(daysUntil);
+      const threshold = pickAlertThreshold(daysUntil, ALERT_THRESHOLDS);
       if (threshold === null) continue;
 
       const typeKey = FIELD_TO_KEY[f];
