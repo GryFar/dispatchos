@@ -35,6 +35,7 @@
 import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
 import { sendEmail } from "./email";
+import { daysBetween } from "./date-utils";
 
 /** Alert thresholds in days-before-expiry. Mirrors insurance-monitor. */
 const ALERT_THRESHOLDS: number[] = [60, 30, 14, 7, 1, 0, -1, -7];
@@ -52,12 +53,6 @@ const KIND_PORTAL_URL: Record<ComplianceKind, string> = {
   // also includes the carrier's `irpBaseJurisdiction` so the user can search.
   irp: "https://www.fmcsa.dot.gov/registration/international-registration-plan",
 };
-
-function daysBetween(fromIso: string, toIso: string): number {
-  const a = new Date(fromIso).getTime();
-  const b = new Date(toIso).getTime();
-  return Math.round((b - a) / (24 * 3600 * 1000));
-}
 
 function thresholdFor(daysUntil: number): number | null {
   for (const t of ALERT_THRESHOLDS) {

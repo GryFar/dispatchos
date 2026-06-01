@@ -17,6 +17,7 @@
 import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
 import { sendEmail } from "./email";
+import { daysBetween } from "./date-utils";
 
 /** Alert thresholds in days-before-expiry. 0 = expired today, -N = N days past. */
 const ALERT_THRESHOLDS: number[] = [14, 7, 3, 1, 0, -1, -7];
@@ -38,11 +39,6 @@ const TYPE_LABEL: Record<string, string> = {
   general_liability: "General liability",
 };
 
-function daysBetween(fromIso: string, toIso: string): number {
-  const a = new Date(fromIso).getTime();
-  const b = new Date(toIso).getTime();
-  return Math.round((b - a) / (24 * 3600 * 1000));
-}
 
 /** Find the threshold the given days-until-expiry triggers (or null). */
 function thresholdFor(daysUntil: number): number | null {
