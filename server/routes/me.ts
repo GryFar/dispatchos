@@ -43,6 +43,7 @@ import { enrichLoadSync } from "../lib/ai/enrich";
 import { getCurrentUser, requireRole } from "../auth";
 import { storage, uploadsRoot } from "../storage";
 import { upload } from "../upload";
+import { todayInState } from "../lib/us-state-tz";
 
 // ---------------------------------------------------------------------------
 // Helpers (mirror server/routes/admin.ts conventions)
@@ -131,7 +132,10 @@ function buildTodayStop(
   contact?: string,
 ): { time: string; address: string; contact?: string } | null {
   if (!iso) return null;
-  const today = new Date().toISOString().slice(0, 10);
+  // "Today" must be computed in the pickup/delivery local time, not UTC, or a
+  // driver on the West Coast loses the stop after ~16:00 local (already next
+  // day in UTC). `state` is the stop's USPS code; falls back to UTC if unknown.
+  const today = todayInState(state);
   if (iso.slice(0, 10) !== today) return null;
   return {
     time: iso,
