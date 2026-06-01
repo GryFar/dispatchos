@@ -31,6 +31,7 @@
 
 import { storage } from "../storage";
 import type { DriverDocument, DriverDocumentType } from "@shared/schema";
+import { daysBetween } from "./date-utils";
 
 /** Days an annual document is valid (MVR, annual review). */
 const ANNUAL_VALIDITY_DAYS = 365;
@@ -130,13 +131,6 @@ export interface DriverDqStatus {
   missingCount: number;
   expiredCount: number;
   expiringSoonCount: number;
-}
-
-function daysBetween(fromIso: string, toIso: string): number {
-  const a = new Date(fromIso).getTime();
-  const b = new Date(toIso).getTime();
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
-  return Math.round((b - a) / (24 * 3600 * 1000));
 }
 
 /**
