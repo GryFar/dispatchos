@@ -2196,6 +2196,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const user = getCurrentUser(req);
       if (user) {
+        // Don't let the verify flow silently swap an already-set phone: a number
+        // change must go through the proper change-phone path. First-time set
+        // during onboarding (no phone yet) is allowed.
+        if (user.phone && user.phone !== phone) {
+          storage.audit("phone.verify_mismatch", "user", user.id, { phone, accountPhone: user.phone });
+          return res.status(403).json({ ok: false, error: "phone_mismatch" });
+        }
         storage.markPhoneVerified(user.id, phone);
         storage.audit("phone.verified", "user", user.id, { phone });
       }
@@ -2263,6 +2270,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const user = getCurrentUser(req);
       if (user) {
+        // Bind verification to the account's OWN email: proving control of some
+        // other address must not mark this account's email verified
+        // (markEmailVerified ignores which email was checked).
+        if ((user.email || "").toLowerCase() !== email) {
+          storage.audit("email.verify_mismatch", "user", user.id, { email, accountEmail: user.email });
+          return res.status(403).json({ ok: false, error: "email_mismatch" });
+        }
         storage.markEmailVerified(user.id);
         storage.audit("email.verified", "user", user.id, { email });
       }
