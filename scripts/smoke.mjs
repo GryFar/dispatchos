@@ -7,6 +7,8 @@ import FormData from "form-data";
 const port = 5055;
 const baseUrl = `http://127.0.0.1:${port}`;
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+// M4: out-of-band token the locked bootstrap gate requires in production mode.
+const SMOKE_BOOTSTRAP_TOKEN = crypto.randomBytes(16).toString("hex");
 let cookieHeader = "";
 
 function wait(ms) {
@@ -28,6 +30,7 @@ function request(path, options = {}) {
           Origin: baseUrl,
           ...(cookieHeader ? { Cookie: cookieHeader } : {}),
           ...(body ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } : {}),
+          ...(options.headers || {}),
         },
       },
       (res) => {
@@ -210,6 +213,11 @@ const proc = spawn(process.execPath, ["dist/index.cjs"], {
     // round-trip and every post-login request would look unauthenticated.
     // Disable Secure for the local smoke run only.
     DISPATCHOS_COOKIE_SECURE: "false",
+    // M4: bootstrap is now locked whenever NODE_ENV=production (this smoke run
+    // starts the server in production mode), so the harness must present a
+    // bootstrap token to create the first admin. Send it via X-Bootstrap-Token
+    // on the /api/auth/setup + /api/auth/bootstrap calls below.
+    DISPATCHOS_BOOTSTRAP_TOKEN: SMOKE_BOOTSTRAP_TOKEN,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -232,6 +240,7 @@ try {
   if (initialAuth.isConfigured) throw new Error("Smoke DB auth should start unconfigured");
   const setup = await request("/api/auth/setup", {
     method: "POST",
+    headers: { "X-Bootstrap-Token": SMOKE_BOOTSTRAP_TOKEN },
     body: { username: "owner", password: "SmokePassword123!" },
   });
   if (!setup.totpSecret) throw new Error("Auth setup did not return TOTP secret");
@@ -572,11 +581,29 @@ try {
   }
   console.log("[OK] re-login produces same user id (persistent users table)");
 
-  // Bootstrap should refuse to run again now that an admin exists (409).
+  // M4 regression: in production mode the gate rejects a tokenless bootstrap
+  // with 401 *before* it even checks whether auth is configured.
+  let noTokenStatus = 0;
+  try {
+    await request("/api/auth/bootstrap", {
+      method: "POST",
+      body: { email: "no-token@example.com", password: "AnotherPass123!" },
+    });
+  } catch (err) {
+    noTokenStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (noTokenStatus !== 401) {
+    throw new Error(`/api/auth/bootstrap without token returned ${noTokenStatus}, expected 401`);
+  }
+  console.log("[OK] /api/auth/bootstrap rejects tokenless call in production mode (M4)");
+
+  // With a valid token, bootstrap should refuse to run again now that an admin
+  // exists (409).
   let bootstrapStatus = 0;
   try {
     await request("/api/auth/bootstrap", {
       method: "POST",
+      headers: { "X-Bootstrap-Token": SMOKE_BOOTSTRAP_TOKEN },
       body: { email: "second-admin@example.com", password: "AnotherPass123!" },
     });
   } catch (err) {
