@@ -213,6 +213,15 @@ CREATE INDEX IF NOT EXISTS assignments_created_at_idx ON assignments(created_at 
 CREATE INDEX IF NOT EXISTS invoices_generated_at_idx ON invoices(generated_at DESC);
 CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at DESC);
 
+-- Keyset (seek) pagination: a unique PK tiebreaker after the order column makes
+-- cursor pages stable when rows share a created_at/generated_at. These cover both
+-- the keyset predicate and the ORDER BY (col DESC, pk DESC) in one index.
+CREATE INDEX IF NOT EXISTS users_created_at_id_idx ON users(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS invites_created_at_code_idx ON invites(created_at DESC, code DESC);
+CREATE INDEX IF NOT EXISTS assignments_created_at_id_idx ON assignments(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS invoices_generated_at_id_idx ON invoices(generated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS audit_events_created_at_id_idx ON audit_events(created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS signup_leads (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL,
@@ -229,6 +238,8 @@ CREATE TABLE IF NOT EXISTS signup_leads (
 );
 CREATE INDEX IF NOT EXISTS signup_leads_status_created_idx
   ON signup_leads(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS signup_leads_created_at_id_idx
+  ON signup_leads(created_at DESC, id DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS signup_leads_email_pending_idx
   ON signup_leads(email) WHERE status = 'pending';
 CREATE TABLE IF NOT EXISTS broker_events (
@@ -321,6 +332,36 @@ function ensureLoadSourceColumns() {
 ensureLoadSourceColumns();
 sqlite.exec(
   "CREATE UNIQUE INDEX IF NOT EXISTS loads_source_external_uq ON loads(source_id, source_external_id) WHERE source_id IS NOT NULL",
+);
+
+// Audit actor denormalization: the actor was only ever embedded in the JSON
+// payload, so the audit log had to filter by actor in JS AFTER fetching a page —
+// which made `total`, `hasMore` and `nextCursor` inaccurate when actorId was set.
+// Promote the actor to a real column (+ index) so the filter runs in SQL. The
+// backfill runs exactly once, on the boot that first adds the column.
+// (pluckActorIdFromPayload is a hoisted function declaration, callable here.)
+function ensureAuditActorColumn() {
+  const cols = sqlite.prepare("PRAGMA table_info(audit_events)").all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("actor_user_id")) {
+    sqlite.exec("ALTER TABLE audit_events ADD COLUMN actor_user_id TEXT");
+    const rows = sqlite
+      .prepare("SELECT id, payload FROM audit_events")
+      .all() as Array<{ id: string; payload: string }>;
+    const upd = sqlite.prepare("UPDATE audit_events SET actor_user_id = ? WHERE id = ?");
+    const backfill = sqlite.transaction(() => {
+      for (const r of rows) {
+        let actor: string | null = null;
+        try { actor = pluckActorIdFromPayload(JSON.parse(r.payload)); } catch { /* skip bad payload */ }
+        if (actor) upd.run(actor, r.id);
+      }
+    });
+    backfill();
+  }
+}
+ensureAuditActorColumn();
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS audit_events_actor_created_id_idx ON audit_events(actor_user_id, created_at DESC, id DESC)",
 );
 
 sqlite.exec(`
@@ -601,6 +642,9 @@ sqlite.exec(`
 // Indexes that depend on the new columns. Must follow ensureLoadDriverColumn
 // so we don't reference a column that doesn't exist yet on migrated DBs.
 sqlite.exec("CREATE INDEX IF NOT EXISTS loads_driver_id_idx ON loads(driver_id, created_at DESC)");
+// Keyset pagination tiebreakers for the driver- and client-scoped load lists.
+sqlite.exec("CREATE INDEX IF NOT EXISTS loads_driver_created_id_idx ON loads(driver_id, created_at DESC, id DESC)");
+sqlite.exec("CREATE INDEX IF NOT EXISTS loads_client_created_id_idx ON loads(client_id, created_at DESC, id DESC)");
 
 // ---------------------------------------------------------------------------
 // Phase 5: smart-matching cache + history tables.
@@ -724,6 +768,8 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS driver_documents_owner_idx
     ON driver_documents(owner_user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS driver_documents_owner_created_id_idx
+    ON driver_documents(owner_user_id, created_at DESC, id DESC);
   CREATE INDEX IF NOT EXISTS driver_documents_expires_idx
     ON driver_documents(expires_at) WHERE expires_at IS NOT NULL;
 
@@ -754,6 +800,8 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS driver_expenses_driver_idx
     ON driver_expenses(driver_user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS driver_expenses_driver_created_id_idx
+    ON driver_expenses(driver_user_id, created_at DESC, id DESC);
   CREATE INDEX IF NOT EXISTS driver_expenses_load_idx
     ON driver_expenses(load_id) WHERE load_id IS NOT NULL;
 
@@ -770,6 +818,8 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS approval_tasks_queue_idx
     ON approval_tasks(assignee_role, status, created_at DESC);
+  CREATE INDEX IF NOT EXISTS approval_tasks_queue_id_idx
+    ON approval_tasks(assignee_role, status, created_at DESC, id DESC);
 `);
 // Run additive driver_documents migrations AFTER the table exists. Previously
 // this was invoked up near onboarding setup, before the CREATE TABLE below, so
@@ -993,6 +1043,45 @@ function now() {
 function makeId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Cursor pagination helpers (keyset / "seek" pagination).
+//
+// A cursor encodes (orderValue, tiebreaker) so pagination stays stable even when
+// many rows share an identical created_at/generated_at — now() is ms-precision
+// and backfills stamp a whole batch with one ts, so ties are common. With a
+// single-column `created_at < ?` cursor, a page boundary that lands inside a
+// tied group silently drops every remaining row sharing that timestamp.
+//
+// Format is an opaque base64url string "<orderValue>\u0000<tiebreaker>". The
+// frontend treats nextCursor as opaque (passes it back verbatim as ?cursor=),
+// so the internal format is free to change while staying wire-compatible.
+//
+// TOLERANT decode: a legacy bare-timestamp cursor (no NUL separator) decodes to
+// { orderValue: raw, tiebreaker: null }; callers then fall back to the old
+// `orderCol < ?` predicate for that one request, so in-flight cursors keep
+// working (and self-heal — the next cursor they receive is the new composite).
+const CURSOR_SEP = "\u0000";
+
+function encodeCursor(orderValue: string, tiebreaker: string): string {
+  return Buffer.from(`${orderValue}${CURSOR_SEP}${tiebreaker}`, "utf8").toString("base64url");
+}
+
+function decodeCursor(cursor: string): { orderValue: string; tiebreaker: string | null } {
+  try {
+    const decoded = Buffer.from(cursor, "base64url").toString("utf8");
+    const sep = decoded.indexOf(CURSOR_SEP);
+    if (sep !== -1) {
+      return { orderValue: decoded.slice(0, sep), tiebreaker: decoded.slice(sep + 1) };
+    }
+  } catch {
+    /* fall through to legacy bare-timestamp handling */
+  }
+  return { orderValue: cursor, tiebreaker: null };
+}
+
+// Exported for unit tests (server/lib/cursor.test.ts).
+export const __cursorInternals = { encodeCursor, decodeCursor };
 
 /** Great-circle distance in km between two lat/lng pairs. Used by tracking +
  *  fuel-nearby lookups. Accurate to ~0.5% which is plenty for 5-50 km cones. */
@@ -1411,18 +1500,25 @@ export const storage = {
     const total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
 
     if (filter.cursor) {
-      where.push("created_at < ?");
-      params.push(filter.cursor);
+      const { orderValue, tiebreaker } = decodeCursor(filter.cursor);
+      if (tiebreaker !== null) {
+        where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("created_at < ?");
+        params.push(orderValue);
+      }
     }
 
     // Fetch limit+1 to determine `hasMore` without a second query.
-    const listQuery = `SELECT * FROM users WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT ?`;
+    const listQuery = `SELECT * FROM users WHERE ${where.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT ?`;
     const rows = sqlite.prepare(listQuery).all(...params, limit + 1) as UserRow[];
 
     const hasMore = rows.length > limit;
     const pageRows = hasMore ? rows.slice(0, limit) : rows;
     const items = pageRows.map((row) => rowToUserInternal(row)!).filter(Boolean);
-    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].created_at : null;
+    const last = pageRows[pageRows.length - 1];
+    const nextCursor = hasMore && last ? encodeCursor(last.created_at, last.id) : null;
 
     return { items, nextCursor, total };
   },
@@ -2268,11 +2364,17 @@ export const storage = {
     const total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
 
     if (filter.cursor) {
-      where.push("created_at < ?");
-      params.push(filter.cursor);
+      const { orderValue, tiebreaker } = decodeCursor(filter.cursor);
+      if (tiebreaker !== null) {
+        where.push("(created_at < ? OR (created_at = ? AND code < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("created_at < ?");
+        params.push(orderValue);
+      }
     }
 
-    const listQuery = `SELECT * FROM invites WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT ?`;
+    const listQuery = `SELECT * FROM invites WHERE ${where.join(" AND ")} ORDER BY created_at DESC, code DESC LIMIT ?`;
     const rows = sqlite.prepare(listQuery).all(...params, limit + 1) as any[];
 
     const hasMore = rows.length > limit;
@@ -2288,7 +2390,8 @@ export const storage = {
       createdAt: row.created_at,
       createdByUserId: row.created_by_user_id,
     }));
-    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].created_at : null;
+    const last = pageRows[pageRows.length - 1];
+    const nextCursor = hasMore && last ? encodeCursor(last.created_at, last.code) : null;
 
     return { items, nextCursor, total };
   },
@@ -2410,13 +2513,19 @@ export const storage = {
       params.push(filter.status);
     }
     if (filter.cursor) {
-      where.push("created_at < ?");
-      params.push(filter.cursor);
+      const { orderValue, tiebreaker } = decodeCursor(filter.cursor);
+      if (tiebreaker !== null) {
+        where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("created_at < ?");
+        params.push(orderValue);
+      }
     }
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const rows = sqlite
       .prepare(
-        `SELECT * FROM signup_leads ${whereSql} ORDER BY created_at DESC LIMIT ?`,
+        `SELECT * FROM signup_leads ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`,
       )
       .all(...params, limit + 1) as Record<string, unknown>[];
     const totalRow = filter.status
@@ -2426,7 +2535,8 @@ export const storage = {
       : (sqlite.prepare("SELECT COUNT(*) AS c FROM signup_leads").get() as { c: number });
     const hasMore = rows.length > limit;
     const items = rows.slice(0, limit).map(rowToSignupLead);
-    const nextCursor = hasMore ? items[items.length - 1]!.createdAt : null;
+    const last = items[items.length - 1];
+    const nextCursor = hasMore && last ? encodeCursor(last.createdAt, last.id) : null;
     return { items, nextCursor, hasMore, total: totalRow.c };
   },
 
@@ -2669,11 +2779,17 @@ export const storage = {
     const total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
 
     if (filter.cursor) {
-      where.push("created_at < ?");
-      params.push(filter.cursor);
+      const { orderValue, tiebreaker } = decodeCursor(filter.cursor);
+      if (tiebreaker !== null) {
+        where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("created_at < ?");
+        params.push(orderValue);
+      }
     }
 
-    const listQuery = `SELECT * FROM assignments WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT ?`;
+    const listQuery = `SELECT * FROM assignments WHERE ${where.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT ?`;
     const rows = sqlite.prepare(listQuery).all(...params, limit + 1) as any[];
 
     const hasMore = rows.length > limit;
@@ -2687,7 +2803,8 @@ export const storage = {
       removedAt: row.removed_at ?? undefined,
       removedByUserId: row.removed_by_user_id ?? undefined,
     }));
-    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].created_at : null;
+    const last = pageRows[pageRows.length - 1];
+    const nextCursor = hasMore && last ? encodeCursor(last.created_at, last.id) : null;
 
     return { items, nextCursor, total };
   },
@@ -2867,11 +2984,17 @@ export const storage = {
     const total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
 
     if (filter.cursor) {
-      where.push("generated_at < ?");
-      params.push(filter.cursor);
+      const { orderValue, tiebreaker } = decodeCursor(filter.cursor);
+      if (tiebreaker !== null) {
+        where.push("(generated_at < ? OR (generated_at = ? AND id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("generated_at < ?");
+        params.push(orderValue);
+      }
     }
 
-    const listQuery = `SELECT * FROM invoices WHERE ${where.join(" AND ")} ORDER BY generated_at DESC LIMIT ?`;
+    const listQuery = `SELECT * FROM invoices WHERE ${where.join(" AND ")} ORDER BY generated_at DESC, id DESC LIMIT ?`;
     const rows = sqlite.prepare(listQuery).all(...params, limit + 1) as any[];
     const hasMore = rows.length > limit;
     const pageRows = hasMore ? rows.slice(0, limit) : rows;
@@ -2890,7 +3013,8 @@ export const storage = {
       paidAt: row.paid_at ?? undefined,
       notes: row.notes ?? undefined,
     }));
-    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].generated_at : null;
+    const last = pageRows[pageRows.length - 1];
+    const nextCursor = hasMore && last ? encodeCursor(last.generated_at, last.id) : null;
     return { items, nextCursor, total };
   },
 
@@ -3119,60 +3243,86 @@ export const storage = {
     const clientIdCol = typeof anyLoad.clientId === "string" ? anyLoad.clientId : null;
     const bookedAtCol = typeof anyLoad.bookedAt === "string" ? anyLoad.bookedAt : null;
     const driverIdCol = typeof anyLoad.driverId === "string" ? anyLoad.driverId : null;
-
-    sqlite
-      .prepare(
-        `
-        INSERT INTO loads (id, payload, created_at, updated_at, client_id, booked_at, driver_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          payload    = excluded.payload,
-          updated_at = excluded.updated_at,
-          client_id  = excluded.client_id,
-          booked_at  = excluded.booked_at,
-          driver_id  = excluded.driver_id
-      `,
-      )
-      .run(id, JSON.stringify(load), existing ? timestamp : timestamp, timestamp, clientIdCol, bookedAtCol, driverIdCol);
-
-    this.audit(existing ? "load.updated" : "load.created", "load", id, load);
-
-    // Broker Trust auto write-paths — Killer Feature #1.
     const anyExisting = existing as any;
     const brokerMc = (anyLoad.brokerMc ?? anyLoad.broker_mc ?? "") as string;
-    if (brokerMc) {
-      const rate = typeof anyLoad.rate === "number" ? anyLoad.rate : null;
 
-      // load_booked: bookedAt newly set for the first time
-      if (!anyExisting?.bookedAt && !anyExisting?.booked_at && bookedAtCol) {
-        this.appendBrokerTrustSignal({
-          brokerMc, brokerName: (anyLoad.brokerName ?? null) as string | null,
-          loadId: id, clientId: clientIdCol, signalType: "load_booked", positive: true,
-          valueJson: rate !== null ? { rate } : undefined, source: "automatic",
-        });
-      }
+    // Atomicity (V5): the load row, its audit event and the auto broker-trust
+    // signals must all land together. Without a transaction, a failure after the
+    // INSERT could leave a committed load with partial/duplicate trust signals
+    // (which then skew the broker score). Wrap the whole write so it commits or
+    // rolls back as one unit.
+    const persist = sqlite.transaction(() => {
+      sqlite
+        .prepare(
+          `
+          INSERT INTO loads (id, payload, created_at, updated_at, client_id, booked_at, driver_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            payload    = excluded.payload,
+            updated_at = excluded.updated_at,
+            client_id  = excluded.client_id,
+            booked_at  = excluded.booked_at,
+            driver_id  = excluded.driver_id
+        `,
+        )
+        .run(id, JSON.stringify(load), timestamp, timestamp, clientIdCol, bookedAtCol, driverIdCol);
 
-      // load_completed: status transitions to completed
-      const wasCompleted = anyExisting?.status === "completed" || !!(anyExisting?.deliveredAt ?? anyExisting?.delivered_at);
-      const isCompleted  = anyLoad.status === "completed" || !!(anyLoad.deliveredAt ?? anyLoad.delivered_at);
-      if (!wasCompleted && isCompleted) {
-        this.appendBrokerTrustSignal({
-          brokerMc, brokerName: (anyLoad.brokerName ?? null) as string | null,
-          loadId: id, clientId: clientIdCol, signalType: "load_completed", positive: true,
-          valueJson: rate !== null ? { rate } : undefined, source: "automatic",
-        });
-      }
+      this.audit(existing ? "load.updated" : "load.created", "load", id, load);
 
-      // load_cancelled_by_broker: status transitions to cancelled
-      if (anyExisting?.status !== "cancelled" && anyLoad.status === "cancelled") {
-        this.appendBrokerTrustSignal({
-          brokerMc, brokerName: (anyLoad.brokerName ?? null) as string | null,
-          loadId: id, clientId: clientIdCol, signalType: "load_cancelled_by_broker", positive: false,
-          notes: (anyLoad.cancelReason ?? anyLoad.cancel_reason ?? null) as string | null,
-          source: "automatic",
-        });
+      // Broker Trust auto write-paths — Killer Feature #1.
+      if (brokerMc) {
+        const rate = typeof anyLoad.rate === "number" ? anyLoad.rate : null;
+
+        // A load has two terminal outcomes: completed (delivered) and cancelled.
+        // The automatic trust signals must only fire on a LEGAL transition into
+        // one of them — otherwise a cancelled load later re-upserted as delivered
+        // would emit a spurious positive load_completed signal (inflating the
+        // broker's score), and a delivered load flipped to cancelled would emit a
+        // bogus negative. upsertLoad is also the ingest/import path, so we never
+        // reject the write — we just skip the illegal signal and log it.
+        const wasCompleted = anyExisting?.status === "completed" || !!(anyExisting?.deliveredAt ?? anyExisting?.delivered_at);
+        const wasCancelled = anyExisting?.status === "cancelled";
+        const isCompleted  = anyLoad.status === "completed" || !!(anyLoad.deliveredAt ?? anyLoad.delivered_at);
+        const isCancelled  = anyLoad.status === "cancelled";
+
+        // load_booked: bookedAt newly set for the first time
+        if (!anyExisting?.bookedAt && !anyExisting?.booked_at && bookedAtCol) {
+          this.appendBrokerTrustSignal({
+            brokerMc, brokerName: (anyLoad.brokerName ?? null) as string | null,
+            loadId: id, clientId: clientIdCol, signalType: "load_booked", positive: true,
+            valueJson: rate !== null ? { rate } : undefined, source: "automatic",
+          });
+        }
+
+        // load_completed: legal only when not already cancelled.
+        if (!wasCompleted && isCompleted) {
+          if (wasCancelled) {
+            console.warn(`[broker-trust] skipping illegal load transition cancelled -> completed for load ${id}`);
+          } else {
+            this.appendBrokerTrustSignal({
+              brokerMc, brokerName: (anyLoad.brokerName ?? null) as string | null,
+              loadId: id, clientId: clientIdCol, signalType: "load_completed", positive: true,
+              valueJson: rate !== null ? { rate } : undefined, source: "automatic",
+            });
+          }
+        }
+
+        // load_cancelled_by_broker: legal only when not already completed.
+        if (!wasCancelled && isCancelled) {
+          if (wasCompleted) {
+            console.warn(`[broker-trust] skipping illegal load transition completed -> cancelled for load ${id}`);
+          } else {
+            this.appendBrokerTrustSignal({
+              brokerMc, brokerName: (anyLoad.brokerName ?? null) as string | null,
+              loadId: id, clientId: clientIdCol, signalType: "load_cancelled_by_broker", positive: false,
+              notes: (anyLoad.cancelReason ?? anyLoad.cancel_reason ?? null) as string | null,
+              source: "automatic",
+            });
+          }
+        }
       }
-    }
+    });
+    persist();
 
     return load;
   },
@@ -3232,23 +3382,30 @@ export const storage = {
       .get(...params) as { c: number }).c;
 
     if (opts.cursor) {
-      where.push("created_at < ?");
-      params.push(opts.cursor);
+      const { orderValue, tiebreaker } = decodeCursor(opts.cursor);
+      if (tiebreaker !== null) {
+        where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("created_at < ?");
+        params.push(orderValue);
+      }
     }
 
     const rows = sqlite
       .prepare(
-        `SELECT payload, created_at FROM loads
+        `SELECT id, payload, created_at FROM loads
          WHERE ${where.join(" AND ")}
-         ORDER BY created_at DESC
+         ORDER BY created_at DESC, id DESC
          LIMIT ?`,
       )
-      .all(...params, limit + 1) as Array<{ payload: string; created_at: string }>;
+      .all(...params, limit + 1) as Array<{ id: string; payload: string; created_at: string }>;
 
     const hasMore = rows.length > limit;
     const pageRows = hasMore ? rows.slice(0, limit) : rows;
     const items = pageRows.map((r) => JSON.parse(r.payload) as Load);
-    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].created_at : null;
+    const last = pageRows[pageRows.length - 1];
+    const nextCursor = hasMore && last ? encodeCursor(last.created_at, last.id) : null;
     return { items, nextCursor, total };
   },
 
@@ -3322,14 +3479,18 @@ export const storage = {
   // -------------------------------------------------------------------------
 
   audit(eventType: string, entityType: string, entityId: string, payload: unknown) {
+    // Denormalize the actor out of the payload into its own column so the audit
+    // log can filter by actor in SQL (accurate total/cursor). Source of truth for
+    // the actor is still the payload; this column is a queryable mirror.
+    const actorUserId = pluckActorIdFromPayload(payload);
     sqlite
       .prepare(
         `
-        INSERT INTO audit_events (id, event_type, entity_type, entity_id, payload, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO audit_events (id, event_type, entity_type, entity_id, payload, created_at, actor_user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `,
       )
-      .run(makeId("audit"), eventType, entityType, entityId, JSON.stringify(payload), now());
+      .run(makeId("audit"), eventType, entityType, entityId, JSON.stringify(payload), now(), actorUserId);
   },
 
   listAuditEvents(limit = 50) {
@@ -3410,25 +3571,42 @@ export const storage = {
       where.push("created_at <= ?");
       params.push(filter.until);
     }
-
-    const countQuery = `SELECT COUNT(*) as c FROM audit_events WHERE ${where.join(" AND ")}`;
-    let total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
-
-    if (filter.cursor) {
-      where.push("created_at < ?");
-      params.push(filter.cursor);
+    if (filter.actorId) {
+      // Now a real column (denormalized from payload) — filter in SQL so total
+      // and the cursor stay accurate.
+      where.push("actor_user_id = ?");
+      params.push(filter.actorId);
     }
 
-    // We over-fetch by limit+1 to determine hasMore. actorId filter is
-    // applied AFTER fetch because it lives inside JSON payload, not a
-    // SQL column; this means total/cursor accuracy degrades when actorId
-    // is set. Documented in the route handler.
-    const listQuery = `SELECT id, event_type as eventType, entity_type as entityType, entity_id as entityId, payload, created_at as createdAt FROM audit_events WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT ?`;
-    let rows = sqlite.prepare(listQuery).all(...params, limit + 1) as any[];
+    const countQuery = `SELECT COUNT(*) as c FROM audit_events WHERE ${where.join(" AND ")}`;
+    const total = (sqlite.prepare(countQuery).get(...params) as { c: number }).c;
 
-    const enriched = rows.map((row) => {
+    if (filter.cursor) {
+      const { orderValue, tiebreaker } = decodeCursor(filter.cursor);
+      if (tiebreaker !== null) {
+        where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("created_at < ?");
+        params.push(orderValue);
+      }
+    }
+
+    // Over-fetch by limit+1 to determine hasMore. All filters (including actorId)
+    // are now in SQL, so total/hasMore/nextCursor are exact.
+    const listQuery = `SELECT id, event_type as eventType, entity_type as entityType, entity_id as entityId, payload, created_at as createdAt, actor_user_id as actorUserId FROM audit_events WHERE ${where.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT ?`;
+    const rows = sqlite.prepare(listQuery).all(...params, limit + 1) as any[];
+
+    const hasMore = rows.length > limit;
+    const pageRaw = hasMore ? rows.slice(0, limit) : rows;
+    const lastRaw = pageRaw[pageRaw.length - 1];
+    const nextCursor = hasMore && lastRaw ? encodeCursor(lastRaw.createdAt, lastRaw.id) : null;
+
+    const items = pageRaw.map((row) => {
       const payload = row.payload ? JSON.parse(row.payload) : null;
-      const actorUserId = pluckActorIdFromPayload(payload);
+      // actorUserId comes from the column now; fall back to the payload for any
+      // pre-backfill row that somehow slipped through.
+      const actorUserId = (row.actorUserId as string | null) ?? pluckActorIdFromPayload(payload);
       const actorEmail = actorUserId ? this.getUserById(actorUserId)?.email ?? null : null;
       return {
         id: row.id,
@@ -3442,17 +3620,7 @@ export const storage = {
       };
     });
 
-    let filtered = enriched;
-    if (filter.actorId) {
-      filtered = enriched.filter((e) => e.actorUserId === filter.actorId);
-      total = filtered.length; // approximate — see comment above
-    }
-
-    const hasMore = filtered.length > limit;
-    const pageRows = hasMore ? filtered.slice(0, limit) : filtered;
-    const nextCursor = hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].createdAt : null;
-
-    return { items: pageRows, nextCursor, total };
+    return { items, nextCursor, total };
   },
 
   /**
@@ -4771,15 +4939,24 @@ export const storage = {
     opts: { limit?: number; cursor?: string } = {},
   ): { items: DriverDocument[]; nextCursor: string | null; hasMore: boolean; total: number } {
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
-    const sql = opts.cursor
-      ? `SELECT * FROM driver_documents
-         WHERE owner_user_id = ? AND created_at < ?
-         ORDER BY created_at DESC LIMIT ?`
-      : `SELECT * FROM driver_documents
-         WHERE owner_user_id = ?
-         ORDER BY created_at DESC LIMIT ?`;
-    const params = opts.cursor ? [userId, opts.cursor, limit + 1] : [userId, limit + 1];
-    const rows = sqlite.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    const where: string[] = ["owner_user_id = ?"];
+    const params: Array<string | number> = [userId];
+    if (opts.cursor) {
+      const { orderValue, tiebreaker } = decodeCursor(opts.cursor);
+      if (tiebreaker !== null) {
+        where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("created_at < ?");
+        params.push(orderValue);
+      }
+    }
+    params.push(limit + 1);
+    const rows = sqlite
+      .prepare(
+        `SELECT * FROM driver_documents WHERE ${where.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT ?`,
+      )
+      .all(...params) as Array<Record<string, unknown>>;
     const hasMore = rows.length > limit;
     const sliced = hasMore ? rows.slice(0, limit) : rows;
     const items: DriverDocument[] = sliced.map((r) => ({
@@ -4799,9 +4976,10 @@ export const storage = {
         .prepare("SELECT COUNT(*) AS c FROM driver_documents WHERE owner_user_id = ?")
         .get(userId) as { c: number }
     ).c;
+    const last = items[items.length - 1];
     return {
       items,
-      nextCursor: hasMore ? (items[items.length - 1]?.createdAt ?? null) : null,
+      nextCursor: hasMore && last ? encodeCursor(last.createdAt, last.id) : null,
       hasMore,
       total,
     };
@@ -5027,15 +5205,21 @@ export const storage = {
       params.push(opts.loadId);
     }
     if (opts.cursor) {
-      where.push("created_at < ?");
-      params.push(opts.cursor);
+      const { orderValue, tiebreaker } = decodeCursor(opts.cursor);
+      if (tiebreaker !== null) {
+        where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("created_at < ?");
+        params.push(orderValue);
+      }
     }
     params.push(limit + 1);
     const rows = sqlite
       .prepare(
         `SELECT * FROM driver_expenses
          WHERE ${where.join(" AND ")}
-         ORDER BY created_at DESC LIMIT ?`,
+         ORDER BY created_at DESC, id DESC LIMIT ?`,
       )
       .all(...params) as Array<Record<string, unknown>>;
     const hasMore = rows.length > limit;
@@ -5055,9 +5239,10 @@ export const storage = {
       : "SELECT COUNT(*) AS c FROM driver_expenses WHERE driver_user_id = ?";
     const countParams = opts.loadId ? [userId, opts.loadId] : [userId];
     const total = (sqlite.prepare(countSql).get(...countParams) as { c: number }).c;
+    const last = items[items.length - 1];
     return {
       items,
-      nextCursor: hasMore ? (items[items.length - 1]?.createdAt ?? null) : null,
+      nextCursor: hasMore && last ? encodeCursor(last.createdAt, last.id) : null,
       hasMore,
       total,
     };
@@ -5170,8 +5355,14 @@ export const storage = {
       params.push(filters.assigneeRole);
     }
     if (filters.cursor) {
-      where.push("t.created_at < ?");
-      params.push(filters.cursor);
+      const { orderValue, tiebreaker } = decodeCursor(filters.cursor);
+      if (tiebreaker !== null) {
+        where.push("(t.created_at < ? OR (t.created_at = ? AND t.id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("t.created_at < ?");
+        params.push(orderValue);
+      }
     }
     const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const sql = `
@@ -5184,7 +5375,7 @@ export const storage = {
       LEFT JOIN users creator  ON creator.id  = t.created_by_user_id
       LEFT JOIN users resolver ON resolver.id = t.resolved_by_user_id
       ${whereClause}
-      ORDER BY t.created_at DESC
+      ORDER BY t.created_at DESC, t.id DESC
       LIMIT ?
     `;
     params.push(limit + 1);
@@ -5223,9 +5414,10 @@ export const storage = {
       totalWhere.length ? `WHERE ${totalWhere.join(" AND ")}` : ""
     }`;
     const total = (sqlite.prepare(totalSql).get(...totalParams) as { c: number }).c;
+    const last = items[items.length - 1];
     return {
       items,
-      nextCursor: hasMore ? (items[items.length - 1]?.createdAt ?? null) : null,
+      nextCursor: hasMore && last ? encodeCursor(last.createdAt, last.id) : null,
       hasMore,
       total,
     };
@@ -5388,21 +5580,27 @@ export const storage = {
       where.push("booked_at IS NOT NULL");
     }
     if (opts.cursor) {
-      where.push("created_at < ?");
-      params.push(opts.cursor);
+      const { orderValue, tiebreaker } = decodeCursor(opts.cursor);
+      if (tiebreaker !== null) {
+        where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("created_at < ?");
+        params.push(orderValue);
+      }
     }
     params.push(limit + 1);
     const rows = sqlite
       .prepare(
-        `SELECT payload, created_at FROM loads
+        `SELECT id, payload, created_at FROM loads
          WHERE ${where.join(" AND ")}
-         ORDER BY created_at DESC LIMIT ?`,
+         ORDER BY created_at DESC, id DESC LIMIT ?`,
       )
-      .all(...params) as Array<{ payload: string; created_at: string }>;
+      .all(...params) as Array<{ id: string; payload: string; created_at: string }>;
     const hasMore = rows.length > limit;
     const sliced = hasMore ? rows.slice(0, limit) : rows;
     const items: Load[] = parsePayloads<Load>(sliced);
-    const lastCreatedAt = hasMore ? sliced[sliced.length - 1]?.created_at ?? null : null;
+    const lastRow = sliced[sliced.length - 1];
     const totalSql = `SELECT COUNT(*) AS c FROM loads WHERE client_id IN (${placeholders})${
       opts.status === "available"
         ? " AND booked_at IS NULL"
@@ -5413,7 +5611,7 @@ export const storage = {
     const total = (sqlite.prepare(totalSql).get(...clientIds) as { c: number }).c;
     return {
       items,
-      nextCursor: hasMore ? lastCreatedAt : null,
+      nextCursor: hasMore && lastRow ? encodeCursor(lastRow.created_at, lastRow.id) : null,
       hasMore,
       total,
     };
@@ -5455,8 +5653,14 @@ export const storage = {
       params.push(opts.status);
     }
     if (opts.cursor) {
-      where.push("t.created_at < ?");
-      params.push(opts.cursor);
+      const { orderValue, tiebreaker } = decodeCursor(opts.cursor);
+      if (tiebreaker !== null) {
+        where.push("(t.created_at < ? OR (t.created_at = ? AND t.id < ?))");
+        params.push(orderValue, orderValue, tiebreaker);
+      } else {
+        where.push("t.created_at < ?");
+        params.push(orderValue);
+      }
     }
     params.push(limit + 1);
     const sql = `
@@ -5469,7 +5673,7 @@ export const storage = {
       LEFT JOIN users creator  ON creator.id  = t.created_by_user_id
       LEFT JOIN users resolver ON resolver.id = t.resolved_by_user_id
       WHERE ${where.join(" AND ")}
-      ORDER BY t.created_at DESC
+      ORDER BY t.created_at DESC, t.id DESC
       LIMIT ?
     `;
     const rows = sqlite.prepare(sql).all(...params) as Array<Record<string, unknown>>;
@@ -5503,9 +5707,10 @@ export const storage = {
         .prepare(`SELECT COUNT(*) AS c FROM approval_tasks WHERE ${totalWhere.join(" AND ")}`)
         .get(...totalParams) as { c: number }
     ).c;
+    const last = items[items.length - 1];
     return {
       items,
-      nextCursor: hasMore ? items[items.length - 1]?.createdAt ?? null : null,
+      nextCursor: hasMore && last ? encodeCursor(last.createdAt, last.id) : null,
       hasMore,
       total,
     };
