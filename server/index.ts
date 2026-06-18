@@ -258,6 +258,10 @@ if (AUTH_RATE_LIMIT_ENABLED) {
   app.use("/api/auth/bootstrap", authBruteLimiter);
   app.use("/api/auth/setup", authBruteLimiter);
   app.use("/api/me/totp/confirm", authBruteLimiter);
+  // H2: resume-setup is a password->TOTP-secret oracle and confirm-signup verifies
+  // a TOTP code — both were uncovered. Rate-limit them like the rest.
+  app.use("/api/auth/totp/resume-setup", authBruteLimiter);
+  app.use("/api/auth/totp/confirm-signup", authBruteLimiter);
   console.log(
     "[auth] brute-force limiter ENABLED (15min / 20 attempts per IP+email)",
   );
