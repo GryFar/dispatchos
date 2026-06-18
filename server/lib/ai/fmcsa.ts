@@ -126,12 +126,24 @@ export function evaluateBroker(carrier: FmcsaCarrier): FmcsaVerdict {
     reasons.push("FMCSA status field is UNKNOWN");
   }
 
-  // Broker authority required for brokerage activity
+  // Broker authority required for brokerage activity. evaluateBroker means we
+  // EXPECT the entity to be authorized to arrange transportation as a broker, so
+  // the *absence* of broker/freight-forwarder authority is always a problem —
+  // distinguish the two shapes it takes:
   const isBrokering = carrier.authority.broker || carrier.authority.freightForwarder;
-  if (!isBrokering && !carrier.authority.carrier) {
-    score -= 40;
-    reasons.push("No broker, carrier, or freight forwarder authority");
-    redFlags.push("No transport authority of any kind");
+  if (!isBrokering) {
+    if (carrier.authority.carrier) {
+      // Carrier authority only, but soliciting freight as a broker — the classic
+      // double-brokering / re-brokering setup (no BMC-84 bond, no brokerage
+      // license). Previously this passed clean because carrier authority existed.
+      score -= 40;
+      reasons.push("Carrier authority only — not authorized to broker freight");
+      redFlags.push("Acting as a broker without brokerage authority — double-brokering risk");
+    } else {
+      score -= 40;
+      reasons.push("No broker, carrier, or freight forwarder authority");
+      redFlags.push("No transport authority of any kind");
+    }
   }
 
   // Age of authority — fresh < 6 months is high risk

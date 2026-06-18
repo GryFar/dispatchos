@@ -134,6 +134,29 @@ function assert(name: string, cond: boolean, detail?: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Carrier authority only, but solicited as a broker → double-brokering risk.
+// Authorized + clean safety, yet must NOT pass clean because it lacks brokerage
+// authority (regression for the under-penalized double-brokering case).
+// ---------------------------------------------------------------------------
+{
+  const carrierAsBroker: FmcsaCarrier = {
+    mcNumber: "MC-4444444",
+    legalName: "Carrier Posing As Broker LLC",
+    address: {},
+    operatingStatus: "AUTHORIZED",
+    authority: { carrier: true, broker: false, freightForwarder: false },
+    authorityAgeYears: 8,
+    safetyRating: "SATISFACTORY",
+    fetchedAt: new Date().toISOString(),
+  };
+  const v = evaluateBroker(carrierAsBroker);
+  assert("eval: carrier-as-broker not green", v.verdict !== "green", `got ${v.verdict} score ${v.score}`);
+  assert("eval: carrier-as-broker flags double-brokering",
+    v.redFlags.some((f) => f.toLowerCase().includes("double-brokering")));
+  assert("eval: carrier-as-broker score penalised", v.score <= 70, `got ${v.score}`);
+}
+
+// ---------------------------------------------------------------------------
 // Mobile API parsing — content array shape
 // ---------------------------------------------------------------------------
 {

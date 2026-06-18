@@ -226,6 +226,21 @@ export interface OfferClassification {
 }
 
 export function classifyOffer(rate: number, loadedMiles: number, quote: LaneQuote): OfferClassification {
+  // Guard degenerate inputs: missing miles or a non-positive baseline would make
+  // ppm / pct become Infinity or NaN and silently misclassify the offer (e.g.
+  // NaN falls through every threshold to "lowball", Infinity reads as "premium").
+  // Treat anything we can't price as a hard skip rather than a guessed verdict.
+  if (!(loadedMiles > 0) || !(quote.baselinePpm > 0) || !(rate > 0)) {
+    return {
+      ppm: 0,
+      baselinePpm: quote.baselinePpm,
+      delta: 0,
+      pctOfBaseline: 0,
+      classification: "lowball",
+      recommendedAction: "skip",
+      suggestedCounter: null,
+    };
+  }
   const ppm = round2(rate / loadedMiles);
   const pct = ppm / quote.baselinePpm;
   let classification: OfferClassification["classification"];
