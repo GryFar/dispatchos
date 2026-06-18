@@ -720,6 +720,18 @@ try {
   }
   console.log("[OK] POST /api/auth/signup + confirm-signup creates session (TOTP confirmed)");
 
+  // H1 (security regression): the legacy global routes are admin-only now — a
+  // dispatcher must NOT read other tenants' data through them (they use the
+  // tenant-scoped /api/dispatch/* API instead).
+  for (const ep of ["/api/clients", "/api/loads", "/api/dispatch-board"]) {
+    let st = 0;
+    try { await request(ep); } catch (err) { st = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0); }
+    if (st !== 403) {
+      throw new Error(`dispatcher reached ${ep} (status ${st}), expected 403 — cross-tenant IDOR guard (H1)`);
+    }
+  }
+  console.log("[OK] dispatcher blocked (403) from legacy admin-only routes (H1 IDOR guard)");
+
   // Re-using the consumed code → 400
   let reuseStatus = 0;
   try {
