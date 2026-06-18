@@ -30,7 +30,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { z } from "zod";
-import { getCurrentUser, generateBase32Secret, buildOtpAuthUrl, verifyTotp } from "../auth";
+import { getCurrentUser, generateBase32Secret, buildOtpAuthUrl, verifyTotp, verifyPassword } from "../auth";
 import { storage } from "../storage";
 
 function ah(
@@ -76,8 +76,24 @@ export function registerMeTotpRoutes(app: Express): void {
       const user = getCurrentUser(req);
       if (!user) return res.status(401).json({ message: "Authentication required" });
 
-      // Even if user already has 2FA, allow re-setup (rotate). The new secret
-      // only becomes active after /confirm succeeds.
+      // H3 step-up: rotating an ALREADY-enabled 2FA requires re-entering the
+      // current password, so a hijacked session can't silently move 2FA to an
+      // attacker's authenticator. First-time enrollment needs no password.
+      if (user.totpSecret) {
+        const currentPassword =
+          typeof (req.body as { currentPassword?: unknown })?.currentPassword === "string"
+            ? (req.body as { currentPassword: string }).currentPassword
+            : "";
+        const { ok } = verifyPassword(currentPassword, user.passwordSalt, user.passwordHash);
+        if (!ok) {
+          return res.status(401).json({
+            message: "Текущий пароль обязателен для перевыпуска 2FA.",
+            code: "password_required",
+          });
+        }
+      }
+
+      // The new secret only becomes active after /confirm succeeds.
       const secret = generateBase32Secret();
       req.session.pendingTotpSecret = secret;
 
