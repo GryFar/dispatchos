@@ -52,14 +52,12 @@ function makeStub(key: AdapterKey, label: string, requiresCredentials: boolean):
   };
 }
 
+// Email-forwarding brokers (rxo/tql/coyote/echo/landstar) are now REAL — see
+// adapters/broker-email.ts. These remaining stubs need a scraper / REST creds
+// and a real fetcher before they can be activated.
 export const stubAdapters: BoardAdapter[] = [
   makeStub("super_dispatch",  "SuperDispatch (Playwright)",     true),
   makeStub("one23_loadboard", "123Loadboard (REST API)",        true),
   makeStub("dat_scraper",     "DAT One (scraper)",              true),
-  makeStub("rxo_email",       "RXO (email forwarding)",         false),
-  makeStub("tql_email",       "TQL (email forwarding)",         false),
   makeStub("chr_navisphere",  "C.H. Robinson Navisphere",       true),
-  makeStub("coyote_email",    "Coyote Logistics (email)",       false),
-  makeStub("echo_email",      "Echo Global (email)",            false),
-  makeStub("landstar_email",  "Landstar agent (email)",         false),
 ];

@@ -3042,7 +3042,43 @@ try {
   if (!adaptersResp.adapters.some((a) => a.implemented === false)) {
     throw new Error("load-sources/adapters: expected at least one stub (implemented:false)");
   }
-  console.log("[OK] GET /api/admin/load-sources/adapters (mock implemented + stubs present)");
+  // Email-forwarding brokers are now real adapters (broker-email.ts), not stubs.
+  for (const key of ["rxo_email", "tql_email", "coyote_email", "echo_email", "landstar_email"]) {
+    const a = adaptersResp.adapters.find((x) => x.key === key);
+    if (!a || a.implemented !== true) {
+      throw new Error(`load-sources/adapters: ${key} should be implemented (real email adapter)`);
+    }
+    if (a.requiresCredentials !== false) {
+      throw new Error(`load-sources/adapters: ${key} should be credential-free (email forwarding)`);
+    }
+  }
+  console.log("[OK] GET /api/admin/load-sources/adapters (mock + 5 broker-email implemented, stubs present)");
+
+  // End-to-end: create an RXO email source and confirm the Test endpoint
+  // authenticates (config has the required inboundAddress) + fetches without
+  // error. No matching inbound email yet, so fetch returns 0 — the point is
+  // that the real adapter wires up end to end, not just that it exists.
+  const rxoSource = (
+    await request("/api/admin/load-sources", {
+      method: "POST",
+      body: {
+        clientId: "ivan-enclosed-01",
+        adapterKey: "rxo_email",
+        label: "RXO forwarding (smoke)",
+        configJson: { inboundAddress: "loads+smoke@dispatchos.co" },
+        pollIntervalMin: 20,
+        status: "paused",
+      },
+    })
+  ).loadSource;
+  if (!rxoSource?.id) throw new Error("rxo_email load source create did not return id");
+  const rxoTest = await request(`/api/admin/load-sources/${rxoSource.id}/test`, {
+    method: "POST",
+  });
+  if (rxoTest.ok !== true) {
+    throw new Error(`rxo_email test did not pass authenticate: ${JSON.stringify(rxoTest)}`);
+  }
+  console.log("[OK] POST /api/admin/load-sources (rxo_email create + Test authenticates)");
 
   // Create requires clientId/adapterKey/label.
   let lsBadStatus = 0;
