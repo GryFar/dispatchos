@@ -260,15 +260,7 @@ function GenerateInvoiceDialog({
       setStep("preview");
     },
     onError: (err: Error) => {
-      if (isEndpointMissing(err)) {
-        toast({
-          variant: "destructive",
-          title: "Endpoint не реализован",
-          description: "POST /api/admin/billing/preview — Phase 3 (P2).",
-        });
-      } else {
-        toast({ variant: "destructive", title: "Ошибка preview", description: err.message });
-      }
+      toast({ variant: "destructive", title: "Ошибка preview", description: err.message });
     },
   });
 

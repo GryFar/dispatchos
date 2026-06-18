@@ -18,7 +18,6 @@ import {
   Plug,
   Radio,
   Settings,
-  Sparkles,
   Truck,
   Users,
 } from "lucide-react";
@@ -294,61 +293,5 @@ function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
         </DropdownMenuContent>
       </DropdownMenu>
     </header>
-  );
-}
-
-/** Skeleton-страница, временно для экранов которые я делаю в Ответе 2. */
-export function AdminPlaceholderPage({ title, description }: { title: string; description?: string }) {
-  return (
-    <div className="space-y-8">
-      <div className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            Admin / {title}
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{title}</h1>
-          {description && <p className="mt-1.5 text-sm text-muted-foreground">{description}</p>}
-        </div>
-      </div>
-
-      {/* Mocked KPI strip (skeleton) */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[0, 1, 2, 3].map((i) => (
-          <div
-            key={i}
-            className="card-hover rounded-lg border border-border bg-card p-5 shadow-card"
-          >
-            <div className="h-3 w-16 animate-skeleton" />
-            <div className="mt-4 h-7 w-24 animate-skeleton" />
-            <div className="mt-3 h-3 w-20 animate-skeleton" />
-          </div>
-        ))}
-      </div>
-
-      {/* "Coming in Part 2" hero */}
-      <div className="relative overflow-hidden rounded-xl border border-border bg-card shadow-card">
-        <div
-          className="absolute inset-0 opacity-40"
-          style={{
-            backgroundImage:
-              "radial-gradient(circle at 30% 50%, hsl(var(--primary) / 0.10), transparent 50%), radial-gradient(circle at 70% 50%, hsl(var(--chart-2) / 0.06), transparent 50%)",
-          }}
-        />
-        <div className="relative flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-          <div className="relative">
-            <div className="absolute inset-0 -m-4 rounded-full bg-primary/10 blur-xl" />
-            <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-primary/20 bg-primary/10">
-              <Sparkles className="h-6 w-6 text-primary" />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <p className="text-sm font-semibold">Экран в разработке</p>
-            <p className="text-xs text-muted-foreground">
-              Будет завершён в Ответе 2 второй части Phase 2.
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
   );
 }

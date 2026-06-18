@@ -681,15 +681,7 @@ function CreateInviteDialog({
       setSuccess(data);
     },
     onError: (err: Error) => {
-      if (isEndpointMissing(err)) {
-        toast({
-          variant: "destructive",
-          title: "Endpoint не реализован",
-          description: "POST /api/admin/invites появится в Phase 3 (P0).",
-        });
-      } else {
-        toast({ variant: "destructive", title: "Ошибка", description: err.message });
-      }
+      toast({ variant: "destructive", title: "Ошибка", description: err.message });
     },
   });
 
@@ -882,16 +874,7 @@ function ResetPasswordDialog({ user, onClose }: { user: UserPublic; onClose: () 
       apiJson<ResetPasswordResponse>("POST", `/api/admin/users/${user.id}/reset-password`, {}),
     onSuccess: (data) => setResult(data),
     onError: (err: Error) => {
-      if (isEndpointMissing(err)) {
-        toast({
-          variant: "destructive",
-          title: "Endpoint не реализован",
-          description: "Появится после Phase 3 (P1).",
-        });
-        onClose();
-      } else {
-        toast({ variant: "destructive", title: "Ошибка", description: err.message });
-      }
+      toast({ variant: "destructive", title: "Ошибка", description: err.message });
     },
   });
 
@@ -989,16 +972,7 @@ export function ResetTotpDialog({ user, onClose, initialMode }: { user: UserPubl
       qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/admin/users") });
     },
     onError: (err: Error) => {
-      if (isEndpointMissing(err)) {
-        toast({
-          variant: "destructive",
-          title: "Endpoint не реализован",
-          description: "Появится после Phase 3 (P1).",
-        });
-        onClose();
-      } else {
-        toast({ variant: "destructive", title: "Ошибка", description: err.message });
-      }
+      toast({ variant: "destructive", title: "Ошибка", description: err.message });
     },
   });
 
