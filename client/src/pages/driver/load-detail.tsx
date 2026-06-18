@@ -531,6 +531,41 @@ function ExpenseDialog({
       toast({ variant: "destructive", title: t("driver.load_detail.expense.error"), description: err.message }),
   });
 
+  // OCR a selected receipt photo to pre-fill the amount. Preview only — the
+  // server persists nothing; the driver still confirms before saving. Degrades
+  // to a toast when the read fails or no API key is configured server-side.
+  const scanMutation = useMutation({
+    mutationFn: async () => {
+      if (!photo) throw new ApiError(400, "Select a photo first", null);
+      const fd = new FormData();
+      fd.append("photo", photo);
+      const res = await fetch("/api/me/expenses/scan-receipt", {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const msg = await res.text();
+        throw new ApiError(res.status, msg || "Scan failed", null);
+      }
+      return res.json() as Promise<{
+        ocr: { total: number | null; stationName: string | null } | null;
+      }>;
+    },
+    onSuccess: (data) => {
+      const ocr = data.ocr;
+      if (!ocr || ocr.total == null) {
+        toast({ title: "Couldn't read the receipt — enter the amount manually" });
+        return;
+      }
+      setAmount(String(ocr.total));
+      if (ocr.stationName) setNotes((prev) => prev || ocr.stationName!);
+      toast({ title: `Read $${ocr.total} from receipt` });
+    },
+    onError: (err: ApiError) =>
+      toast({ variant: "destructive", title: "Scan failed", description: err.message }),
+  });
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -591,6 +626,19 @@ function ExpenseDialog({
               onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
               className="h-11 py-2.5"
             />
+            {photo && (photo.type === "image/jpeg" || photo.type === "image/png") && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-1"
+                onClick={() => scanMutation.mutate()}
+                disabled={scanMutation.isPending}
+              >
+                {scanMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Scan receipt
+              </Button>
+            )}
           </div>
         </div>
         <DialogFooter>
