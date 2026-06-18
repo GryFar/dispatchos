@@ -115,6 +115,17 @@ function totp(secret, stepOffset = 0) {
   return String(code % 1_000_000).padStart(6, "0");
 }
 
+// Wait until just inside the next 30s TOTP window. The server accepts codes only
+// within a ±1 window AND refuses any counter <= the last accepted one (replay
+// guard, server/auth.ts verifyTotp). After confirm-signup (counter C) and the
+// first login (C+1), a 3rd login in the SAME 30s window is impossible by design —
+// no in-window candidate exceeds minCounter. So we let the clock roll into a fresh
+// window, then log in with stepOffset=1 (drift +1) to clear the replay guard.
+async function waitForNextTotpWindow() {
+  const ms = 30_000 - (Date.now() % 30_000) + 750;
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ---------------------------------------------------------------------------
 // fix(smoke): TOTP-confirm-before-login helpers — PR #116 contract
 // ---------------------------------------------------------------------------
@@ -547,12 +558,13 @@ try {
   console.log("[OK] logout invalidates session (401 on /api/me and /api/clients)");
 
   // Re-login still works after logout (proves persistent session store is alive).
+  // confirm-signup (offset 0) and the first login (offset 1) consume two counters
+  // in the current 30s window; the server's ±1 window + replay guard make a third
+  // in-window login impossible, so wait for a fresh window and use offset 1.
+  await waitForNextTotpWindow();
   await request("/api/auth/login", {
     method: "POST",
-    // fix(smoke) #116: first login now uses stepOffset=1 (confirm-signup uses 0,
-    // first login uses 1), so re-login must use stepOffset=2 to avoid replay
-    // rejection by the counter guard (PR #99).
-    body: { username: "owner", password: "SmokePassword123!", token: totp(setup.totpSecret, 2) },
+    body: { username: "owner", password: "SmokePassword123!", token: totp(setup.totpSecret, 1) },
   });
   const reMe = await request("/api/me");
   if (reMe.id !== me.id) {
@@ -600,8 +612,10 @@ try {
     method: "POST",
     body: { role: "dispatcher", ttlHours: 24 },
   });
-  if (!/^DOS-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(dispatcherInvite.code)) {
-    throw new Error(`invite code does not match DOS-XXXX-XXXX-XXXX format: ${dispatcherInvite.code}`);
+  // V5-006: invite codes are 5 blocks (~98 bits), DOS-XXXX-XXXX-XXXX-XXXX-XXXX
+  // (see server/lib/invite-code.ts). Older smoke expected 3 blocks.
+  if (!/^DOS-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){4}$/.test(dispatcherInvite.code)) {
+    throw new Error(`invite code does not match DOS-XXXX-XXXX-XXXX-XXXX-XXXX format: ${dispatcherInvite.code}`);
   }
   if (!dispatcherInvite.signupUrl || !dispatcherInvite.signupUrl.includes("#/signup?code=")) {
     throw new Error(`invite signupUrl missing hash-route /#/signup: ${dispatcherInvite.signupUrl}`);
@@ -609,7 +623,7 @@ try {
   if (dispatcherInvite.role !== "dispatcher") {
     throw new Error("invite did not return role=dispatcher");
   }
-  console.log("[OK] POST /api/admin/invites (DOS-XXXX-XXXX-XXXX + hash signupUrl)");
+  console.log("[OK] POST /api/admin/invites (DOS-XXXX-XXXX-XXXX-XXXX-XXXX + hash signupUrl)");
 
   // Anti-fraud: a disposable-email signup is rejected before the invite is
   // consumed. Use a fresh invite so the rejection can't be confused with an
@@ -915,6 +929,30 @@ try {
   const allUsers = await request("/api/admin/users?limit=200");
   const dispUser = allUsers.items.find((u) => u.email === "smoke.dispatcher@example.com");
   if (!dispUser) throw new Error("Could not locate smoke.dispatcher user for P1 tests");
+
+  // Keyset cursor round-trip over HTTP: page the full user set one row at a time,
+  // following the opaque nextCursor, and assert we see every user exactly once
+  // (no drops, no dupes). Exercises the real base64 keyset cursor end-to-end.
+  {
+    const expectedIds = allUsers.items.map((u) => u.id);
+    const walked = [];
+    let cursor = null;
+    let guard = 0;
+    do {
+      const q = `/api/admin/users?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+      const page = await request(q);
+      walked.push(...page.items.map((u) => u.id));
+      cursor = page.hasMore ? page.nextCursor : null;
+      if (++guard > expectedIds.length + 5) throw new Error("user cursor walk did not terminate");
+    } while (cursor);
+    if (walked.length !== new Set(walked).size) {
+      throw new Error(`cursor walk produced duplicate users: ${walked.join(",")}`);
+    }
+    if (new Set(walked).size !== new Set(expectedIds).size) {
+      throw new Error(`cursor walk saw ${new Set(walked).size} users, expected ${new Set(expectedIds).size}`);
+    }
+    console.log("[OK] keyset cursor walk over /api/admin/users (no drops, no dupes)");
+  }
 
   // -- reset-password --------------------------------------------------------
   const reset1 = await request(`/api/admin/users/${dispUser.id}/reset-password`, {
