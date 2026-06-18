@@ -334,11 +334,27 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        // Redact tokens/passwords from request-log line to avoid leaking
-        // them into stdout / journald.
-        const safe = { ...capturedJsonResponse };
-        if (typeof (safe as any).totpSecret === "string") (safe as any).totpSecret = "[redacted]";
-        if (typeof (safe as any).password === "string") (safe as any).password = "[redacted]";
+        // Redact tokens/passwords/secrets from request-log line to avoid
+        // leaking them into stdout / journald. Several endpoints legitimately
+        // return one-time secrets in their body (TOTP setup → {secret}, admin
+        // reset-password → {temporaryPassword}, tracking-token → {token},
+        // signup/bootstrap → {totpSecret, otpauthUrl}); without redaction the
+        // per-request logger below would print them verbatim.
+        const safe = { ...capturedJsonResponse } as Record<string, unknown>;
+        const SECRET_RESPONSE_KEYS = [
+          "totpSecret",
+          "secret",
+          "password",
+          "temporaryPassword",
+          "token",
+          "owntracksUserId",
+          "otpauthUrl",
+          "osmandUrl",
+          "pendingConfirmationToken",
+        ];
+        for (const key of SECRET_RESPONSE_KEYS) {
+          if (typeof safe[key] === "string") safe[key] = "[redacted]";
+        }
         logLine += ` :: ${JSON.stringify(safe)}`;
       }
 

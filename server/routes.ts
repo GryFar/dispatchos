@@ -1860,7 +1860,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(storage.listBrokerRecords());
   });
 
-  app.get("/api/drive/folder-plan", (req, res) => {
+  app.get("/api/drive/folder-plan", requireRole("admin", "dispatcher"), (req, res) => {
     res.json(buildDrivePlan(String(req.query.clientId || "")));
   });
 
