@@ -90,13 +90,14 @@ function useStrippedHashLocation(): [string, (to: string, opts?: { replace?: boo
  * - Three top-level role spaces: /admin/*, /dispatch/*, /d/*. Each is
  *   guarded by <RoleGate>. Unauthenticated users get bounced to /login;
  *   wrong-role users get bounced to their portal's home (silent).
- * - "/" is a smart redirect: logged-in → defaultRouteForRole;
- *   not logged-in → /login.
+ * - "/" is a smart root: anonymous visitors see the marketing landing;
+ *   logged-in users are redirected to their portal home (defaultRouteForRole).
  *
  * Phase 4 P0 scope:
  *   - Driver portal /d/* реализован (dashboard, loads, load detail,
  *     documents stub, profile). API: /api/me/* (server/routes/me.ts).
- *   - /dispatch/* остаётся PortalStub до PR phase4-dispatcher-p0.
+ *   - Dispatcher portal /dispatch/* реализован (dashboard, clients, loads,
+ *     cockpit, queue, predictions). API: /api/dispatch/* (server/routes/dispatch.ts).
  */
 export default function App() {
   return (
@@ -134,8 +135,8 @@ export default function App() {
                 </RoleGate>
               </Route>
 
-              {/* Root redirect */}
-              <Route path="/" component={LandingPage} />
+              {/* Smart root: landing for anonymous, portal redirect when logged in */}
+              <Route path="/" component={RootRoute} />
 
               {/* 404 */}
               <Route component={NotFound} />
@@ -228,35 +229,36 @@ function DispatchRouter() {
   );
 }
 
-function RootRedirect() {
+/**
+ * Smart root route for "/".
+ * - while auth is resolving: a spinner (avoids flashing the landing then yanking
+ *   it away).
+ * - logged-in: redirect to the role's portal home (replace, so Back doesn't trap
+ *   the user on "/").
+ * - anonymous: the public marketing landing.
+ *
+ * Previously "/" rendered <LandingPage> unconditionally, so authenticated users
+ * who hit the root saw marketing instead of their dashboard.
+ */
+function RootRoute() {
   const { user, isLoading } = useAuth();
   const [, setLocation] = useLocation();
 
   useEffect(() => {
-    if (isLoading) return;
-    setLocation(user ? defaultRouteForRole(user.role) : "/login");
+    if (!isLoading && user) {
+      setLocation(defaultRouteForRole(user.role), { replace: true });
+    }
   }, [user, isLoading, setLocation]);
 
-  return (
-    <div className="flex h-screen items-center justify-center">
-      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-    </div>
-  );
-}
-
-function PortalStub({ portalName, note }: { portalName: string; note: string }) {
-  const { user } = useAuth();
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/30 px-4">
-      <div className="max-w-md space-y-3 rounded-lg border border-border bg-card p-8 text-center shadow-sm">
-        <h1 className="text-xl font-semibold tracking-tight">{portalName}</h1>
-        <p className="text-sm text-muted-foreground">{note}</p>
-        <div className="pt-3 text-xs text-muted-foreground">
-          Вошли как {user?.fullName} ({user?.email})
-        </div>
+  if (isLoading || user) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
-    </div>
-  );
+    );
+  }
+
+  return <LandingPage />;
 }
 
 /**

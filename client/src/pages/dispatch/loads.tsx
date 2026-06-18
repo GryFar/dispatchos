@@ -65,8 +65,13 @@ export default function DispatchLoadsPage() {
     return `/api/dispatch/loads?${params.toString()}`;
   }, [status, clientId]);
 
+  // Structured key under the ["dispatch","loads"] prefix so that a reassign in
+  // load-detail.tsx (qc.invalidateQueries({ queryKey: ["dispatch","loads"] }))
+  // prefix-matches and refetches this list regardless of the active filters.
+  // (Previously the key was the raw URL string [queryStr], which that
+  // invalidation could never match — the list stayed stale up to staleTime.)
   const { data, isLoading } = useQuery<ListResponse>({
-    queryKey: [queryStr],
+    queryKey: ["dispatch", "loads", status, clientId ?? null],
     queryFn: () => apiJson("GET", queryStr),
   });
 
