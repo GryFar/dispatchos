@@ -364,6 +364,22 @@ sqlite.exec(
   "CREATE INDEX IF NOT EXISTS audit_events_actor_created_id_idx ON audit_events(actor_user_id, created_at DESC, id DESC)",
 );
 
+// Enforce "one invoice per client per week" at the DB level — the app-level
+// pre-check (findInvoiceForClientWeek then insert) is TOCTOU-racy, so two
+// concurrent generate calls could double-bill a carrier. Created defensively: a
+// legacy DB that already contains duplicates would reject the unique index, so
+// we log and fall back to the app-level guard rather than crash on boot.
+try {
+  sqlite.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS invoices_client_week_uq ON invoices(client_id, week_start)",
+  );
+} catch (err) {
+  console.warn(
+    "[invoices] could not create UNIQUE(client_id, week_start) index — pre-existing duplicates?",
+    (err as Error).message,
+  );
+}
+
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS load_sources (
     id TEXT PRIMARY KEY,
