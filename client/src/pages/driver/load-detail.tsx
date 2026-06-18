@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Clock,
+  Fuel,
   Loader2,
 } from "lucide-react";
 import type {
@@ -276,6 +277,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
   const qc = useQueryClient();
   const [issueOpen, setIssueOpen] = useState(false);
   const [expenseOpen, setExpenseOpen] = useState(false);
+  const [fuelOpen, setFuelOpen] = useState(false);
 
   const checkinMutation = useMutation({
     mutationFn: (input: { kind: CheckinKind; lat?: number; lng?: number; notes?: string }) =>
@@ -351,6 +353,15 @@ function ActionButtons({ loadId }: { loadId: string }) {
           variant="outline"
           size="lg"
           className="h-auto flex-col gap-1.5 py-3"
+          onClick={() => setFuelOpen(true)}
+        >
+          <Fuel className="h-5 w-5" />
+          <span className="text-xs font-medium">Fuel</span>
+        </Button>
+        <Button
+          variant="outline"
+          size="lg"
+          className="h-auto flex-col gap-1.5 py-3"
           disabled={checkinMutation.isPending}
           onClick={() => withGeo("delivered")}
         >
@@ -370,6 +381,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
 
       <IssueDialog open={issueOpen} onOpenChange={setIssueOpen} loadId={loadId} />
       <ExpenseDialog open={expenseOpen} onOpenChange={setExpenseOpen} loadId={loadId} />
+      <FuelDialog open={fuelOpen} onOpenChange={setFuelOpen} loadId={loadId} />
     </>
   );
 }
@@ -601,6 +613,122 @@ function ExpenseDialog({
             onClick={() => mutation.mutate()}
             disabled={mutation.isPending || !amount || Number(amount) <= 0}
           >
+            {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {t("common.save")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Fuel dialog — logs a fuel purchase (feeds IFTA gallons + MPG)
+// ---------------------------------------------------------------------------
+function FuelDialog({
+  open,
+  onOpenChange,
+  loadId,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  loadId: string;
+}) {
+  const { t } = useT();
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [gallons, setGallons] = useState("");
+  const [price, setPrice] = useState("");
+  const [fuelType, setFuelType] = useState("diesel");
+  const [station, setStation] = useState("");
+  const [odometer, setOdometer] = useState("");
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      // Attach current GPS so IFTA can attribute the gallons to a state.
+      const coords = await new Promise<{ lat: number; lng: number } | null>((resolve) => {
+        if (!navigator.geolocation) return resolve(null);
+        navigator.geolocation.getCurrentPosition(
+          (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
+          () => resolve(null),
+          { enableHighAccuracy: true, timeout: 8000 },
+        );
+      });
+      return apiJson("POST", "/api/me/fuel", {
+        loadId,
+        gallons: Number(gallons),
+        pricePerGallon: Number(price),
+        fuelType,
+        stationName: station || undefined,
+        odometerMiles: odometer ? Number(odometer) : undefined,
+        ...(coords ? { stationLat: coords.lat, stationLng: coords.lng } : {}),
+      });
+    },
+    onSuccess: () => {
+      toast({ title: "Fuel logged" });
+      qc.invalidateQueries({ queryKey: ["/api/me/fuel"] });
+      onOpenChange(false);
+      setGallons("");
+      setPrice("");
+      setStation("");
+      setOdometer("");
+      setFuelType("diesel");
+    },
+    onError: (err: ApiError) =>
+      toast({ variant: "destructive", title: "Couldn't log fuel", description: err.message }),
+  });
+
+  const total = gallons && price ? (Number(gallons) * Number(price)).toFixed(2) : null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Log fuel</DialogTitle>
+          <DialogDescription>
+            Feeds your IFTA gallons + MPG. Your current location is attached for state attribution.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="fuel-gal">Gallons</Label>
+              <Input id="fuel-gal" type="number" step="0.01" min="0.01" value={gallons}
+                onChange={(e) => setGallons(e.target.value)} className="h-11" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="fuel-ppg">$/gallon</Label>
+              <Input id="fuel-ppg" type="number" step="0.001" min="0.01" value={price}
+                onChange={(e) => setPrice(e.target.value)} className="h-11" />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="fuel-type">Fuel type</Label>
+            <Select value={fuelType} onValueChange={setFuelType}>
+              <SelectTrigger id="fuel-type" className="h-11"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="diesel">Diesel</SelectItem>
+                <SelectItem value="gasoline">Gasoline</SelectItem>
+                <SelectItem value="def">DEF</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="fuel-station">Station (optional)</Label>
+            <Input id="fuel-station" value={station} maxLength={120}
+              onChange={(e) => setStation(e.target.value)} className="h-11" placeholder="Pilot, Love's..." />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="fuel-odo">Odometer (optional)</Label>
+            <Input id="fuel-odo" type="number" min="0" value={odometer}
+              onChange={(e) => setOdometer(e.target.value)} className="h-11" />
+          </div>
+          {total && <p className="text-sm text-muted-foreground">Total: ${total}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{t("common.cancel")}</Button>
+          <Button onClick={() => mutation.mutate()}
+            disabled={mutation.isPending || !gallons || !price || Number(gallons) <= 0 || Number(price) <= 0}>
             {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {t("common.save")}
           </Button>

@@ -19,6 +19,7 @@ import type {
   DriverLocation,
   DriverStatus,
   ExpenseCategory,
+  FuelTransaction,
   InsertClient,
   InsertDocument,
   InsertLoad,
@@ -53,6 +54,27 @@ function rowToSignupLead(row: Record<string, unknown>): SignupLead {
     createdAt: row.created_at as string,
     name: (row.name as string | null) ?? null,
     note: (row.note as string | null) ?? null,
+  };
+}
+
+function rowToFuelTransaction(row: Record<string, unknown>): FuelTransaction {
+  return {
+    id: row.id as string,
+    userId: row.user_id as string,
+    clientId: (row.client_id as string | null) ?? null,
+    loadId: (row.load_id as string | null) ?? null,
+    stationName: (row.station_name as string | null) ?? null,
+    stationLat: (row.station_lat as number | null) ?? null,
+    stationLng: (row.station_lng as number | null) ?? null,
+    fuelType: row.fuel_type as string,
+    gallons: row.gallons as number,
+    pricePerGallonCents: row.price_per_gallon_cents as number,
+    totalCents: row.total_cents as number,
+    odometerMiles: (row.odometer_miles as number | null) ?? null,
+    receiptStoragePath: (row.receipt_storage_path as string | null) ?? null,
+    notes: (row.notes as string | null) ?? null,
+    occurredAt: row.occurred_at as string,
+    createdAt: row.created_at as string,
   };
 }
 
@@ -4501,6 +4523,50 @@ export const storage = {
   },
 
   /** Recent fuel transactions for a client (carrier) in the given window. */
+  // Write a driver's fuel purchase. This is the path that was missing: the
+  // fuel_transactions table is read by IFTA (gallons-per-state) + MPG, but
+  // nothing wrote driver purchases into it, so those reports were always empty.
+  recordFuelTransaction(input: {
+    userId: string;
+    clientId?: string | null;
+    loadId?: string | null;
+    stationName?: string | null;
+    stationLat?: number | null;
+    stationLng?: number | null;
+    fuelType: string;
+    gallons: number;
+    pricePerGallonCents: number;
+    totalCents: number;
+    odometerMiles?: number | null;
+    receiptStoragePath?: string | null;
+    notes?: string | null;
+    occurredAt: string;
+  }): string {
+    const id = makeId("fueltx");
+    sqlite.prepare(`
+      INSERT INTO fuel_transactions (
+        id, user_id, client_id, load_id, station_place_id, station_name,
+        station_lat, station_lng, fuel_type, gallons, price_per_gallon_cents,
+        total_cents, odometer_miles, receipt_storage_path, notes,
+        occurred_at, created_at
+      ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, input.userId, input.clientId ?? null, input.loadId ?? null,
+      input.stationName ?? null, input.stationLat ?? null, input.stationLng ?? null,
+      input.fuelType, input.gallons, input.pricePerGallonCents, input.totalCents,
+      input.odometerMiles ?? null, input.receiptStoragePath ?? null, input.notes ?? null,
+      input.occurredAt, now(),
+    );
+    return id;
+  },
+
+  getFuelTransaction(id: string): FuelTransaction | undefined {
+    const row = sqlite
+      .prepare("SELECT * FROM fuel_transactions WHERE id = ?")
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? rowToFuelTransaction(row) : undefined;
+  },
+
   listFuelTransactionsForClient(clientId: string, sinceIso: string) {
     return sqlite.prepare(`
       SELECT * FROM fuel_transactions

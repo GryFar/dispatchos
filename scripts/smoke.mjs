@@ -2307,6 +2307,69 @@ try {
   }
   console.log("[OK] P1 GET /api/me/expenses?loadId= filter");
 
+  // -- Fuel transactions: log + list + scoping (feeds IFTA gallons) ----------
+  cookieHeader = driverACookie;
+  const fuelEmpty = await request("/api/me/fuel");
+  if (!Array.isArray(fuelEmpty.items) || fuelEmpty.items.length !== 0) {
+    throw new Error(`fuel: empty shape unexpected: ${JSON.stringify(fuelEmpty)}`);
+  }
+  console.log("[OK] GET /api/me/fuel (empty)");
+
+  const fuelTx = await request("/api/me/fuel", {
+    method: "POST",
+    body: {
+      loadId: driverALoad.id,
+      gallons: 50,
+      pricePerGallon: 4.3,
+      fuelType: "diesel",
+      stationName: "Pilot Dallas",
+      stationLat: 32.8,
+      stationLng: -96.8,
+      occurredAt: "2026-05-15T12:00:00.000Z",
+    },
+  });
+  if (fuelTx.gallons !== 50 || fuelTx.pricePerGallonCents !== 430) {
+    throw new Error(`fuel: shape wrong: ${JSON.stringify(fuelTx)}`);
+  }
+  // total omitted -> auto-computed: 50 * $4.30 = $215.00 -> 21500 cents.
+  if (fuelTx.totalCents !== 21500) {
+    throw new Error(`fuel: total not auto-computed, got ${fuelTx.totalCents}`);
+  }
+  if (fuelTx.userId !== driverA.id) throw new Error("fuel: userId leak/mismatch");
+  console.log("[OK] POST /api/me/fuel (log + total auto-compute)");
+
+  const fuelList = await request("/api/me/fuel");
+  if (fuelList.items.length !== 1 || fuelList.items[0].id !== fuelTx.id) {
+    throw new Error("fuel: list did not return the logged tx");
+  }
+  console.log("[OK] GET /api/me/fuel (lists own)");
+
+  // Cross-driver loadId -> 404 (anti-enumeration).
+  cookieHeader = driverB2Cookie;
+  let fuelCross = 0;
+  try {
+    await request("/api/me/fuel", {
+      method: "POST",
+      body: { loadId: driverALoad.id, gallons: 10, pricePerGallon: 4 },
+    });
+  } catch (e) {
+    fuelCross = Number(String(e.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (fuelCross !== 404) throw new Error(`fuel: cross-driver loadId should 404, got ${fuelCross}`);
+  console.log("[OK] POST /api/me/fuel 404 on cross-driver loadId");
+
+  // Admin (non-driver) -> 403.
+  cookieHeader = adminCookieHeader;
+  let fuelForbidden = 0;
+  try {
+    await request("/api/me/fuel", { method: "POST", body: { gallons: 10, pricePerGallon: 4 } });
+  } catch (e) {
+    fuelForbidden = Number(String(e.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (fuelForbidden !== 403) throw new Error(`fuel: non-driver should 403, got ${fuelForbidden}`);
+  console.log("[OK] POST /api/me/fuel 403 for non-driver");
+  cookieHeader = driverACookie;
+
   // -- P1 issues: create driver_issue task ----------------------------------
   const issueTask = await request("/api/me/issues", {
     method: "POST",
