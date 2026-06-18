@@ -225,6 +225,14 @@ proc.stderr.on("data", (data) => {
 try {
   await waitForServer(proc);
 
+  // Boot must be clean: the auth rate-limiter's custom keyGenerator has to
+  // normalize IPs via ipKeyGenerator, or express-rate-limit warns
+  // ERR_ERL_KEY_GEN_IPV6 (an IPv6 client could otherwise bypass the limit).
+  if (/ERR_ERL_KEY_GEN_IPV6/.test(output)) {
+    throw new Error("server logged ERR_ERL_KEY_GEN_IPV6 — rate-limiter keyGenerator must use ipKeyGenerator");
+  }
+  console.log("[OK] server boots without rate-limiter IPv6 keygen warning");
+
   const health = await request("/api/health");
   if (!health.ok) throw new Error("/api/health did not return ok=true");
 

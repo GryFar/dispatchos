@@ -5,7 +5,7 @@ import "./instrument";
 import * as Sentry from "@sentry/node";
 import express, { Response, NextFunction } from "express";
 import type { Request } from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import session from "express-session";
 import connectSqlite3 from "connect-sqlite3";
 import path from "node:path";
@@ -244,10 +244,15 @@ if (AUTH_RATE_LIMIT_ENABLED) {
     legacyHeaders: false,
     skip: skipTrusted,
     keyGenerator: (req) => {
-      const ip = req.ip || "unknown";
+      // Normalize the IP via ipKeyGenerator so IPv6 clients are grouped by
+      // their /64 subnet. Without it (raw req.ip), an attacker on IPv6 can vary
+      // the address suffix within their allocation to mint unlimited distinct
+      // keys and bypass this brute-force limit (express-rate-limit v8 flags this
+      // as ERR_ERL_KEY_GEN_IPV6).
+      const ipKey = ipKeyGenerator(req.ip || "unknown");
       const body = (req.body || {}) as { email?: string; username?: string; token?: string };
       const ident = (body.email || body.username || "").toString().toLowerCase().trim();
-      return ident ? `${ip}|${ident}` : ip;
+      return ident ? `${ipKey}|${ident}` : ipKey;
     },
     message: { message: "Too many attempts. Try again in 15 minutes." },
   });
