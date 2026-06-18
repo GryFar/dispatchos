@@ -2565,11 +2565,18 @@ export const storage = {
     if (!existing) return { notFound: true };
     if (existing.status !== "pending") return { alreadyReviewed: existing.status };
     const reviewedAt = new Date().toISOString();
-    sqlite.prepare(
+    // Conditional on status='pending' so two concurrent reviewers can't both win
+    // the read-check and double-process (e.g. approve + reject). changes===0 means
+    // someone else already transitioned it.
+    const res = sqlite.prepare(
       `UPDATE signup_leads
        SET status = 'approved', approved_invite_code = ?, reviewed_by_user_id = ?, reviewed_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND status = 'pending'`,
     ).run(inviteCode, reviewerUserId, reviewedAt, id);
+    if (res.changes === 0) {
+      const cur = this.getSignupLead(id);
+      return cur ? { alreadyReviewed: cur.status } : { notFound: true };
+    }
     this.audit("lead.approved", "signup_lead", id, {
       email: existing.email,
       inviteCode,
@@ -2589,11 +2596,15 @@ export const storage = {
     if (existing.status !== "pending") return { alreadyReviewed: existing.status };
     const reviewedAt = new Date().toISOString();
     const newStatus: SignupLeadStatus = spam ? "spam" : "rejected";
-    sqlite.prepare(
+    const res = sqlite.prepare(
       `UPDATE signup_leads
        SET status = ?, reviewed_by_user_id = ?, reviewed_at = ?, reject_reason = ?
-       WHERE id = ?`,
+       WHERE id = ? AND status = 'pending'`,
     ).run(newStatus, reviewerUserId, reviewedAt, reason, id);
+    if (res.changes === 0) {
+      const cur = this.getSignupLead(id);
+      return cur ? { alreadyReviewed: cur.status } : { notFound: true };
+    }
     this.audit(spam ? "lead.spam" : "lead.rejected", "signup_lead", id, {
       email: existing.email,
       reviewerUserId,
@@ -3104,7 +3115,21 @@ export const storage = {
     }
 
     params.push(id);
-    sqlite.prepare(`UPDATE invoices SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+    // When the status is changing, make the write conditional on the status we
+    // validated against, so two concurrent transitions can't both apply (TOCTOU).
+    const statusChanging = patch.status !== undefined && patch.status !== existing.status;
+    let whereSql = "id = ?";
+    if (statusChanging) {
+      whereSql += " AND status = ?";
+      params.push(existing.status);
+    }
+    const res = sqlite.prepare(`UPDATE invoices SET ${sets.join(", ")} WHERE ${whereSql}`).run(...params);
+    if (statusChanging && res.changes === 0) {
+      const cur = this.getInvoice(id);
+      return cur
+        ? { invalidTransition: true, from: cur.status, to: patch.status! }
+        : { notFound: true };
+    }
     const updated = this.getInvoice(id)!;
     if (patch.status !== undefined && patch.status !== existing.status) {
       this.audit("invoice.status_changed", "invoice", id, {
@@ -5474,13 +5499,16 @@ export const storage = {
     const newPayload = resolution
       ? { ...current.payload, resolution }
       : current.payload;
-    sqlite
+    // Conditional on the still-open status so two concurrent resolve/dismiss
+    // calls can't both apply; changes===0 means another won the race.
+    const res = sqlite
       .prepare(
         `UPDATE approval_tasks
          SET status = ?, resolved_by_user_id = ?, resolved_at = ?, payload = ?
-         WHERE id = ?`,
+         WHERE id = ? AND status = ?`,
       )
-      .run(newStatus, resolverUserId, ts, JSON.stringify(newPayload), id);
+      .run(newStatus, resolverUserId, ts, JSON.stringify(newPayload), id, current.status);
+    if (res.changes === 0) return null;
     return {
       ...current,
       status: newStatus,
