@@ -265,6 +265,26 @@ if (AUTH_RATE_LIMIT_ENABLED) {
   console.log(
     "[auth] brute-force limiter ENABLED (15min / 20 attempts per IP+email)",
   );
+
+  // M1: public GPS ingest (/api/track/*) is token-only auth. A real device pings
+  // every ~30-60s, so 60/min PER TRACKING TOKEN is generous — this caps GPS
+  // spoofing / flooding even when an attacker holds a valid token.
+  const trackLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: skipTrusted,
+    keyGenerator: (req) => {
+      const q = req.query as Record<string, unknown>;
+      const hdr = req.headers["x-limit-u"];
+      const tok = String(q?.id ?? q?.token ?? (Array.isArray(hdr) ? hdr[0] : hdr) ?? "").trim();
+      return tok || req.ip || "track-anon";
+    },
+    message: { message: "Too many tracking pings." },
+  });
+  app.use("/api/track", trackLimiter);
+  console.log("[track] per-token GPS rate limiter ENABLED (60/min)");
 } else {
   console.log(
     "[auth] brute-force limiter DISABLED (set DISPATCHOS_AUTH_RATE_LIMIT=on to re-enable).",
