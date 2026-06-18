@@ -79,10 +79,15 @@ const MINUTE = 60 * 1000;
 // Short-lived (10 min) HMAC-SHA256-signed tokens used during TOTP onboarding.
 // Issued by POST /api/auth/signup (instead of a full session), consumed by
 // POST /api/auth/totp/confirm-signup once the user verifies their first code.
-// Derives from SESSION_SECRET — no new env var needed.
+// Derives from the session secret — the real env var is DISPATCHOS_SESSION_SECRET
+// (server/index.ts boot gate guarantees it is strong in prod). The unprefixed
+// SESSION_SECRET is kept only as a documented alias; the hardcoded fallback is
+// dev-only (prod can never reach it because the boot gate requires the prefixed var).
 const PENDING_TOKEN_SECRET = crypto
   .createHash("sha256")
-  .update(`pending-totp-${process.env.SESSION_SECRET || "dispatchos-dev-secret"}`)
+  .update(
+    `pending-totp-${process.env.DISPATCHOS_SESSION_SECRET || process.env.SESSION_SECRET || "dispatchos-dev-secret"}`,
+  )
   .digest();
 
 function makePendingConfirmationToken(userId: string): string {

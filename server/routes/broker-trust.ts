@@ -15,7 +15,7 @@
 
 import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError, z } from "zod";
-import { getCurrentUser } from "../auth";
+import { getCurrentUser, requireRole } from "../auth";
 import { storage } from "../storage";
 import {
   computeTrustScore,
@@ -42,20 +42,10 @@ function ah(
   };
 }
 
-// Allow dispatcher OR admin. (requireRole in this codebase gates a single
-// role; we check inside the handler to permit both cleanly.)
-function requireDispatcherOrAdmin(req: Request, res: Response): { id: string; role: string } | null {
-  const user = getCurrentUser(req);
-  if (!user) {
-    res.status(401).json({ message: "Authentication required" });
-    return null;
-  }
-  if (user.role !== "dispatcher" && user.role !== "admin") {
-    res.status(403).json({ message: "Role not allowed. Required: dispatcher or admin." });
-    return null;
-  }
-  return { id: user.id, role: user.role };
-}
+// Auth for every route below is enforced at the route level via
+// requireRole("dispatcher", "admin") middleware (see registrations). That
+// middleware returns 401 (unauthenticated) / 403 (wrong role) before the
+// handler runs, so handlers can assume an authorised dispatcher|admin caller.
 
 const reportSignalSchema = z.object({
   brokerMc: z.string().min(1),
@@ -96,9 +86,13 @@ export function registerBrokerTrustRoutes(app: Express): void {
   // -------------------------------------------------------------------------
   app.post(
     "/api/broker-trust/signal",
+    requireRole("dispatcher", "admin"),
     ah((req, res) => {
-      const actor = requireDispatcherOrAdmin(req, res);
-      if (!actor) return;
+      // Middleware guarantees an authorised dispatcher|admin; resolve the
+      // actor for attribution. The guard is belt-and-suspenders (never null
+      // in practice) and keeps the type non-nullable.
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
 
       const body = reportSignalSchema.parse(req.body);
 
@@ -138,10 +132,8 @@ export function registerBrokerTrustRoutes(app: Express): void {
   // -------------------------------------------------------------------------
   app.get(
     "/api/broker-trust/top",
+    requireRole("dispatcher", "admin"),
     ah((req, res) => {
-      const actor = requireDispatcherOrAdmin(req, res);
-      if (!actor) return;
-
       const direction = req.query.direction === "negative" ? "negative" : "positive";
       const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
 
@@ -170,10 +162,8 @@ export function registerBrokerTrustRoutes(app: Express): void {
   // -------------------------------------------------------------------------
   app.get(
     "/api/broker-trust/:mc",
+    requireRole("dispatcher", "admin"),
     ah((req, res) => {
-      const actor = requireDispatcherOrAdmin(req, res);
-      if (!actor) return;
-
       const mc = String(req.params.mc ?? "");
       const rows = storage.listBrokerTrustSignalsByMc(mc);
       const signals: TrustSignalLike[] = rows.map((r) => ({
