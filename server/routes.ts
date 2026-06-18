@@ -79,10 +79,15 @@ const MINUTE = 60 * 1000;
 // Short-lived (10 min) HMAC-SHA256-signed tokens used during TOTP onboarding.
 // Issued by POST /api/auth/signup (instead of a full session), consumed by
 // POST /api/auth/totp/confirm-signup once the user verifies their first code.
-// Derives from SESSION_SECRET — no new env var needed.
+// Derives from the session secret — the real env var is DISPATCHOS_SESSION_SECRET
+// (server/index.ts boot gate guarantees it is strong in prod). The unprefixed
+// SESSION_SECRET is kept only as a documented alias; the hardcoded fallback is
+// dev-only (prod can never reach it because the boot gate requires the prefixed var).
 const PENDING_TOKEN_SECRET = crypto
   .createHash("sha256")
-  .update(`pending-totp-${process.env.SESSION_SECRET || "dispatchos-dev-secret"}`)
+  .update(
+    `pending-totp-${process.env.DISPATCHOS_SESSION_SECRET || process.env.SESSION_SECRET || "dispatchos-dev-secret"}`,
+  )
   .digest();
 
 function makePendingConfirmationToken(userId: string): string {
@@ -2191,6 +2196,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const user = getCurrentUser(req);
       if (user) {
+        // Don't let the verify flow silently swap an already-set phone: a number
+        // change must go through the proper change-phone path. First-time set
+        // during onboarding (no phone yet) is allowed.
+        if (user.phone && user.phone !== phone) {
+          storage.audit("phone.verify_mismatch", "user", user.id, { phone, accountPhone: user.phone });
+          return res.status(403).json({ ok: false, error: "phone_mismatch" });
+        }
         storage.markPhoneVerified(user.id, phone);
         storage.audit("phone.verified", "user", user.id, { phone });
       }
@@ -2258,6 +2270,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const user = getCurrentUser(req);
       if (user) {
+        // Bind verification to the account's OWN email: proving control of some
+        // other address must not mark this account's email verified
+        // (markEmailVerified ignores which email was checked).
+        if ((user.email || "").toLowerCase() !== email) {
+          storage.audit("email.verify_mismatch", "user", user.id, { email, accountEmail: user.email });
+          return res.status(403).json({ ok: false, error: "email_mismatch" });
+        }
         storage.markEmailVerified(user.id);
         storage.audit("email.verified", "user", user.id, { email });
       }

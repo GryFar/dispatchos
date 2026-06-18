@@ -70,10 +70,26 @@ export default function BillingStripePage() {
   const { toast } = useToast();
   const [location] = useLocation();
   const [busy, setBusy] = useState<string | null>(null);
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+
+  // Billing is per-carrier (each client has its own plan/subscription). The
+  // backend no longer guesses a carrier when several exist (V4-009), so the
+  // admin must pick one — and we thread that clientId through every call.
+  const clientsQ = useQuery<Array<{ id: string; name: string }>>({
+    queryKey: ["/api/clients"],
+    queryFn: () => apiJson("GET", "/api/clients"),
+  });
+  const clients = clientsQ.data ?? [];
+  // Effective carrier: explicit selection, or the sole client in a single-tenant env.
+  const clientId = selectedClientId ?? (clients.length === 1 ? clients[0]!.id : null);
+  const clientIdParam = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
 
   const statusQ = useQuery<BillingStatus>({
-    queryKey: ["/api/billing/status"],
-    queryFn: () => apiJson("GET", "/api/billing/status"),
+    queryKey: ["/api/billing/status", clientId],
+    queryFn: () => apiJson("GET", `/api/billing/status${clientIdParam}`),
+    // Don't call status until a carrier is resolved (avoids the 404 when
+    // multiple carriers exist and none is selected yet).
+    enabled: !clientsQ.isLoading && (clients.length <= 1 || clientId != null),
   });
 
   const pricingQ = useQuery<{ plans: PlanDto[]; trialDays: number }>({
@@ -87,7 +103,7 @@ export default function BillingStripePage() {
   async function startCheckout(tier: string) {
     setBusy(tier);
     try {
-      const res = await apiJson<{ url: string }>("POST", "/api/billing/checkout", {
+      const res = await apiJson<{ url: string }>("POST", `/api/billing/checkout${clientIdParam}`, {
         tier,
         successPath: "/admin/billing",
         cancelPath: "/admin/billing",
@@ -106,7 +122,7 @@ export default function BillingStripePage() {
   async function openPortal() {
     setBusy("portal");
     try {
-      const res = await apiJson<{ url: string }>("POST", "/api/billing/portal", {});
+      const res = await apiJson<{ url: string }>("POST", `/api/billing/portal${clientIdParam}`, {});
       window.location.href = res.url;
     } catch (err) {
       toast({
@@ -118,7 +134,51 @@ export default function BillingStripePage() {
     }
   }
 
-  if (statusQ.isLoading || pricingQ.isLoading) {
+  const carrierPicker =
+    clients.length > 1 ? (
+      <div className="flex items-center gap-2">
+        <label htmlFor="billing-carrier" className="text-xs font-medium text-muted-foreground">
+          Перевозчик
+        </label>
+        <select
+          id="billing-carrier"
+          value={clientId ?? ""}
+          onChange={(e) => setSelectedClientId(e.target.value || null)}
+          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+        >
+          <option value="">— выберите —</option>
+          {clients.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      </div>
+    ) : null;
+
+  if (clientsQ.isLoading || pricingQ.isLoading) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Multiple carriers and none chosen yet — prompt for a selection.
+  if (clients.length > 1 && !clientId) {
+    return (
+      <div className="max-w-2xl space-y-4">
+        {carrierPicker}
+        <Card>
+          <CardContent className="p-4 text-sm text-muted-foreground">
+            Выберите перевозчика, чтобы посмотреть и изменить его подписку.
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (statusQ.isLoading) {
     return (
       <div className="flex h-64 items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -173,6 +233,7 @@ export default function BillingStripePage() {
 
   return (
     <div className="space-y-6">
+      {carrierPicker}
       {/* Checkout return banner */}
       {checkoutOutcome === "success" && (
         <Card className="border-emerald-300/40 bg-emerald-50/30 dark:bg-emerald-950/10">

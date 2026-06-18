@@ -58,14 +58,26 @@ function resolveCallerClientId(req: Request): string | null {
 
   if (user.role === "admin") {
     if (queryId) return queryId;
-    // Default to the first client. Multi-carrier admin can pass clientId.
+    // No explicit ?clientId: fall back to the single client ONLY when there is
+    // exactly one (unambiguous single-tenant env). Billing is per-carrier
+    // (planTier/billingStatus live on the client), so silently picking
+    // clients[0] in a multi-carrier env could read — or worse, create a Stripe
+    // Checkout/Portal session against — the WRONG carrier (V4-009 tenant
+    // collapse). When ambiguous, return null so handlers respond 404 and the
+    // caller must pass an explicit ?clientId.
     const clients = storage.listClients();
-    return clients[0]?.id ?? null;
+    return clients.length === 1 ? clients[0]!.id : null;
   }
   if (user.role === "dispatcher") {
-    // Dispatcher must have a clientId scope on the query; security handled
-    // in storage layer.
-    return queryId;
+    // Tenant-scope (V5): the requested clientId MUST be one of the dispatcher's
+    // active assignments. getClient does no scoping, so returning the raw query
+    // value here was a cross-tenant read (IDOR) — a dispatcher could read any
+    // carrier's billing by guessing an id. Reject anything not assigned to them.
+    if (!queryId) return null;
+    const isAssigned = storage
+      .listAssignmentsForDispatcher(user.id)
+      .some((a) => a.clientId === queryId);
+    return isAssigned ? queryId : null;
   }
   // driver
   return user.linkedClientId ?? null;

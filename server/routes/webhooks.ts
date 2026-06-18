@@ -81,17 +81,22 @@ export function registerWebhookRoutes(app: Express): void {
   app.post("/api/webhooks/resend", (req: Request, res: Response) => {
     const secret = process.env.RESEND_WEBHOOK_SECRET;
 
-    if (secret) {
-      const svixId = req.headers["svix-id"] as string | undefined;
-      const svixTimestamp = req.headers["svix-timestamp"] as string | undefined;
-      const svixSignature = req.headers["svix-signature"] as string | undefined;
-      // express.json verify hook stores rawBody as a Buffer (see server/index.ts).
-      // svix signature needs the EXACT bytes Resend signed.
-      const rawBuf = (req as unknown as { rawBody?: Buffer }).rawBody;
-      const rawBody = rawBuf ? rawBuf.toString("utf8") : JSON.stringify(req.body);
-      if (!verifyResendSignature(rawBody, svixId, svixTimestamp, svixSignature, secret)) {
-        return res.status(401).json({ message: "Invalid signature" });
-      }
+    // Fail closed: without the signing secret we cannot authenticate the sender.
+    // Accepting unsigned payloads would let anyone write arbitrary resend.* rows
+    // into the audit log. Mirror the cron/inbound handlers (503 when unconfigured).
+    if (!secret) {
+      return res.status(503).json({ message: "Resend webhook not configured" });
+    }
+
+    const svixId = req.headers["svix-id"] as string | undefined;
+    const svixTimestamp = req.headers["svix-timestamp"] as string | undefined;
+    const svixSignature = req.headers["svix-signature"] as string | undefined;
+    // express.json verify hook stores rawBody as a Buffer (see server/index.ts).
+    // svix signature needs the EXACT bytes Resend signed.
+    const rawBuf = (req as unknown as { rawBody?: Buffer }).rawBody;
+    const rawBody = rawBuf ? rawBuf.toString("utf8") : JSON.stringify(req.body);
+    if (!verifyResendSignature(rawBody, svixId, svixTimestamp, svixSignature, secret)) {
+      return res.status(401).json({ message: "Invalid signature" });
     }
 
     const event = req.body as ResendWebhookEvent;

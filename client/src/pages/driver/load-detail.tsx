@@ -284,7 +284,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
       toast({ title: t("driver.load_detail.checkin.saved") });
       qc.invalidateQueries({ queryKey: ["me", "load", loadId, "checkins"] });
       qc.invalidateQueries({ queryKey: ["me", "load", loadId] });
-      qc.invalidateQueries({ queryKey: ["/api/me/dashboard"] });
+      qc.invalidateQueries({ queryKey: ["me", "dashboard"] });
     },
     onError: (err: ApiError) => {
       toast({
@@ -406,7 +406,7 @@ function IssueDialog({
         title: t("common.success"),
         description: "Your dispatcher has been notified.",
       });
-      qc.invalidateQueries({ queryKey: ["/api/me/dashboard"] });
+      qc.invalidateQueries({ queryKey: ["me", "dashboard"] });
       onOpenChange(false);
       setTitle("");
       setDescription("");

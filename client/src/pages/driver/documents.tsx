@@ -104,7 +104,7 @@ export default function DriverDocumentsPage() {
     onSuccess: () => {
       toast({ title: t("driver.documents.upload_ok") });
       qc.invalidateQueries({ queryKey: ["/api/me/documents"] });
-      qc.invalidateQueries({ queryKey: ["/api/me/dashboard"] });
+      qc.invalidateQueries({ queryKey: ["me", "dashboard"] });
       setExpiresAt("");
       setNotes("");
       if (fileRef.current) fileRef.current.value = "";
@@ -123,7 +123,7 @@ export default function DriverDocumentsPage() {
     onSuccess: () => {
       toast({ title: t("driver.documents.upload_ok") });
       qc.invalidateQueries({ queryKey: ["/api/me/documents"] });
-      qc.invalidateQueries({ queryKey: ["/api/me/dashboard"] });
+      qc.invalidateQueries({ queryKey: ["me", "dashboard"] });
     },
     onError: (err: ApiError) => {
       toast({

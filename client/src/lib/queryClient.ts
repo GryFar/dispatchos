@@ -43,7 +43,7 @@ export async function apiRequest(
     method,
     headers: data ? { "Content-Type": "application/json" } : {},
     body: data ? JSON.stringify(data) : undefined,
-    credentials: "same-origin",
+    credentials: "include",
   });
   await throwIfResNotOk(res);
   return res;
@@ -59,7 +59,7 @@ export async function apiJson<T = unknown>(
     method,
     headers: data ? { "Content-Type": "application/json" } : {},
     body: data ? JSON.stringify(data) : undefined,
-    credentials: "same-origin",
+    credentials: "include",
   });
   await throwIfResNotOk(res);
   const text = await res.text();
@@ -74,7 +74,7 @@ export const getQueryFn: <T>(options: {
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
     const url = queryKey.join("/");
-    const res = await fetch(`${API_BASE}${url}`, { credentials: "same-origin" });
+    const res = await fetch(`${API_BASE}${url}`, { credentials: "include" });
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;
     }
