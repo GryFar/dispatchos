@@ -21,6 +21,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -123,12 +124,20 @@ export function useT() {
  */
 export function useSyncLangWithUser(serverLang: Lang | null | undefined) {
   const { lang, setLang } = useT();
+  // Reconcile server -> local ONCE, on the first time we see a server-side
+  // choice after login. Without this guard the effect re-runs on every local
+  // `lang` change (lang is a dependency), and because the cached useAuth()
+  // user still carries the OLD preferredLang, it immediately overwrites the
+  // user's fresh pick — the language flips for a frame and snaps back. The
+  // one-shot ref lets the server win on initial adoption (new device) while
+  // letting subsequent in-session switches stick.
+  const reconciled = useRef(false);
   useEffect(() => {
+    if (reconciled.current) return;
     if (!serverLang) return;
     if (!isValidLang(serverLang)) return;
+    reconciled.current = true;
     if (serverLang !== lang) {
-      // Server wins on initial reconciliation — user may have set it on
-      // another device. We don't re-POST since the server already knows.
       try {
         window.localStorage.setItem(STORAGE_KEY, serverLang);
       } catch {
