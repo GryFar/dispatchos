@@ -94,6 +94,24 @@ function rowToBrokerEvent(row: Record<string, unknown>): BrokerEvent {
 const sqlite = new Database(process.env.DISPATCHOS_DB_PATH || "dispatchos-unified.db");
 sqlite.pragma("journal_mode = WAL");
 
+/**
+ * Checkpoint the WAL and close the DB cleanly on shutdown. Without this, every
+ * Fly rolling deploy (SIGTERM) leaves a growing -wal that's never truncated and
+ * risks corruption if SIGKILL lands mid-checkpoint. Safe to call once at exit.
+ */
+export function closeDatabase(): void {
+  try {
+    sqlite.pragma("wal_checkpoint(TRUNCATE)");
+  } catch (err) {
+    console.error("[storage] wal_checkpoint failed:", err);
+  }
+  try {
+    sqlite.close();
+  } catch (err) {
+    console.error("[storage] sqlite.close failed:", err);
+  }
+}
+
 // Audit Critical #5 (2026-05-26): включаем FK enforcement на все будущие
 // CREATE TABLE с FOREIGN KEY clauses. Существующие таблицы FK в DDL не имеют
 // — этот флаг НИЧЕГО не ломает в текущей базе, но разблокирует возможность
@@ -3301,6 +3319,73 @@ export const storage = {
     });
     this.audit("client.restored", "client", id, { actorUserId: actorUserId ?? null });
     return updated;
+  },
+
+  /**
+   * P0.1 — provision a carrier when a user completes onboarding: create the
+   * `clients` record, link the user (linkedClientId), and start the 14-day
+   * trial. Previously onboarding-complete only wrote progress, so the carrier
+   * never existed (dispatch board had nothing to score; requireActiveBilling
+   * read a missing client). Atomic + idempotent (skips if already linked).
+   */
+  provisionCarrierFromOnboarding(
+    userId: string,
+    input: {
+      persona: "owner_operator" | "fleet" | "enterprise";
+      companyName?: string;
+      planTier?: string;
+    },
+  ): Client | { skipped: "already_linked" | "user_not_found" } {
+    const user = this.getUserById(userId);
+    if (!user) return { skipped: "user_not_found" };
+    if (user.linkedClientId) return { skipped: "already_linked" };
+    const claimed = this.findMcByUserId(userId);
+    const nowIso = now();
+    const planTier =
+      input.planTier ||
+      (input.persona === "owner_operator"
+        ? "oo_basic"
+        : input.persona === "fleet"
+          ? "fleet_starter"
+          : "enterprise");
+    const txn = sqlite.transaction(() => {
+      const created = this.upsertClient({
+        name: input.companyName || user.fullName || "My Carrier",
+        mc: claimed?.mcNormalized ?? "",
+        equipment: "open_car_hauler",
+        targetPpm: input.persona === "owner_operator" ? 2.5 : 2.2,
+        minimumPpm: input.persona === "owner_operator" ? 2.0 : 1.9,
+        mpg: 9,
+        fuelPrice: 3.6,
+        fixedCostPerMile: 0.4,
+        preferredLanes: [],
+        avoidStates: [],
+        currentLocation: {
+          city: "",
+          state: "",
+          lat: 39.8283,
+          lng: -98.5795,
+          source: "manual_checkin",
+          updatedAt: nowIso,
+          status: "empty",
+          availableAt: nowIso,
+        },
+        persona: input.persona,
+        planTier,
+        billingStatus: "trial",
+        trialEndsAt: new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString(),
+        onboardingCompletedAt: nowIso,
+      } as InsertClient);
+      this.updateUser(userId, { linkedClientId: created.id }, userId);
+      this.audit("onboarding.carrier_provisioned", "client", created.id, {
+        userId,
+        persona: input.persona,
+        planTier,
+        trial: true,
+      });
+      return created;
+    });
+    return txn();
   },
 
   upsertClient(input: InsertClient): Client {

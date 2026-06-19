@@ -1646,11 +1646,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       completed: body.completed,
     });
     if (body.completed) {
+      const d = (body.data ?? {}) as { persona?: string; companyName?: string; planTier?: string };
       storage.audit("onboarding.completed", "user", user.id, {
         userId: user.id,
-        persona: (body.data as { persona?: string } | undefined)?.persona,
-        planTier: (body.data as { planTier?: string } | undefined)?.planTier,
+        persona: d.persona,
+        planTier: d.planTier,
       });
+
+      // P0.1 — provision the carrier (create client + link user + start trial).
+      // Previously onboarding-complete only wrote progress, so the carrier never
+      // existed. Idempotent + atomic inside the storage method.
+      const personaVal = d.persona;
+      if (
+        !user.linkedClientId &&
+        (personaVal === "owner_operator" || personaVal === "fleet" || personaVal === "enterprise")
+      ) {
+        storage.provisionCarrierFromOnboarding(user.id, {
+          persona: personaVal,
+          companyName: d.companyName,
+          planTier: d.planTier,
+        });
+      }
     }
     const progress = storage.getOnboardingProgress(user.id);
     return res.json({ progress });
