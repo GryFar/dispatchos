@@ -1385,6 +1385,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(404).json({ message: "User not found or 2FA not configured" });
     }
 
+    // A blocked user must not be able to finish signup and get a session via a
+    // still-valid pending token (the token is a stateless 10-min HMAC minted
+    // before the block). Reject before confirming / regenerating the session.
+    if (user.blocked) {
+      storage.audit("auth.confirm_signup_blocked", "user", user.id, {});
+      return res.status(403).json({ message: "Account is blocked.", code: "blocked" });
+    }
+
     // Single-use guard (hardening): a pending-confirmation token is a stateless
     // 10-min HMAC, so on its own it could be replayed within the window. If this
     // user already confirmed, reject before re-verifying — the confirmation is
