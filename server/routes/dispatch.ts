@@ -527,6 +527,12 @@ export function registerDispatchRoutes(app: Express): void {
       // Parse body
       const patchSchema = z.object({
         driverId: z.string().min(1).nullable(),
+        // Optimistic concurrency: the driverId the client saw when it opened the
+        // reassign dialog. The atomic guard rejects the write if the load moved
+        // since then (double-book / lost-update). Optional for backward compat —
+        // when omitted we fall back to the server's current value (no guard),
+        // but the UI sends it.
+        expectedDriverId: z.string().min(1).nullable().optional(),
       });
       let body: z.infer<typeof patchSchema>;
       try {
@@ -567,21 +573,32 @@ export function registerDispatchRoutes(app: Express): void {
         }
       }
 
-      // Persist via upsertLoad (it mirrors driver_id column from payload).
-      const previousDriverId = (load as any).driverId ?? null;
-      const updated = storage.upsertLoad({
-        ...load,
-        driverId: body.driverId ?? undefined,
-      } as any);
+      // Atomic optimistic reassign (Корень #1). The guard compares against the
+      // driverId the client expected; when the client didn't send one we read
+      // the current value first so single-actor flows still work (no concurrent
+      // writer = no conflict). The storage method audits on success.
+      const expected =
+        body.expectedDriverId !== undefined
+          ? body.expectedDriverId
+          : (storage.getLoadDriverId(id) ?? null);
 
-      // Audit
-      storage.audit("load.driver_reassigned", "load", id, {
-        actorUserId: me.id,
-        from: previousDriverId,
-        to: body.driverId,
-      });
+      const result = storage.reassignLoadDriver(
+        id,
+        expected,
+        body.driverId,
+        me.id,
+      );
 
-      return res.json(updated);
+      if (!result.ok) {
+        return res.status(409).json({
+          message:
+            "This load was reassigned by someone else. Refresh to see the current driver.",
+          code: "reassign_conflict",
+          actualDriverId: result.actual,
+        });
+      }
+
+      return res.json(result.load);
     }),
   );
 }

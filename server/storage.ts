@@ -3705,6 +3705,79 @@ export const storage = {
   },
 
   /**
+   * Atomically reassign a load's driver with optimistic concurrency.
+   *
+   * "Корень #1" — the dispatch reassign route did read-then-upsertLoad, a
+   * TOCTOU: two concurrent PATCHes both read driver_id=X and both wrote, last
+   * writer winning silently (double-book). Here the UPDATE is guarded by the
+   * driver_id column (the indexed single arbiter, mirror of claimMc): it only
+   * succeeds when the current driver_id still equals `expectedDriverId`. If
+   * changes===0 someone moved it first — we return the actual value so the
+   * caller can 409. Payload JSON (source of truth) and the booked_at mirror are
+   * patched in the SAME transaction via json_set so the column and payload can
+   * never diverge.
+   *
+   * expectedDriverId / newDriverId: null means "unassigned". booked_at is set
+   * when assigning, cleared when unassigning, matching the existing mirror.
+   */
+  reassignLoadDriver(
+    loadId: string,
+    expectedDriverId: string | null,
+    newDriverId: string | null,
+    actorUserId?: string,
+  ): { ok: true; load: Load } | { ok: false; conflict: true; actual: string | null } {
+    const ALREADY = "__LOAD_REASSIGN_CONFLICT__";
+    const timestamp = now();
+    const bookedAt = newDriverId ? timestamp : null;
+    const txn = sqlite.transaction(() => {
+      // Guard on the driver_id column. `IS` (not `=`) so NULL compares correctly
+      // — `driver_id = NULL` is never true in SQL, but `driver_id IS NULL` is.
+      const res = sqlite
+        .prepare(
+          `
+          UPDATE loads SET
+            driver_id  = ?,
+            booked_at  = ?,
+            updated_at = ?,
+            payload    = json_set(
+                           json_set(payload, '$.driverId', ${newDriverId === null ? "json('null')" : "?"}),
+                           '$.bookedAt', ${bookedAt === null ? "json('null')" : "?"}
+                         )
+          WHERE id = ? AND driver_id IS ?
+        `,
+        )
+        .run(
+          ...[
+            newDriverId,
+            bookedAt,
+            timestamp,
+            ...(newDriverId === null ? [] : [newDriverId]),
+            ...(bookedAt === null ? [] : [bookedAt]),
+            loadId,
+            expectedDriverId,
+          ],
+        );
+      if (res.changes === 0) throw new Error(ALREADY);
+      this.audit("load.driver_reassigned", "load", loadId, {
+        actorUserId: actorUserId ?? null,
+        from: expectedDriverId,
+        to: newDriverId,
+      });
+    });
+    try {
+      txn();
+    } catch (e) {
+      if (e instanceof Error && e.message === ALREADY) {
+        return { ok: false, conflict: true, actual: this.getLoadDriverId(loadId) ?? null };
+      }
+      throw e;
+    }
+    const load = this.getLoad(loadId);
+    if (!load) return { ok: false, conflict: true, actual: null };
+    return { ok: true, load };
+  },
+
+  /**
    * Phase 4 P0: write a new driver status. Caller-side requireRole('driver')
    * + the route checks role==='driver' before calling, so non-driver writes
    * never reach this helper. We still hard-store anyway — column is NOT NULL.
