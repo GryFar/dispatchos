@@ -3404,11 +3404,17 @@ export const storage = {
     weekStart: string,
     weekEnd: string,
   ): Load[] {
+    // booked_at is a full ISO timestamp ("2026-06-14T15:30:00.000Z") but
+    // weekEnd is a date-only string ("2026-06-14"). A naive `booked_at <=
+    // weekEnd` drops every load booked ON the last day, because lexically
+    // "2026-06-14T15:30:..." > "2026-06-14" — silently undercharging the
+    // invoice. The week is meant to be INCLUSIVE on both ends, so compare the
+    // upper bound against the start of the NEXT day instead.
     const rows = sqlite
       .prepare(
         `SELECT payload FROM loads
          WHERE client_id = ? AND booked_at IS NOT NULL
-           AND booked_at >= ? AND booked_at <= ?
+           AND booked_at >= ? AND booked_at < date(?, '+1 day')
          ORDER BY booked_at ASC`,
       )
       .all(clientId, weekStart, weekEnd) as Array<{ payload: string }>;

@@ -52,7 +52,11 @@ const reportSignalSchema = z.object({
   loadId: z.string().nullable().optional(),
   signalType: z.enum(TRUST_SIGNAL_TYPES as [string, ...string[]]),
   positive: z.boolean(),
-  valueJson: z.unknown().optional(),
+  // Bound serialized size so a signal can't store an arbitrarily large/nested blob.
+  valueJson: z
+    .unknown()
+    .optional()
+    .refine((v) => JSON.stringify(v ?? null).length <= 16_384, "valueJson too large"),
   notes: z.string().max(1000).nullable().optional(),
 });
 

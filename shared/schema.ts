@@ -274,9 +274,11 @@ export const telegramCommandSchema = z.object({
 });
 
 export const emailIngestSchema = z.object({
-  from: z.string(),
-  subject: z.string(),
-  body: z.string().min(5),
+  // Bounded so a malicious/buggy sender can't write multi-MB blobs into
+  // email_ingest (DoS / DB bloat; the parsers also regex over body).
+  from: z.string().max(998),
+  subject: z.string().max(998),
+  body: z.string().min(5).max(1_000_000),
 });
 
 export const driveCreateSchema = z.object({
