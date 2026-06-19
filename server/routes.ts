@@ -1740,17 +1740,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Audit V3-13 — dispatch board is operational data (loads, drivers,
   // statuses). Restrict to admin + dispatcher; drivers/anonymous should
   // not see fleet-wide load assignments.
-  app.get("/api/dispatch-board", requireRole("admin", "dispatcher"), (req, res) => {
+  app.get("/api/dispatch-board", requireRole("admin"), (req, res) => {
     res.json(buildDispatchBoard(String(req.query.clientId ?? "")));
   });
 
-  app.get("/api/clients", requireRole("admin", "dispatcher"), (req, res) => {
+  app.get("/api/clients", requireRole("admin"), (req, res) => {
     // ?includeDeleted=1 returns archived clients too (admin "show archive" view).
     const includeDeleted = req.query.includeDeleted === "1" || req.query.includeDeleted === "true";
     res.json(storage.listClients({ includeDeleted }));
   });
 
-  app.post("/api/clients", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
+  app.post("/api/clients", requireRole("admin"), requireActiveBilling, (req, res) => {
     try {
       const client = storage.upsertClient(insertClientSchema.parse(req.body));
       res.status(201).json(client);
@@ -1776,7 +1776,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ ok: true, id: restored.id });
   });
 
-  app.patch("/api/clients/:id/location", requireRole("admin", "dispatcher"), (req, res) => {
+  app.patch("/api/clients/:id/location", requireRole("admin"), (req, res) => {
     try {
       const location = updateLocationSchema.parse(req.body);
       const client = storage.updateClientLocation(String(req.params.id), location);
@@ -1787,11 +1787,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/loads", requireRole("admin", "dispatcher"), (_req, res) => {
+  app.get("/api/loads", requireRole("admin"), (_req, res) => {
     res.json(storage.listLoads());
   });
 
-  app.post("/api/loads", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
+  app.post("/api/loads", requireRole("admin"), requireActiveBilling, (req, res) => {
     try {
       // Phase 3 P2 + Phase 4 P0: accept optional clientId/bookedAt for billing
       // linkage AND optional driverId for driver-portal scoping. Pre-Phase-3
@@ -1824,7 +1824,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/loads/import-csv", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
+  app.post("/api/loads/import-csv", requireRole("admin"), requireActiveBilling, (req, res) => {
     try {
       const { csv } = csvImportSchema.parse(req.body);
       res.status(201).json(importLoadsFromCsv(csv));
@@ -1833,11 +1833,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/documents", requireRole("admin", "dispatcher"), (_req, res) => {
+  app.get("/api/documents", requireRole("admin"), (_req, res) => {
     res.json(storage.listDocuments());
   });
 
-  app.post("/api/documents", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
+  app.post("/api/documents", requireRole("admin"), requireActiveBilling, (req, res) => {
     try {
       const document = storage.upsertDocument(insertDocumentSchema.parse(req.body));
       res.status(201).json(document);
@@ -1856,11 +1856,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/brokers", requireRole("admin", "dispatcher"), (_req, res) => {
+  app.get("/api/brokers", requireRole("admin"), (_req, res) => {
     res.json(storage.listBrokerRecords());
   });
 
-  app.get("/api/drive/folder-plan", (req, res) => {
+  app.get("/api/drive/folder-plan", requireRole("admin", "dispatcher"), (req, res) => {
     res.json(buildDrivePlan(String(req.query.clientId || "")));
   });
 
@@ -1873,7 +1873,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/documents/upload", requireRole("admin", "dispatcher"), requireActiveBilling, upload.single("file"), (req, res) => {
+  app.post("/api/documents/upload", requireRole("admin"), requireActiveBilling, upload.single("file"), (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ message: "file is required" });
       const safeOriginal = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -1898,7 +1898,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/telegram/command", requireRole("admin", "dispatcher"), (req, res) => {
+  app.post("/api/telegram/command", requireRole("admin"), (req, res) => {
     try {
       const input = telegramCommandSchema.parse(req.body);
       let action = "logged";
@@ -2011,7 +2011,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Audit V3-13 — weekly report carries revenue, broker mix, lane stats
   // — strategic data not for drivers/anonymous.
-  app.get("/api/reports/weekly", requireRole("admin", "dispatcher"), (req, res) => {
+  app.get("/api/reports/weekly", requireRole("admin"), (req, res) => {
     const report = buildWeeklyReport(String(req.query.clientId || ""));
     if (!report) return res.status(404).json({ message: "Client not found" });
     res.json(report);

@@ -828,7 +828,7 @@ export function registerMeRoutes(app: Express): void {
     originState: z.string().min(2).max(2),
     destinationCity: z.string().min(1),
     destinationState: z.string().min(2).max(2),
-    rate: z.number().positive(),
+    rate: z.number().positive().max(1_000_000),
     pickupAt: z.string(),
     deliveryAt: z.string(),
     equipment: equipmentSchema,
@@ -882,9 +882,12 @@ export function registerMeRoutes(app: Express): void {
         equipment: body.equipment,
         brokerName: body.brokerName,
         brokerMc: body.brokerMc,
-        brokerScore: 100,
-        fraudRisk: 0,
-        marketQuality: 100,
+        // M2: a self-dispatched load has NO third-party broker vetting — claiming
+        // a perfect score / zero fraud poisons the broker-trust & lane analytics.
+        // Use neutral/unknown values so self-dispatch can't skew the scoring.
+        brokerScore: 50,
+        fraudRisk: 50,
+        marketQuality: 50,
         notes: body.notes,
         // Server-injected tenant fields — never from body
         clientId: user.linkedClientId,

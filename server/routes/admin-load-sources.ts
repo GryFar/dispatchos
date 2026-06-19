@@ -6,6 +6,7 @@
 
 import type { Express, Request, Response as ExpressResponse } from "express";
 import { storage } from "../storage";
+import { getCurrentUser } from "../auth";
 import {
   encryptCredentials,
   decryptCredentials,
@@ -63,6 +64,10 @@ export function registerAdminLoadSourcesRoutes(
     }
     const adapter = getAdapter(body.adapterKey);
     if (!adapter) return res.status(400).json({ message: `Unknown adapter: ${body.adapterKey}` });
+    // M3: don't create an orphan source pointed at a non-existent client.
+    if (!storage.getClient(body.clientId)) {
+      return res.status(400).json({ message: `Unknown client: ${body.clientId}` });
+    }
 
     let encEnc: string | null = null;
     let encIv: string | null = null;
@@ -90,7 +95,7 @@ export function registerAdminLoadSourcesRoutes(
       credentialsKeyId: encKeyId,
       pollIntervalMin: body.pollIntervalMin,
       status: body.status,
-      createdBy: (req as any).session?.userId,
+      createdBy: getCurrentUser(req)?.id,
     });
     storage.audit("load_source.created", "load_source", created!.id, {
       adapterKey: body.adapterKey,

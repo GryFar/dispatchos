@@ -258,9 +258,33 @@ if (AUTH_RATE_LIMIT_ENABLED) {
   app.use("/api/auth/bootstrap", authBruteLimiter);
   app.use("/api/auth/setup", authBruteLimiter);
   app.use("/api/me/totp/confirm", authBruteLimiter);
+  // H2: resume-setup is a password->TOTP-secret oracle and confirm-signup verifies
+  // a TOTP code — both were uncovered. Rate-limit them like the rest.
+  app.use("/api/auth/totp/resume-setup", authBruteLimiter);
+  app.use("/api/auth/totp/confirm-signup", authBruteLimiter);
   console.log(
     "[auth] brute-force limiter ENABLED (15min / 20 attempts per IP+email)",
   );
+
+  // M1: public GPS ingest (/api/track/*) is token-only auth. A real device pings
+  // every ~30-60s, so 60/min PER TRACKING TOKEN is generous — this caps GPS
+  // spoofing / flooding even when an attacker holds a valid token.
+  const trackLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: skipTrusted,
+    keyGenerator: (req) => {
+      const q = req.query as Record<string, unknown>;
+      const hdr = req.headers["x-limit-u"];
+      const tok = String(q?.id ?? q?.token ?? (Array.isArray(hdr) ? hdr[0] : hdr) ?? "").trim();
+      return tok || req.ip || "track-anon";
+    },
+    message: { message: "Too many tracking pings." },
+  });
+  app.use("/api/track", trackLimiter);
+  console.log("[track] per-token GPS rate limiter ENABLED (60/min)");
 } else {
   console.log(
     "[auth] brute-force limiter DISABLED (set DISPATCHOS_AUTH_RATE_LIMIT=on to re-enable).",
@@ -334,11 +358,27 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        // Redact tokens/passwords from request-log line to avoid leaking
-        // them into stdout / journald.
-        const safe = { ...capturedJsonResponse };
-        if (typeof (safe as any).totpSecret === "string") (safe as any).totpSecret = "[redacted]";
-        if (typeof (safe as any).password === "string") (safe as any).password = "[redacted]";
+        // Redact tokens/passwords/secrets from request-log line to avoid
+        // leaking them into stdout / journald. Several endpoints legitimately
+        // return one-time secrets in their body (TOTP setup → {secret}, admin
+        // reset-password → {temporaryPassword}, tracking-token → {token},
+        // signup/bootstrap → {totpSecret, otpauthUrl}); without redaction the
+        // per-request logger below would print them verbatim.
+        const safe = { ...capturedJsonResponse } as Record<string, unknown>;
+        const SECRET_RESPONSE_KEYS = [
+          "totpSecret",
+          "secret",
+          "password",
+          "temporaryPassword",
+          "token",
+          "owntracksUserId",
+          "otpauthUrl",
+          "osmandUrl",
+          "pendingConfirmationToken",
+        ];
+        for (const key of SECRET_RESPONSE_KEYS) {
+          if (typeof safe[key] === "string") safe[key] = "[redacted]";
+        }
         logLine += ` :: ${JSON.stringify(safe)}`;
       }
 
