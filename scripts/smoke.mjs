@@ -1805,6 +1805,23 @@ try {
 
   const driverACookie = cookieHeader;
 
+  // Self-serve signup (no invite): creates a driver account with NO carrier/
+  // trial — the trial is gated by the MC+FMCSA check in onboarding, not the
+  // invite. (Anti-fraud is preserved; the invite path above still works.)
+  cookieHeader = "";
+  const selfServe = await request("/api/auth/signup", {
+    method: "POST",
+    body: { email: "selfserve.smoke@example.com", fullName: "Self Serve", password: "SelfServe123!" },
+  });
+  if (selfServe.role !== "driver" || !selfServe.pendingConfirmationToken) {
+    throw new Error(`self-serve signup (no invite) wrong shape: ${JSON.stringify(selfServe)}`);
+  }
+  if (selfServe.redirect !== "/d") {
+    throw new Error(`self-serve signup redirect expected "/d", got ${selfServe.redirect}`);
+  }
+  console.log("[OK] self-serve signup without invite (role=driver, no carrier yet)");
+  cookieHeader = driverACookie;
+
   // GET /api/me — driverStatus + linkedClientId surfaced via toUserPublic
   const meDriverA = await request("/api/me");
   if (meDriverA.driverStatus !== "available") {

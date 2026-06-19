@@ -34,9 +34,9 @@ import { AuthShell } from "./login";
 
 const buildSchema = (t: (key: string) => string) =>
   z.object({
-    inviteCode: z.string()
-      .min(1, t("signup.validation.inviteRequired"))
-      .transform((s) => s.toUpperCase().trim()),
+    // Optional: leave empty for self-serve carrier signup (the trial is gated
+    // by the MC + FMCSA check in onboarding, not the invite).
+    inviteCode: z.string().transform((s) => s.toUpperCase().trim()),
     email: z.string().email(t("signup.validation.emailInvalid")),
     fullName: z.string().min(2, t("signup.validation.fullNameRequired")),
     password: z.string()
@@ -77,7 +77,8 @@ export default function SignupPage() {
     setGlobalError(null);
     try {
       const data = await apiJson<SignupResponse>("POST", "/api/auth/signup", {
-        inviteCode: values.inviteCode,
+        // Omit when empty → self-serve signup (no invite required).
+        inviteCode: values.inviteCode?.trim() ? values.inviteCode : undefined,
         email: values.email,
         fullName: values.fullName,
         password: values.password,
@@ -158,16 +159,21 @@ export default function SignupPage() {
 
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
         <div className="space-y-1.5">
-          <Label htmlFor="inviteCode">{t("signup.inviteCode")}</Label>
+          <Label htmlFor="inviteCode">
+            {t("signup.inviteCode")} <span className="text-muted-foreground">— опционально</span>
+          </Label>
           <Input
             id="inviteCode"
             type="text"
             autoFocus
             autoComplete="off"
-            placeholder="DOS-XXXX-XXXX-XXXX"
+            placeholder="DOS-XXXX-XXXX-XXXX (или оставьте пустым)"
             className="font-mono uppercase tracking-wider"
             {...form.register("inviteCode")}
           />
+          <p className="text-xs text-muted-foreground">
+            Есть код приглашения — введите его. Регистрируете свою компанию — оставьте поле пустым.
+          </p>
           {form.formState.errors.inviteCode && (
             <p className="text-xs text-destructive">{form.formState.errors.inviteCode.message}</p>
           )}
