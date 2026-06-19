@@ -90,9 +90,11 @@ export async function createCheckoutSession(
   }
 
   const client = storage.getClient(input.clientId) as
-    | (Record<string, unknown> & { name?: string; stripeCustomerId?: string })
+    | (Record<string, unknown> & { name?: string; stripeCustomerId?: string; deletedAt?: string | null })
     | undefined;
-  if (!client) throw new Error("Client not found");
+  // getClient resolves archived clients (needed for webhook reconciliation);
+  // an archived carrier must not be able to START a new checkout.
+  if (!client || client.deletedAt) throw new Error("Client not found");
 
   // Reuse existing customer if we have one; otherwise let Stripe create on success.
   const customerParam: Pick<Stripe.Checkout.SessionCreateParams, "customer" | "customer_email"> =
@@ -150,8 +152,9 @@ export async function createPortalSession(
   if (!stripe) throw new Error("Stripe is not configured");
 
   const client = storage.getClient(clientId) as
-    | (Record<string, unknown> & { stripeCustomerId?: string })
+    | (Record<string, unknown> & { stripeCustomerId?: string; deletedAt?: string | null })
     | undefined;
+  if (client?.deletedAt) throw new Error("Client not found");
   if (!client?.stripeCustomerId) {
     throw new Error(
       "No Stripe customer for this client. Complete a Checkout first.",

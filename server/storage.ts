@@ -1142,11 +1142,25 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {
 
 function parsePayload<T>(row: { payload: string } | undefined): T | undefined {
   if (!row) return undefined;
-  return JSON.parse(row.payload) as T;
+  try {
+    return JSON.parse(row.payload) as T;
+  } catch {
+    return undefined;
+  }
 }
 
 function parsePayloads<T>(rows: Array<{ payload: string }>): T[] {
-  return rows.map((row) => JSON.parse(row.payload) as T);
+  // Skip (don't throw on) a single corrupted payload row — otherwise one bad
+  // row 500s the entire list endpoint (dashboard, backup export, etc.).
+  const out: T[] = [];
+  for (const row of rows) {
+    try {
+      out.push(JSON.parse(row.payload) as T);
+    } catch {
+      console.error("[storage] skipping corrupted payload row");
+    }
+  }
+  return out;
 }
 
 /**
@@ -1769,10 +1783,20 @@ export const storage = {
   },
 
   /** Persist the counter that was just accepted so future codes ≤ it are rejected. */
-  setLastUsedTotpCounter(id: string, counter: number): void {
-    sqlite
-      .prepare("UPDATE users SET last_used_totp_counter = ? WHERE id = ?")
-      .run(counter, id);
+  /**
+   * Advance the TOTP replay counter, atomically. Returns true only if THIS call
+   * advanced it — a concurrent login that already consumed the same counter
+   * gets false, so the caller must reject it as a replay. Without the
+   * conditional WHERE, two parallel logins with the same in-window code both
+   * read the same minCounter, both verify, and both issue a session.
+   */
+  setLastUsedTotpCounter(id: string, counter: number): boolean {
+    const r = sqlite
+      .prepare(
+        "UPDATE users SET last_used_totp_counter = ? WHERE id = ? AND (last_used_totp_counter IS NULL OR last_used_totp_counter < ?)",
+      )
+      .run(counter, id, counter);
+    return r.changes > 0;
   },
 
   /** fix/totp-onboarding-verify — stamp totp_confirmed_at for a user who
@@ -2929,7 +2953,11 @@ export const storage = {
     status?: "draft" | "sent";
   }): Invoice {
     const id = makeId("inv");
-    const totalDue = input.flatFee + input.percentFee;
+    // Round the sum to whole cents. billing.ts computes the canonical total in
+    // integer cents; re-adding two dollar floats here (e.g. 150.00 + 12.34)
+    // reintroduces float drift (…34000000003) — round it back to exact cents so
+    // the stored/sent total matches the preview.
+    const totalDue = Math.round((input.flatFee + input.percentFee) * 100) / 100;
     const generatedAt = now();
     const status: "draft" | "sent" = input.status ?? "draft";
     // If admin chose to send immediately, we also stamp sent_at — keeps the

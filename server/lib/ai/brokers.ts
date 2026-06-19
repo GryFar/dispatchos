@@ -299,7 +299,12 @@ export function buildHistory(events: BrokerEvent[], brokerName?: string): Broker
 
   score = clamp(score, 0, 100);
   let verdict: BrokerHistory["verdict"];
-  if (loadsTotal < 3) {
+  // A hard-negative signal (non-payment / ghosting / fraud report) must NOT be
+  // hidden behind "unknown" just because history is thin: a broker who burned
+  // you on your only load should still flag (the low score then drives
+  // red/yellow), instead of deferring 100% to FMCSA-green.
+  const hardNegative = flags.nonPayments > 0 || flags.ghostings > 0 || flags.fraudReports > 0;
+  if (loadsTotal < 3 && !hardNegative) {
     verdict = "unknown";
     reasons.push(`Only ${loadsTotal} load(s) of history — not enough signal`);
   } else if (score >= 75) verdict = "green";

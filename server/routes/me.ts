@@ -986,7 +986,9 @@ export function registerMeRoutes(app: Express): void {
       }
 
       const client = storage.getClient(user.linkedClientId);
-      if (!client) {
+      // getClient resolves archived clients; a driver of an archived carrier
+      // must not be able to self-dispatch new loads.
+      if (!client || (client as { deletedAt?: string | null }).deletedAt) {
         return res.status(403).json({ message: "Linked client not found." });
       }
 

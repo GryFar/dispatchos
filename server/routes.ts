@@ -1184,7 +1184,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           code: "totp_invalid",
         });
       }
-      storage.setLastUsedTotpCounter(user.id, acceptedCounter);
+      // Reject a replay: if a concurrent login already consumed this counter,
+      // the conditional update changes nothing and we must not issue a session.
+      if (!storage.setLastUsedTotpCounter(user.id, acceptedCounter)) {
+        return res.status(401).json({ message: "Invalid 2FA token", code: "totp_invalid" });
+      }
     }
     // Audit V2-2 — regenerate session id before binding userId to defeat
     // session-fixation attacks (attacker plants a known session id, victim logs
@@ -1363,7 +1367,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     }
 
-    storage.setLastUsedTotpCounter(user.id, acceptedCounter);
+    if (!storage.setLastUsedTotpCounter(user.id, acceptedCounter)) {
+      return res.status(401).json({ message: "Неверный код — проверьте цифры в приложении и повторите.", code: "totp_invalid" });
+    }
     storage.confirmTotpSetup(user.id);
     storage.audit("auth.totp_confirmed", "user", user.id, {});
 
