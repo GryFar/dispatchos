@@ -125,8 +125,20 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
         // it up if Stripe is silent.
         continue;
       }
+      // Re-read FRESH right before the write. `client` is a snapshot from the
+      // top of the loop; we've since awaited network I/O for earlier clients,
+      // during which a Stripe webhook may have moved THIS client to active +
+      // set a subscription id. Expiring on the stale snapshot would clobber a
+      // paying customer to read-only. The re-read + write are synchronous (no
+      // await between) so under single-process this fully closes the race.
+      const fresh = storage.getClient(c.id) as
+        | (Record<string, unknown> & { billingStatus?: string; stripeSubscriptionId?: string })
+        | undefined;
+      if (!fresh || fresh.billingStatus !== "trial" || fresh.stripeSubscriptionId) {
+        continue;
+      }
       storage.upsertClient({
-        ...(client as unknown as Parameters<typeof storage.upsertClient>[0]),
+        ...(fresh as unknown as Parameters<typeof storage.upsertClient>[0]),
         billingStatus: "expired",
       } as Parameters<typeof storage.upsertClient>[0]);
       const text = [
