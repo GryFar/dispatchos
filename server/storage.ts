@@ -1530,6 +1530,42 @@ export const storage = {
   },
 
   /**
+   * Live driver-seat count for a carrier (client). There is no persisted
+   * `driver_seat_count` column — seats are derived so the figure can never
+   * drift out of sync with reality. We count BOTH:
+   *   - active linked drivers (not soft-deleted, not blocked), and
+   *   - outstanding driver invites for this client (unconsumed, not expired),
+   * so that issuing N pending invites can't be used to slip past the plan cap
+   * before they're redeemed. Used by `canAddDriver` gating and surfaced in the
+   * billing summary.
+   */
+  countDriverSeats(clientId: string): number {
+    const activeDrivers = (
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) AS c FROM users
+             WHERE role = 'driver'
+               AND deleted_at IS NULL
+               AND blocked = 0
+               AND linked_client_id = ?`,
+        )
+        .get(clientId) as { c: number }
+    ).c;
+    const pendingInvites = (
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) AS c FROM invites
+             WHERE role = 'driver'
+               AND linked_client_id = ?
+               AND consumed_at IS NULL
+               AND expires_at > ?`,
+        )
+        .get(clientId, now()) as { c: number }
+    ).c;
+    return activeDrivers + pendingInvites;
+  },
+
+  /**
    * Cursor-paginated user listing for the admin UI. Sorted by `created_at DESC`
    * (newest first), so the cursor for the next page is the `created_at` of the
    * last row on the current page.
@@ -4598,6 +4634,55 @@ export const storage = {
       ORDER BY captured_at ASC
       LIMIT ?
     `).all(userId, since, limit) as Array<Record<string, unknown>>;
+  },
+
+  /**
+   * Keyset-paginated iterator over a driver's location pings in [startIso, endIso),
+   * ordered by captured_at ASC. Unlike listLocationPings (capped at 5000 for the
+   * driver portal), this returns EVERY ping in the window — required for the IFTA
+   * quarterly report, where a driver pinging every ~5 min can produce >5000 pings
+   * per quarter. Silently truncating those under-reports taxable miles in a legal
+   * filing. Pages in batches of `batchSize` so we never hold an unbounded result
+   * set in one prepared statement; ties on captured_at are disambiguated by id so
+   * pagination can't loop or skip rows.
+   */
+  listLocationPingsInWindow(
+    userId: string,
+    startIso: string,
+    endIso: string,
+    batchSize = 5000,
+  ): Array<{ lat: number; lng: number; captured_at: string }> {
+    const out: Array<{ lat: number; lng: number; captured_at: string }> = [];
+    const stmt = sqlite.prepare(`
+      SELECT id, lat, lng, captured_at FROM driver_location_pings
+      WHERE user_id = ?
+        AND captured_at >= ?
+        AND captured_at < ?
+        AND (captured_at > ? OR (captured_at = ? AND id > ?))
+      ORDER BY captured_at ASC, id ASC
+      LIMIT ?
+    `);
+    let lastCaptured = startIso;
+    let lastId = "";
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const rows = stmt.all(
+        userId,
+        startIso,
+        endIso,
+        lastCaptured,
+        lastCaptured,
+        lastId,
+        batchSize,
+      ) as Array<{ id: string; lat: number; lng: number; captured_at: string }>;
+      if (rows.length === 0) break;
+      for (const r of rows) out.push({ lat: r.lat, lng: r.lng, captured_at: r.captured_at });
+      const last = rows[rows.length - 1]!;
+      lastCaptured = last.captured_at;
+      lastId = last.id;
+      if (rows.length < batchSize) break;
+    }
+    return out;
   },
 
   /**

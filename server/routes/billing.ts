@@ -169,7 +169,7 @@ export function registerBillingRoutes(app: Express): void {
       seats: {
         includedDriverSeats: plan.includedDriverSeats,
         additionalDriverCents: plan.additionalDriverCents,
-        driverSeatCount: c.driverSeatCount ?? 0,
+        driverSeatCount: storage.countDriverSeats(clientId),
         includedDispatcherSeats: plan.includedDispatcherSeats,
         dispatcherSeatCount: c.dispatcherSeatCount ?? 0,
       },
