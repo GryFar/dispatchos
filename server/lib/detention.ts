@@ -89,6 +89,14 @@ export interface DetentionInput {
 /** 1 mile — same radius the geofence module uses. */
 const VERIFICATION_RADIUS_KM = 1.6;
 
+/**
+ * Minimum in-radius GPS pings during the on-site window to treat a completed
+ * leg as 'verified' (billable). One fix already proves presence; sparse GPS on
+ * a long stationary wait is normal, so demanding more than one silently dropped
+ * real detention revenue. 0 pings → 'unverified' (fraud/off-device guard).
+ */
+const MIN_CORROBORATING_PINGS = 1;
+
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -176,10 +184,13 @@ export function computeDetentionForLoad(input: DetentionInput): DetentionEvent[]
   ): DetentionEvent["source"] => {
     if (!hasCompletion) return "estimated";
     if (!gpsChecked) return "auto";
-    // Heuristic: at least 2 pings in the on-site window = verified.
-    // 0 pings AND a window > 30 min = unverified (driver claimed on-site but
-    // GPS says otherwise — likely fraud or off device).
-    if (pingCount >= 2) return "verified";
+    // A single GPS fix inside the on-site radius during the claimed window IS
+    // corroboration — the truck demonstrably was there. The old 2-ping bar
+    // zeroed legitimate long detention whenever GPS was sparse (device asleep
+    // / poor signal during a multi-hour stationary wait), i.e. exactly the
+    // revenue this feature exists to capture. Only a TOTAL absence of pings
+    // (0) stays unverified — that's the real fraud/off-device signal.
+    if (pingCount >= MIN_CORROBORATING_PINGS) return "verified";
     return "unverified";
   };
 

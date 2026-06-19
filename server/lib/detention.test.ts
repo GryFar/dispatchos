@@ -11,7 +11,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeDetentionForLoad, totalDetentionCents } from "./detention";
+import { computeDetentionForLoad, totalDetentionCents, billableDetentionCents } from "./detention";
 import type { LoadCheckin } from "@shared/schema";
 
 function ck(
@@ -148,4 +148,52 @@ test("multiple pickup_arrived checkins — latest wins", () => {
   });
   // Latest pickup_arrived = 08:00, loaded at 11:00 → 3h total, 1h billable
   assert.equal(events[0]!.billableHours, 1);
+});
+
+// --- GPS corroboration (revenue-leak fix: 1 ping is enough) -----------------
+// A 4h wait near the pickup with a single in-radius GPS fix is real detention
+// and must bill. Previously this scored 'unverified' (needed >=2 pings) → $0.
+const PICKUP_LOAD = {
+  id: "L1",
+  originLat: 33.749, // Atlanta
+  originLng: -84.388,
+};
+const onSiteCheckins = [
+  ck("pickup_arrived", "2026-05-26T08:00:00Z"),
+  ck("loaded", "2026-05-26T12:00:00Z"), // 4h total → 2h billable
+];
+
+test("1 in-radius ping corroborates a long wait (verified + billable)", () => {
+  const events = computeDetentionForLoad({
+    load: PICKUP_LOAD,
+    checkins: onSiteCheckins,
+    gpsPings: [{ lat: 33.7495, lng: -84.3885, capturedAt: "2026-05-26T10:00:00Z" }],
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0]!.source, "verified");
+  assert.equal(events[0]!.pingCount, 1);
+  assert.equal(events[0]!.billableHours, 2);
+  // The fix: this revenue is no longer dropped from billable totals.
+  assert.equal(billableDetentionCents(events), events[0]!.amountCents);
+  assert.ok(billableDetentionCents(events) > 0);
+});
+
+test("0 in-radius pings stays unverified (fraud/off-device guard)", () => {
+  const events = computeDetentionForLoad({
+    load: PICKUP_LOAD,
+    checkins: onSiteCheckins,
+    // ping is far away (different city) → not corroborating
+    gpsPings: [{ lat: 40.7128, lng: -74.006, capturedAt: "2026-05-26T10:00:00Z" }],
+  });
+  assert.equal(events[0]!.source, "unverified");
+  assert.equal(events[0]!.pingCount, 0);
+  // Unverified is still excluded from billable totals.
+  assert.equal(billableDetentionCents(events), 0);
+});
+
+test("no gpsPings supplied → legacy 'auto' source still billable", () => {
+  const events = computeDetentionForLoad({ load: PICKUP_LOAD, checkins: onSiteCheckins });
+  assert.equal(events[0]!.source, "auto");
+  assert.equal(events[0]!.pingCount, undefined);
+  assert.ok(billableDetentionCents(events) > 0);
 });
