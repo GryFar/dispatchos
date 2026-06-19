@@ -417,6 +417,9 @@ function DriverAssignmentCard({
       setEditing(false);
       qc.invalidateQueries({ queryKey: ["/api/admin/loads", loadId] });
       qc.invalidateQueries({ queryKey: ["/api/admin/loads"] });
+      // The admin loads LIST subscribes to ["/api/loads"] (a different key with
+      // no prefix overlap), so without this it stays stale after a reassign.
+      qc.invalidateQueries({ queryKey: ["/api/loads"] });
     },
     onError: (err: unknown) => {
       const message = err instanceof ApiError ? err.message : "Не удалось обновить водителя";
