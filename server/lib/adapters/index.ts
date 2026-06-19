@@ -3,9 +3,10 @@
 import type { AdapterKey, BoardAdapter } from "./types";
 import { mockAdapter } from "./mock";
 import { sylectusEmailAdapter } from "./sylectus-email";
+import { brokerEmailAdapters } from "./broker-email";
 import { stubAdapters } from "./stubs";
 
-const REAL: BoardAdapter[] = [mockAdapter, sylectusEmailAdapter];
+const REAL: BoardAdapter[] = [mockAdapter, sylectusEmailAdapter, ...brokerEmailAdapters];
 const ALL: BoardAdapter[] = [...REAL, ...stubAdapters];
 
 const byKey = new Map<AdapterKey, BoardAdapter>(ALL.map((a) => [a.key, a]));
