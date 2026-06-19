@@ -1197,6 +1197,51 @@ export const createExpenseSchema = z.object({
 export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;
 
 // ---------------------------------------------------------------------------
+// Fuel transactions — a driver's actual fuel purchases. Distinct from generic
+// expenses: these feed IFTA gallons-per-state + MPG analytics. Matches the
+// fuel-type buckets the receipt OCR (server/lib/ai/receipt-ocr.ts) returns.
+// ---------------------------------------------------------------------------
+export const fuelTypeSchema = z.enum(["diesel", "gasoline", "def"]);
+export type FuelType = z.infer<typeof fuelTypeSchema>;
+
+export const createFuelTransactionSchema = z.object({
+  loadId: z.string().optional(),
+  gallons: z.coerce.number().positive().max(500),
+  pricePerGallon: z.coerce.number().positive().max(20), // USD per gallon
+  total: z.coerce.number().positive().max(5000).optional(), // USD; computed if omitted
+  fuelType: fuelTypeSchema.default("diesel"),
+  stationName: z.string().max(120).optional(),
+  // Station coordinates drive IFTA state attribution. If omitted, the server
+  // falls back to the driver's last known GPS location (they're at the pump).
+  stationLat: z.coerce.number().min(-90).max(90).optional(),
+  stationLng: z.coerce.number().min(-180).max(180).optional(),
+  odometerMiles: z.coerce.number().int().nonnegative().max(5_000_000).optional(),
+  notes: z.string().max(500).optional(),
+  occurredAt: z.string().optional(), // ISO; defaults to now server-side
+});
+export type CreateFuelTransactionInput = z.infer<typeof createFuelTransactionSchema>;
+
+export const fuelTransactionSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  clientId: z.string().nullable(),
+  loadId: z.string().nullable(),
+  stationName: z.string().nullable(),
+  stationLat: z.number().nullable(),
+  stationLng: z.number().nullable(),
+  fuelType: z.string(),
+  gallons: z.number(),
+  pricePerGallonCents: z.number().int(),
+  totalCents: z.number().int(),
+  odometerMiles: z.number().int().nullable(),
+  receiptStoragePath: z.string().nullable(),
+  notes: z.string().nullable(),
+  occurredAt: z.string(),
+  createdAt: z.string(),
+});
+export type FuelTransaction = z.infer<typeof fuelTransactionSchema>;
+
+// ---------------------------------------------------------------------------
 // Issues + approval tasks
 // ---------------------------------------------------------------------------
 export const issueSeveritySchema = z.enum(["info", "warn", "urgent"]);
