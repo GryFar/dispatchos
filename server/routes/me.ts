@@ -41,6 +41,7 @@ import {
   type LoadFull,
 } from "@shared/schema";
 import { enrichLoadSync } from "../lib/ai/enrich";
+import { parseReceipt } from "../lib/ai/receipt-ocr";
 import { parseLimit } from "../lib/query";
 import { getCurrentUser, requireRole } from "../auth";
 import { storage, uploadsRoot } from "../storage";
@@ -733,6 +734,55 @@ export function registerMeRoutes(app: Express): void {
       });
 
       return res.status(201).json(expense);
+    }),
+  );
+
+  // ---------------------------------------------------------------------------
+  // POST /api/me/expenses/scan-receipt — OCR preview (no persistence)
+  // ---------------------------------------------------------------------------
+  //
+  // The driver uploads a fuel-receipt photo and we run it through Claude vision
+  // (server/lib/ai/receipt-ocr.ts — already used by the Telegram bot) to read
+  // the amount / station / gallons. This is a PREVIEW only: nothing is written
+  // to the DB and the temp file is always deleted. The client uses the result
+  // to pre-fill the expense amount, the driver confirms, then submits the
+  // normal POST /api/me/expenses. Degrades to { ocr: null } when
+  // ANTHROPIC_API_KEY is unset (parseReceipt returns null) — the form still
+  // works with manual entry.
+  app.post(
+    "/api/me/expenses/scan-receipt",
+    driver,
+    upload.single("photo"),
+    ah(async (req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const file = req.file;
+      if (!file) {
+        return res.status(400).json({ message: "photo is required (multipart field 'photo')" });
+      }
+      // Vision only accepts raster images. PDFs/text pass the upload filter but
+      // can't be OCR'd here — reject clearly rather than silently returning null.
+      const mediaType = file.mimetype === "image/png" ? "image/png" : "image/jpeg";
+      const isImage = file.mimetype === "image/png" || file.mimetype === "image/jpeg";
+      try {
+        if (!isImage) {
+          return res
+            .status(400)
+            .json({ message: "Only JPEG or PNG receipts can be scanned" });
+        }
+        const imageBase64 = fs.readFileSync(file.path).toString("base64");
+        const ocr = await parseReceipt(imageBase64, mediaType);
+        // Audit the attempt (not the image) so we can see OCR usage/hit-rate.
+        storage.audit("driver.receipt_scanned", "driver_expense", "preview", {
+          userId: user.id,
+          actorUserId: user.id,
+          matched: ocr !== null,
+        });
+        return res.json({ ocr });
+      } finally {
+        // Preview only — never keep the upload.
+        try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+      }
     }),
   );
 

@@ -2354,6 +2354,44 @@ try {
   }
   console.log("[OK] P1 GET /api/me/expenses?loadId= filter");
 
+  // -- P1 expenses: OCR scan-receipt preview --------------------------------
+  // No ANTHROPIC_API_KEY in the smoke env → parseReceipt returns null; the
+  // endpoint must still 200 with { ocr: null } so the form falls back to manual
+  // entry. (We don't assert a real OCR read — that needs the vendor key.)
+  cookieHeader = driverACookie;
+  const pngBytes = Buffer.from("89504e470d0a1a0a0000", "hex"); // PNG magic header
+  const scan = await upload(
+    "/api/me/expenses/scan-receipt",
+    {},
+    { name: "photo", value: pngBytes, options: { filename: "receipt.png", contentType: "image/png" } },
+  );
+  if (!("ocr" in scan) || scan.ocr !== null) {
+    throw new Error(`scan-receipt should return { ocr: null } without API key, got ${JSON.stringify(scan)}`);
+  }
+  console.log("[OK] P1 POST /api/me/expenses/scan-receipt (graceful ocr:null without key)");
+
+  // Non-image (txt passes the upload filter but can't be OCR'd) → 400.
+  const scanBad = await upload(
+    "/api/me/expenses/scan-receipt",
+    {},
+    { name: "photo", value: Buffer.from("x"), options: { filename: "r.txt", contentType: "text/plain" } },
+  ).catch((err) => ({ __err: err.message }));
+  if (!scanBad.__err || !/400/.test(scanBad.__err)) {
+    throw new Error(`scan-receipt non-image should 400, got ${JSON.stringify(scanBad)}`);
+  }
+  console.log("[OK] P1 POST /api/me/expenses/scan-receipt 400 on non-image");
+
+  // Driver-only: an admin session is rejected (403) before any file work.
+  cookieHeader = adminCookieHeader;
+  const scanForbidden = await upload(
+    "/api/me/expenses/scan-receipt",
+    {},
+    { name: "photo", value: pngBytes, options: { filename: "receipt.png", contentType: "image/png" } },
+  ).catch((err) => ({ __err: err.message }));
+  if (!scanForbidden.__err || !/403/.test(scanForbidden.__err)) {
+    throw new Error(`scan-receipt must be driver-only (403 for admin), got ${JSON.stringify(scanForbidden)}`);
+  }
+  console.log("[OK] P1 POST /api/me/expenses/scan-receipt 403 for non-driver");
   // -- Fuel transactions: log + list + scoping (feeds IFTA gallons) ----------
   cookieHeader = driverACookie;
   const fuelEmpty = await request("/api/me/fuel");
