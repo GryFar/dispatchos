@@ -14,6 +14,7 @@
 // that here via ALERT_THRESHOLDS + an anti-dupe row per threshold.
 // ---------------------------------------------------------------------------
 
+import { fetchWithTimeout } from "./fetch-timeout";
 import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
 import { sendEmail } from "./email";
@@ -75,7 +76,7 @@ async function notify(opts: {
   // Telegram (admin alert chat).
   if (opts.tgBotToken && opts.tgChatId) {
     try {
-      const r = await fetch(
+      const r = await fetchWithTimeout(
         `https://api.telegram.org/bot${opts.tgBotToken}/sendMessage`,
         {
           method: "POST",

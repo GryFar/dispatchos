@@ -683,6 +683,11 @@ sqlite.exec("CREATE INDEX IF NOT EXISTS loads_driver_id_idx ON loads(driver_id, 
 // Keyset pagination tiebreakers for the driver- and client-scoped load lists.
 sqlite.exec("CREATE INDEX IF NOT EXISTS loads_driver_created_id_idx ON loads(driver_id, created_at DESC, id DESC)");
 sqlite.exec("CREATE INDEX IF NOT EXISTS loads_client_created_id_idx ON loads(client_id, created_at DESC, id DESC)");
+// Admin dashboard scans by created_at window (listLoadsCreatedSince/countLoadsSince)
+// and by booked_at alone (grossBookedInWindow). The composite (client_id, booked_at)
+// index can't serve a booked_at-only filter, so these were full table scans.
+sqlite.exec("CREATE INDEX IF NOT EXISTS loads_created_at_idx ON loads(created_at)");
+sqlite.exec("CREATE INDEX IF NOT EXISTS loads_booked_at_idx ON loads(booked_at) WHERE booked_at IS NOT NULL");
 
 // ---------------------------------------------------------------------------
 // Phase 5: smart-matching cache + history tables.

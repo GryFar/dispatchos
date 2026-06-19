@@ -24,6 +24,7 @@
 // Raw fetch to the Messages API (no SDK), same pattern as receipt-ocr.ts.
 // ANTHROPIC_API_KEY must be set in the environment (present in prod).
 
+import { fetchWithTimeout } from "../fetch-timeout";
 import type { Client, ScoredLoad } from "@shared/schema";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
@@ -157,7 +158,7 @@ export async function getAiRecommendation(
 
   let res: Response;
   try {
-    res = await fetch(ANTHROPIC_API_URL, {
+    res = await fetchWithTimeout(ANTHROPIC_API_URL, {
       method: "POST",
       headers: {
         "content-type": "application/json",

@@ -16,6 +16,7 @@
 // paid fuel API. Nikita is layering an EIA fallback on top; this is the
 // opportunistic crowdsource-grade source, not the source of truth.
 
+import { fetchWithTimeout } from "../fetch-timeout";
 import * as cheerio from "cheerio";
 
 // Output type = exact input to storage.recordFuelPriceObservation.
@@ -91,7 +92,7 @@ export async function fetchGasBuddyDieselNear(
     // GasBuddy's lat/lng station finder. Endpoint/markup can change without
     // notice — failures degrade to [] rather than crashing the cron.
     const url = `https://www.gasbuddy.com/home?search=${lat},${lng}&fuel=4`; // fuel=4 ≈ diesel
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       headers: {
         "User-Agent": CHROME_UA,
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
