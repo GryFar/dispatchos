@@ -17,6 +17,7 @@
 // is 'expired' or 'past_due' (with a 7-day grace period for past_due).
 // ---------------------------------------------------------------------------
 
+import { fetchWithTimeout } from "./fetch-timeout";
 import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
 import { sendEmail } from "./email";
@@ -44,7 +45,7 @@ async function sendTelegram(
     return { ok: false, error: "telegram not configured" };
   }
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://api.telegram.org/bot${ctx.telegramBotToken}/sendMessage`,
       {
         method: "POST",

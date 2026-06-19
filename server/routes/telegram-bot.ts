@@ -23,6 +23,7 @@
 //   (server-to-server, no auth gate). Useful for ops scripts.
 // - This file is the external bot face. Different shape, different auth.
 
+import { fetchWithTimeout } from "../lib/fetch-timeout";
 import type { Express, Request, Response } from "express";
 import crypto from "node:crypto";
 import { storage } from "../storage";
@@ -74,7 +75,7 @@ async function tgSend(
 ): Promise<void> {
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({

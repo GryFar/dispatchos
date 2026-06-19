@@ -19,6 +19,8 @@
 // PADD assignments (US Petroleum Administration for Defense Districts)
 // ---------------------------------------------------------------------------
 
+import { fetchWithTimeout } from "../fetch-timeout";
+
 export type Padd = "PADD1A" | "PADD1B" | "PADD1C" | "PADD2" | "PADD3" | "PADD4" | "PADD5";
 
 // State to PADD mapping. EIA groups states into 5 PADDs (with PADD1 split into
@@ -209,7 +211,10 @@ export async function refreshFromEia(apiKey?: string, fetchImpl?: typeof fetch):
   fetchedAt: number;
   changes: Array<{ padd: Padd; before: number; after: number }>;
 }> {
-  const fetcher = fetchImpl ?? (typeof fetch !== "undefined" ? fetch : null);
+  // Default to the timeout-wrapped fetch so a stalled EIA socket can't hang the
+  // cron (this loops 7 series sequentially). Tests can still inject fetchImpl.
+  const fetcher =
+    fetchImpl ?? (typeof fetch !== "undefined" ? (u: string) => fetchWithTimeout(u, {}, 8000) : null);
   if (!fetcher) {
     return { refreshed: false, fetchedAt: Date.now(), changes: [] };
   }

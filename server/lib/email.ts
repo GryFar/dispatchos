@@ -4,6 +4,8 @@
 // or HTML/text fallbacks. If RESEND_API_KEY is missing we degrade gracefully
 // (log + return null) so dev environments work without the secret.
 
+import { fetchWithTimeout } from "./fetch-timeout";
+
 export interface SendEmailInput {
   to: string;
   subject: string;
@@ -37,7 +39,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
   }
 
   try {
-    const r = await fetch("https://api.resend.com/emails", {
+    const r = await fetchWithTimeout("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
