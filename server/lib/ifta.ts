@@ -158,10 +158,10 @@ export function buildIftaQuarterly(
 
   // ---- 2) Miles per state — from location pings ----------------------------
   for (const drv of drivers) {
-    const pings = storage.listLocationPings(drv.id, {
-      sinceIso: start,
-      limit: 5000,
-    }).filter((p) => (p.captured_at as string) < end) as Array<{ lat: number; lng: number; captured_at: string }>;
+    // Paginate over the FULL quarter window — listLocationPings caps at 5000,
+    // which silently truncates high-frequency pingers (~26k pings/quarter at a
+    // 5-min cadence) and under-reports taxable miles in this legal filing.
+    const pings = storage.listLocationPingsInWindow(drv.id, start, end);
 
     for (let i = 1; i < pings.length; i++) {
       const a = pings[i - 1];
