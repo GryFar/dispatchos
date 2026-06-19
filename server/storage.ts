@@ -1530,6 +1530,42 @@ export const storage = {
   },
 
   /**
+   * Live driver-seat count for a carrier (client). There is no persisted
+   * `driver_seat_count` column — seats are derived so the figure can never
+   * drift out of sync with reality. We count BOTH:
+   *   - active linked drivers (not soft-deleted, not blocked), and
+   *   - outstanding driver invites for this client (unconsumed, not expired),
+   * so that issuing N pending invites can't be used to slip past the plan cap
+   * before they're redeemed. Used by `canAddDriver` gating and surfaced in the
+   * billing summary.
+   */
+  countDriverSeats(clientId: string): number {
+    const activeDrivers = (
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) AS c FROM users
+             WHERE role = 'driver'
+               AND deleted_at IS NULL
+               AND blocked = 0
+               AND linked_client_id = ?`,
+        )
+        .get(clientId) as { c: number }
+    ).c;
+    const pendingInvites = (
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) AS c FROM invites
+             WHERE role = 'driver'
+               AND linked_client_id = ?
+               AND consumed_at IS NULL
+               AND expires_at > ?`,
+        )
+        .get(clientId, now()) as { c: number }
+    ).c;
+    return activeDrivers + pendingInvites;
+  },
+
+  /**
    * Cursor-paginated user listing for the admin UI. Sorted by `created_at DESC`
    * (newest first), so the cursor for the next page is the `created_at` of the
    * last row on the current page.
