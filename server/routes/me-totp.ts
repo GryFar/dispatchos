@@ -134,6 +134,11 @@ export function registerMeTotpRoutes(app: Express): void {
       const updated = storage.updateUser(user.id, { totpSecret: pending }, user.id);
       if (!updated) return res.status(404).json({ message: "User not found" });
       storage.setLastUsedTotpCounter(user.id, acceptedCounter);
+      // CRITICAL: stamp totp_confirmed_at. The login gate rejects any user with
+      // a secret but no confirmation (code: "totp_setup_required"). updateUser
+      // does NOT touch totp_confirmed_at, so without this the user who just
+      // enabled 2FA is locked out on their very next login.
+      storage.confirmTotpSetup(user.id);
 
       // Clear the staging field — secret is now in the DB.
       req.session.pendingTotpSecret = undefined;

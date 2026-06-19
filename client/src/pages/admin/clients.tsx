@@ -140,9 +140,10 @@ export default function ClientsPage() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">Все типы</SelectItem>
-            <SelectItem value="hotshot">Hotshot</SelectItem>
-            <SelectItem value="car_hauler">Car Hauler</SelectItem>
-            <SelectItem value="van">Van</SelectItem>
+            <SelectItem value="enclosed_car_hauler">Enclosed Car Hauler</SelectItem>
+            <SelectItem value="open_car_hauler">Open Car Hauler</SelectItem>
+            <SelectItem value="hotshot_flatbed">Hotshot Flatbed</SelectItem>
+            <SelectItem value="sprinter_van">Sprinter Van</SelectItem>
           </SelectContent>
         </Select>
         <Button
@@ -318,7 +319,7 @@ function ClientsTable({
 const createClientSchema = z.object({
   name: z.string().min(1, "Введите имя"),
   mc: z.string().min(1, "Введите MC"),
-  equipment: z.enum(["hotshot", "car_hauler", "van"]),
+  equipment: z.enum(["enclosed_car_hauler", "open_car_hauler", "hotshot_flatbed", "sprinter_van"]),
   targetPpm: z.coerce.number().min(0.5, "Минимум $0.50/mi"),
   minimumPpm: z.coerce.number().min(0.5, "Минимум $0.50/mi"),
   mpg: z.coerce.number().min(1, "MPG > 1"),
@@ -336,7 +337,7 @@ function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChang
     defaultValues: {
       name: "",
       mc: "",
-      equipment: "hotshot",
+      equipment: "enclosed_car_hauler",
       targetPpm: 2.5,
       minimumPpm: 1.8,
       mpg: 8,
@@ -402,15 +403,21 @@ function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChang
               <Label htmlFor="equipment">Equipment</Label>
               <Select
                 value={form.watch("equipment")}
-                onValueChange={(v) => form.setValue("equipment", v as "hotshot" | "car_hauler" | "van")}
+                onValueChange={(v) =>
+                  form.setValue(
+                    "equipment",
+                    v as "enclosed_car_hauler" | "open_car_hauler" | "hotshot_flatbed" | "sprinter_van",
+                  )
+                }
               >
                 <SelectTrigger id="equipment">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="hotshot">Hotshot</SelectItem>
-                  <SelectItem value="car_hauler">Car Hauler</SelectItem>
-                  <SelectItem value="van">Van</SelectItem>
+                  <SelectItem value="enclosed_car_hauler">Enclosed Car Hauler</SelectItem>
+                  <SelectItem value="open_car_hauler">Open Car Hauler</SelectItem>
+                  <SelectItem value="hotshot_flatbed">Hotshot Flatbed</SelectItem>
+                  <SelectItem value="sprinter_van">Sprinter Van</SelectItem>
                 </SelectContent>
               </Select>
             </div>

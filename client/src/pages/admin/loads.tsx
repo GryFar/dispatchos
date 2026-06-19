@@ -95,9 +95,10 @@ export default function LoadsPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Все equipment</SelectItem>
-              <SelectItem value="hotshot">Hotshot</SelectItem>
-              <SelectItem value="car_hauler">Car Hauler</SelectItem>
-              <SelectItem value="van">Van</SelectItem>
+              <SelectItem value="enclosed_car_hauler">Enclosed Car Hauler</SelectItem>
+              <SelectItem value="open_car_hauler">Open Car Hauler</SelectItem>
+              <SelectItem value="hotshot_flatbed">Hotshot Flatbed</SelectItem>
+              <SelectItem value="sprinter_van">Sprinter Van</SelectItem>
             </SelectContent>
           </Select>
           <Select value={ppmRange} onValueChange={(v) => setPpmRange(v as typeof ppmRange)}>
