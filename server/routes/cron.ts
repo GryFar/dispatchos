@@ -13,6 +13,8 @@ import { fetchGasBuddyDieselNear } from "../lib/ai/fuel-gasbuddy";
 import { storage } from "../storage";
 import { getAdapter } from "../lib/adapters";
 import { decryptCredentials } from "../lib/crypto/keyring";
+import { scoreLoadForClient } from "../routes";
+import { shouldAlertLoad, notifyMatchedLoad } from "../lib/load-alerts";
 
 function timingSafeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
@@ -34,6 +36,33 @@ function requireCronSecret(req: Request, res: Response): boolean {
     return false;
   }
   return true;
+}
+
+// P0.4/P0.5 — score freshly-ingested loads for the owning carrier and push the
+// strong ones to that carrier's linked Telegram recipients. Returns the count
+// of recipients actually messaged. Entirely best-effort: any error is logged
+// and swallowed so a notify problem never breaks the poll.
+async function pushMatchedLoadAlerts(clientId: string, newLoadIds: string[]): Promise<number> {
+  if (!newLoadIds.length) return 0;
+  let sent = 0;
+  const client = storage.getClient(clientId);
+  if (!client) return 0;
+  for (const loadId of newLoadIds) {
+    try {
+      const load = storage.getLoad(loadId);
+      if (!load) continue;
+      const scored = scoreLoadForClient(client, load);
+      if (!scored || !shouldAlertLoad(scored)) continue;
+      const res = await notifyMatchedLoad(client, scored);
+      sent += res.sent;
+      if (res.errors.length) {
+        console.error(`[cron/load-alerts] load ${loadId}: ${res.errors.join("; ")}`);
+      }
+    } catch (err) {
+      console.error(`[cron/load-alerts] load ${loadId} failed:`, (err as Error).message);
+    }
+  }
+  return sent;
 }
 
 export function registerCronRoutes(app: Express): void {
@@ -103,23 +132,31 @@ export function registerCronRoutes(app: Express): void {
         await adapter.authenticate(rowForAdapter);
         const raws = await adapter.fetchLoads(rowForAdapter);
         let inserted = 0;
+        const newLoadIds: string[] = [];
         for (const raw of raws) {
           const norm = adapter.normalizeToLoad(raw, rowForAdapter);
-          const { inserted: wasNew } = storage.upsertLoadFromSource({
+          const { id, inserted: wasNew } = storage.upsertLoadFromSource({
             sourceId: src.id,
             sourceExternalId: norm.sourceExternalId,
             clientId: src.clientId,
             payload: norm as unknown as Record<string, unknown>,
           });
-          if (wasNew) inserted += 1;
+          if (wasNew) {
+            inserted += 1;
+            newLoadIds.push(id);
+          }
         }
+        // P0.4/P0.5 — push high-score new loads to the carrier's linked Telegram
+        // recipients. Best-effort: a notify failure must not fail the poll.
+        const pushed = await pushMatchedLoadAlerts(src.clientId, newLoadIds);
         storage.recordLoadSourcePoll(src.id, { loadsFound: raws.length });
         storage.audit("load_source.polled", "load_source", src.id, {
           loadsFound: raws.length,
           loadsNew: inserted,
+          alertsSent: pushed,
           durationMs: Date.now() - t0,
         });
-        return { id: src.id, ok: true, loadsFound: raws.length, loadsNew: inserted };
+        return { id: src.id, ok: true, loadsFound: raws.length, loadsNew: inserted, alertsSent: pushed };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         storage.recordLoadSourcePoll(src.id, { loadsFound: 0, errorMessage: msg });

@@ -582,6 +582,21 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS compliance_alerts_lookup_idx
     ON compliance_alerts_sent(client_id, kind, expires_at, days_before);
+
+  -- P0.4/P0.5 — matched-load push de-dup. One row per (load, chat) we alerted,
+  -- so a high-score load is pushed to a given recipient at most once even if the
+  -- poller re-scores it on a later run. UNIQUE backstops a race between two
+  -- concurrent poll passes. Rows persist (cheap) — purge with loads if needed.
+  CREATE TABLE IF NOT EXISTS load_alerts_sent (
+    id TEXT PRIMARY KEY,
+    load_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    dispatch_score INTEGER NOT NULL,
+    sent_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS load_alerts_sent_unique_idx
+    ON load_alerts_sent(load_id, chat_id);
 `);
 
 // ---------------------------------------------------------------------------
@@ -1505,6 +1520,61 @@ export const storage = {
       .prepare("UPDATE users SET telegram_chat_id = ?, updated_at = ? WHERE id = ?")
       .run(chatId, now(), userId);
     return this.getUserById(userId);
+  },
+
+  // P0.5 — recipients for a carrier's matched-load push. Everyone linked to the
+  // carrier (drivers + owner-operator, who is linked as a driver per #168) who
+  // has connected the driver bot. Blocked/deleted users are excluded so a
+  // removed driver stops getting offers. De-duped by chat_id in case two user
+  // rows share one chat (rare, but the push path must not double-send).
+  listTelegramRecipientsForClient(
+    clientId: string,
+  ): Array<{ userId: string; chatId: string; role: string }> {
+    const rows = sqlite
+      .prepare(
+        `SELECT id, role, telegram_chat_id
+           FROM users
+          WHERE linked_client_id = ?
+            AND telegram_chat_id IS NOT NULL
+            AND telegram_chat_id != ''
+            AND deleted_at IS NULL
+            AND blocked = 0`,
+      )
+      .all(clientId) as Array<{ id: string; role: string; telegram_chat_id: string }>;
+    const seen = new Set<string>();
+    const out: Array<{ userId: string; chatId: string; role: string }> = [];
+    for (const r of rows) {
+      if (seen.has(r.telegram_chat_id)) continue;
+      seen.add(r.telegram_chat_id);
+      out.push({ userId: r.id, chatId: r.telegram_chat_id, role: r.role });
+    }
+    return out;
+  },
+
+  // P0.4 — atomic alert de-dup. Returns true exactly once per (load, chat); a
+  // concurrent or repeat call returns false (UNIQUE index + INSERT OR IGNORE),
+  // so a re-scored load never re-pings the same recipient.
+  claimLoadAlert(input: {
+    loadId: string;
+    chatId: string;
+    clientId: string;
+    dispatchScore: number;
+  }): boolean {
+    const info = sqlite
+      .prepare(
+        `INSERT OR IGNORE INTO load_alerts_sent
+           (id, load_id, chat_id, client_id, dispatch_score, sent_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        makeId("loadalert"),
+        input.loadId,
+        input.chatId,
+        input.clientId,
+        Math.round(input.dispatchScore),
+        now(),
+      );
+    return info.changes > 0;
   },
 
   listUsers(filter?: { role?: UserRole; includeBlocked?: boolean }): UserInternal[] {
