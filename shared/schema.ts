@@ -435,7 +435,11 @@ export const bootstrapSchema = z.object({
 // Signup via invite code (Phase 3 wires this to /api/auth/signup; defined
 // here so Claude Design and the second AI share the contract from day one).
 export const signupSchema = z.object({
-  inviteCode: z.string().min(1),
+  // Optional: when present, the invite gates the role/linked-client (team
+  // members). When absent, this is a SELF-SERVE carrier signup — the account is
+  // created as a driver with no trial; the trial/load access only unlocks after
+  // the MC + FMCSA gate in onboarding (one MC = one account anti-fraud).
+  inviteCode: z.string().min(1).optional(),
   email: z.string().email(),
   fullName: z.string().min(1),
   password: z.string().min(10),

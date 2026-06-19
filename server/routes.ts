@@ -1254,57 +1254,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     }
 
-    const invite = storage.getInvite(body.inviteCode);
-    const nowMs = Date.now();
-    if (!invite || invite.consumedAt || new Date(invite.expiresAt).getTime() <= nowMs) {
-      // Single message for "doesn't exist / expired / already used" so we
-      // don't leak which it is to someone fishing for valid codes.
-      return res.status(400).json({ message: "Invite not found or expired" });
-    }
-
-    
-    // Email-locked invites must match exactly (case-insensitive).
-    if (invite.email && invite.email.toLowerCase() !== body.email.toLowerCase()) {
-      return res.status(400).json({ message: "Invite is locked to a different email" });
-    }
-
-    // role=admin invites are never created in P3 (POST /api/admin/invites
-    // rejects them), but if a legacy row exists we still refuse to consume
-    // it through public signup — admins go through bootstrap.
-    if (invite.role === "admin") {
-      return res.status(400).json({ message: "Invite not found or expired" });
-    }
-
     if (storage.getUserByEmail(body.email)) {
       return res.status(409).json({ message: "Email already in use" });
     }
 
     const { salt, hash } = hashPassword(body.password);
     const totpSecret = generateBase32Secret();
-    // Atomic: create the user and consume the invite together. If a concurrent
-    // signup already claimed this code, the user creation rolls back and we
-    // reject — a single-use invite can never mint two accounts.
-    const result = storage.createUserConsumingInvite(
-      {
+
+    let created: ReturnType<typeof storage.createUser>;
+    if (body.inviteCode) {
+      // ---------------- Invite-based signup (team member) ----------------
+      const invite = storage.getInvite(body.inviteCode);
+      const nowMs = Date.now();
+      if (!invite || invite.consumedAt || new Date(invite.expiresAt).getTime() <= nowMs) {
+        // Single message for "doesn't exist / expired / already used" so we
+        // don't leak which it is to someone fishing for valid codes.
+        return res.status(400).json({ message: "Invite not found or expired" });
+      }
+      // Email-locked invites must match exactly (case-insensitive).
+      if (invite.email && invite.email.toLowerCase() !== body.email.toLowerCase()) {
+        return res.status(400).json({ message: "Invite is locked to a different email" });
+      }
+      // role=admin invites are never created in P3, but if a legacy row exists
+      // we still refuse to consume it through public signup.
+      if (invite.role === "admin") {
+        return res.status(400).json({ message: "Invite not found or expired" });
+      }
+      // Atomic: create the user and consume the invite together. A concurrent
+      // signup on the same code rolls back — a single-use invite can't mint two.
+      const result = storage.createUserConsumingInvite(
+        {
+          email: body.email,
+          fullName: body.fullName,
+          role: invite.role,
+          passwordSalt: salt,
+          passwordHash: hash,
+          totpSecret,
+          linkedClientId: invite.role === "driver" ? invite.linkedClientId : undefined,
+        },
+        invite.code,
+      );
+      if ("alreadyConsumed" in result) {
+        return res.status(409).json({ message: "Invite not found or expired" });
+      }
+      created = result;
+      storage.audit("user.created", "user", created.id, {
+        source: "invite",
+        inviteCode: invite.code,
+        role: created.role,
+      });
+    } else {
+      // ---------------- Self-serve carrier signup (no invite) ----------------
+      // Anti-fraud is carried by the MC + FMCSA gate in onboarding (one MC =
+      // one account, FMCSA-active authority required for a trial) — NOT the
+      // invite. The account starts as a driver with NO carrier and NO trial;
+      // load access / trial only unlock after a valid, unclaimed, FMCSA-active
+      // MC is claimed during onboarding (which then provisions the carrier).
+      created = storage.createUser({
         email: body.email,
         fullName: body.fullName,
-        role: invite.role,
+        role: "driver",
         passwordSalt: salt,
         passwordHash: hash,
         totpSecret,
-        linkedClientId: invite.role === "driver" ? invite.linkedClientId : undefined,
-      },
-      invite.code,
-    );
-    if ("alreadyConsumed" in result) {
-      return res.status(409).json({ message: "Invite not found or expired" });
+      });
+      storage.audit("user.created", "user", created.id, {
+        source: "self_serve",
+        role: created.role,
+      });
     }
-    const created = result;
-    storage.audit("user.created", "user", created.id, {
-      source: "invite",
-      inviteCode: invite.code,
-      role: created.role,
-    });
 
     // fix/totp-onboarding-verify (2026-05-27) — do NOT log the user in yet.
     // Instead, issue a short-lived pending-confirmation token (10 min).

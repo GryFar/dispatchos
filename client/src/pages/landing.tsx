@@ -156,8 +156,16 @@ export default function LandingPage() {
           <div className="flex flex-wrap items-center gap-3 pt-2">
             <button
               type="button"
-              onClick={() => setLocation("/login")}
+              onClick={() => setLocation("/signup")}
               className="inline-flex items-center gap-2 rounded-lg bg-[#f59e0b] px-6 py-3 text-base font-semibold text-[#0a0e1a] transition-all hover:bg-[#fbbf24] hover:shadow-[0_0_32px_rgba(245,158,11,0.45)]"
+            >
+              Начать бесплатно
+              <ArrowRight className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setLocation("/login")}
+              className="inline-flex items-center gap-2 rounded-lg border border-[rgba(245,158,11,0.4)] px-6 py-3 text-base font-semibold text-[#f59e0b] transition-all hover:bg-[rgba(245,158,11,0.08)]"
             >
               {t("landing.hero.ctaLogin")}
               <ArrowRight className="h-5 w-5" />
