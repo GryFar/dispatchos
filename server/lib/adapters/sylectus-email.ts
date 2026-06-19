@@ -39,18 +39,23 @@ export const sylectusEmailAdapter: BoardAdapter = {
     const cap = Math.min(limit ?? 200, 500);
 
     const rows = storage.listEmailIngest(cap);
-    return rows
-      .filter((r) => {
-        if (new Date(r.createdAt).getTime() < cutoff) return false;
-        if (!inbox) return true;
-        const payload = typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload;
-        const to = (payload?.to ?? "").toLowerCase();
-        return to.includes(inbox);
-      })
-      .map((r) => {
-        const payload = typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload;
-        return { ingestId: r.id, ...payload } as RawLoad;
-      });
+    const out: RawLoad[] = [];
+    for (const r of rows) {
+      if (new Date(r.createdAt).getTime() < cutoff) continue;
+      // Parse once, guarded — a single corrupted payload must not abort the pass.
+      let payload: Record<string, unknown>;
+      try {
+        payload = typeof r.payload === "string" ? JSON.parse(r.payload) : (r.payload as Record<string, unknown>);
+      } catch {
+        continue;
+      }
+      if (inbox) {
+        const to = String((payload?.to as string) ?? "").toLowerCase();
+        if (!to.includes(inbox)) continue;
+      }
+      out.push({ ingestId: r.id, ...payload } as RawLoad);
+    }
+    return out;
   },
 
   normalizeToLoad(raw: RawLoad, row: LoadSourceRow): NormalizedLoad {

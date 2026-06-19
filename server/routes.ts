@@ -427,6 +427,12 @@ export function scoreLoadForClient(client: Client, load: Load): ScoredLoad | nul
     return null;
   }
 
+  // Reject zero/negative/NaN loadedMiles BEFORE any division. Otherwise
+  // totalPpm = rate/0 = Infinity and deadheadRatio = 0/0 = NaN propagate into
+  // dispatchScore and the verdict, ranking a garbage load as a confident
+  // "book" with Infinity PPM. (lanes.classifyOffer guards this same case.)
+  if (!(load.loadedMiles > 0)) return null;
+
   const deadheadMiles = calculateDistanceMiles(
     client.currentLocation,
     { lat: load.originLat, lng: load.originLng },
@@ -1271,16 +1277,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     const { salt, hash } = hashPassword(body.password);
     const totpSecret = generateBase32Secret();
-    const created = storage.createUser({
-      email: body.email,
-      fullName: body.fullName,
-      role: invite.role,
-      passwordSalt: salt,
-      passwordHash: hash,
-      totpSecret,
-      linkedClientId: invite.role === "driver" ? invite.linkedClientId : undefined,
-    });
-    storage.consumeInvite(invite.code, created.id);
+    // Atomic: create the user and consume the invite together. If a concurrent
+    // signup already claimed this code, the user creation rolls back and we
+    // reject — a single-use invite can never mint two accounts.
+    const result = storage.createUserConsumingInvite(
+      {
+        email: body.email,
+        fullName: body.fullName,
+        role: invite.role,
+        passwordSalt: salt,
+        passwordHash: hash,
+        totpSecret,
+        linkedClientId: invite.role === "driver" ? invite.linkedClientId : undefined,
+      },
+      invite.code,
+    );
+    if ("alreadyConsumed" in result) {
+      return res.status(409).json({ message: "Invite not found or expired" });
+    }
+    const created = result;
     storage.audit("user.created", "user", created.id, {
       source: "invite",
       inviteCode: invite.code,

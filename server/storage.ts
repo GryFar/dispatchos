@@ -1609,6 +1609,46 @@ export const storage = {
     return this.getUserById(id)!;
   },
 
+  /**
+   * Atomically create a user AND consume the single-use invite in one
+   * transaction. If a concurrent signup already consumed the code, the whole
+   * thing rolls back (no orphan user) and returns { alreadyConsumed: true }.
+   * Closes the invite double-redemption race (two unlocked-invite signups
+   * with different emails could otherwise both succeed).
+   */
+  createUserConsumingInvite(
+    input: {
+      email: string;
+      fullName: string;
+      role: UserRole;
+      passwordSalt: string;
+      passwordHash: string;
+      totpSecret?: string;
+      linkedClientId?: string;
+      actorUserId?: string;
+    },
+    code: string,
+  ): UserInternal | { alreadyConsumed: true } {
+    const ALREADY = "__INVITE_ALREADY_CONSUMED__";
+    const txn = sqlite.transaction(() => {
+      const user = this.createUser(input);
+      const r = sqlite
+        .prepare(
+          "UPDATE invites SET consumed_at = ?, consumed_by_user_id = ? WHERE code = ? AND consumed_at IS NULL",
+        )
+        .run(now(), user.id, code);
+      if (r.changes === 0) throw new Error(ALREADY);
+      this.audit("invite.consumed", "invite", code, { userId: user.id });
+      return user;
+    });
+    try {
+      return txn();
+    } catch (e) {
+      if (e instanceof Error && e.message === ALREADY) return { alreadyConsumed: true };
+      throw e;
+    }
+  },
+
   updateUser(
     id: string,
     patch: {
@@ -2278,11 +2318,21 @@ export const storage = {
     };
   },
 
-  consumeInvite(code: string, userId: string) {
-    sqlite
-      .prepare("UPDATE invites SET consumed_at = ?, consumed_by_user_id = ? WHERE code = ?")
+  /**
+   * Atomically consume a single-use invite. Returns true only for the caller
+   * that wins the `consumed_at IS NULL` race; a concurrent second redemption
+   * gets false (and must be rejected). Without the conditional WHERE, an
+   * unlocked invite could mint two accounts from one code.
+   */
+  consumeInvite(code: string, userId: string): boolean {
+    const res = sqlite
+      .prepare(
+        "UPDATE invites SET consumed_at = ?, consumed_by_user_id = ? WHERE code = ? AND consumed_at IS NULL",
+      )
       .run(now(), userId, code);
+    if (res.changes === 0) return false;
     this.audit("invite.consumed", "invite", code, { userId });
+    return true;
   },
 
   listInvites(filter?: { includeConsumed?: boolean }): Invite[] {
@@ -4981,7 +5031,13 @@ export const storage = {
       documents: this.listDocuments(),
       brokerRecords: this.listBrokerRecords(),
       emailIngest: this.listEmailIngest(1000),
-      auditEvents: this.listAuditEvents(1000),
+      // invite.* audit events carry the raw invite CODE as entityId. An
+      // un-consumed code is a live credential (signup accepts it), and the
+      // `invites` array above already redacts those — so scrub it here too,
+      // or the backup defeats that redaction.
+      auditEvents: this.listAuditEvents(1000).map((e) =>
+        e.entityType === "invite" ? { ...e, entityId: "[redacted]" } : e,
+      ),
       users: usersPublic,
       invites: this.listInvites({ includeConsumed: true }).map((i) => ({
         ...i,
@@ -5633,7 +5689,12 @@ export const storage = {
     const clientNameById = new Map<string, string>();
     for (const row of clientRows) {
       try {
-        const parsed = JSON.parse(row.payload) as { name?: unknown };
+        const parsed = JSON.parse(row.payload) as { name?: unknown; deletedAt?: unknown };
+        // Skip archived (soft-deleted) clients — this hand-rolled query reads
+        // clients.payload directly and must honor the same deletedAt filter
+        // that listClients() applies, or archived carriers leak into the
+        // dispatcher's dashboard/list.
+        if (parsed.deletedAt) continue;
         clientNameById.set(
           row.id,
           typeof parsed.name === "string" && parsed.name.length > 0 ? parsed.name : row.id,
@@ -5670,13 +5731,15 @@ export const storage = {
       for (const r of loadRows) loadCounts.set(r.cid, r.c);
     }
 
-    // Preserve the order in which the dispatcher's assignments came back.
-    return clientIds.map((id) => ({
-      id,
-      name: clientNameById.get(id) ?? id,
-      activeDriversCount: driverCounts.get(id) ?? 0,
-      activeLoadsCount: loadCounts.get(id) ?? 0,
-    }));
+    // Preserve assignment order; drop archived clients (not in the name map).
+    return clientIds
+      .filter((id) => clientNameById.has(id))
+      .map((id) => ({
+        id,
+        name: clientNameById.get(id) ?? id,
+        activeDriversCount: driverCounts.get(id) ?? 0,
+        activeLoadsCount: loadCounts.get(id) ?? 0,
+      }));
   },
 
   listLoadsForClientIds(
