@@ -1034,9 +1034,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // X-Bootstrap-Token header, then unsets the secret. Without it, an
     // attacker who races us after a fresh deploy can claim admin.
     //
-    // Skip the check when no public URL is set (= local dev / first-run on
-    // localhost). Production always sets DISPATCHOS_PUBLIC_URL.
-    const isProduction = Boolean(process.env.DISPATCHOS_PUBLIC_URL);
+    // Skip the check only for genuine local dev / first-run on localhost.
+    // M4 fix: previously this keyed solely on DISPATCHOS_PUBLIC_URL, so a prod
+    // deploy that forgot to set PUBLIC_URL would silently fall into open
+    // bootstrap mode (first caller becomes admin, no token). Treat any of the
+    // production signals as "locked": NODE_ENV, the VDS deployment mode flag,
+    // or an explicit public URL.
+    const isProduction =
+      process.env.NODE_ENV === "production" ||
+      process.env.DISPATCHOS_DEPLOYMENT_MODE === "vds" ||
+      Boolean(process.env.DISPATCHOS_PUBLIC_URL);
     if (isProduction) {
       const expected = process.env.DISPATCHOS_BOOTSTRAP_TOKEN;
       if (!expected) {
