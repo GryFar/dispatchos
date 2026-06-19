@@ -957,7 +957,9 @@ export function registerAdminRoutes(app: Express): void {
       if (!actor) return res.status(401).json({ message: "Authentication required" });
 
       const client = storage.getClient(body.clientId);
-      if (!client) return res.status(404).json({ message: "Client not found" });
+      // getClient resolves soft-deleted (archived) clients by design; reject
+      // them here so we don't assign/bill an archived carrier.
+      if (!client || client.deletedAt) return res.status(404).json({ message: "Client not found" });
 
       const dispatcher = storage.getUserById(body.dispatcherUserId);
       if (!dispatcher) return res.status(404).json({ message: "Dispatcher not found" });
@@ -1071,7 +1073,9 @@ export function registerAdminRoutes(app: Express): void {
       }
 
       const client = storage.getClient(body.clientId);
-      if (!client) return res.status(404).json({ message: "Client not found" });
+      // getClient resolves soft-deleted (archived) clients by design; reject
+      // them here so we don't assign/bill an archived carrier.
+      if (!client || client.deletedAt) return res.status(404).json({ message: "Client not found" });
 
       const calc = computeInvoiceForWeek(body.clientId, body.weekStart, body.weekEnd);
 
@@ -1127,7 +1131,9 @@ export function registerAdminRoutes(app: Express): void {
       }
 
       const client = storage.getClient(body.clientId);
-      if (!client) return res.status(404).json({ message: "Client not found" });
+      // getClient resolves soft-deleted (archived) clients by design; reject
+      // them here so we don't assign/bill an archived carrier.
+      if (!client || client.deletedAt) return res.status(404).json({ message: "Client not found" });
 
       const dup = storage.findInvoiceForWeek(body.clientId, body.weekStart);
       if (dup) {
