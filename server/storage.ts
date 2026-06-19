@@ -1854,16 +1854,25 @@ export const storage = {
   },
 
   /** fix/totp-onboarding-verify — stamp totp_confirmed_at for a user who
-   *  just entered a valid 6-digit code for the first time. Idempotent:
-   *  if already set, the existing timestamp is preserved. */
-  confirmTotpSetup(id: string): UserInternal | undefined {
+   *  just entered a valid 6-digit code for the first time.
+   *
+   *  Single-use guard (hardening, Nikita's 🟡): the UPDATE is keyed on
+   *  totp_confirmed_at IS NULL, so only the FIRST confirmation lands. A replayed
+   *  pending-confirmation token (which is otherwise a stateless 10-min HMAC)
+   *  therefore can't re-run this — firstConfirm is false on any repeat, even
+   *  under a concurrent race (the column is the single arbiter, same pattern as
+   *  claimMc). The TOTP minCounter already blocks code-reuse; this closes the
+   *  remaining defense-in-depth gap so the token itself is one-shot.
+   *
+   *  Returns the user plus whether this call was the one that stamped it. */
+  confirmTotpSetup(id: string): { user: UserInternal | undefined; firstConfirm: boolean } {
     const ts = now();
-    sqlite
+    const res = sqlite
       .prepare(
-        "UPDATE users SET totp_confirmed_at = COALESCE(totp_confirmed_at, ?), updated_at = ? WHERE id = ?",
+        "UPDATE users SET totp_confirmed_at = ?, updated_at = ? WHERE id = ? AND totp_confirmed_at IS NULL",
       )
       .run(ts, ts, id);
-    return this.getUserById(id);
+    return { user: this.getUserById(id), firstConfirm: res.changes === 1 };
   },
 
   /** feat/twilio-verify-phone-email — stamp phone_verified + phone_verified_at. */

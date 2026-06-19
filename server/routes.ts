@@ -1385,6 +1385,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(404).json({ message: "User not found or 2FA not configured" });
     }
 
+    // Single-use guard (hardening): a pending-confirmation token is a stateless
+    // 10-min HMAC, so on its own it could be replayed within the window. If this
+    // user already confirmed, reject before re-verifying — the confirmation is
+    // one-shot. (The atomic check below in confirmTotpSetup closes the race.)
+    if (user.totpConfirmedAt) {
+      storage.audit("auth.confirm_signup_replayed", "user", user.id, {});
+      return res.status(409).json({
+        message: "2FA already confirmed for this account. Please sign in.",
+        code: "already_confirmed",
+      });
+    }
+
     const minCounter = storage.getLastUsedTotpCounter(user.id);
     const acceptedCounter = verifyTotp(user.totpSecret, body.token.trim(), minCounter);
     if (acceptedCounter === null) {
@@ -1398,7 +1410,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!storage.setLastUsedTotpCounter(user.id, acceptedCounter)) {
       return res.status(401).json({ message: "Неверный код — проверьте цифры в приложении и повторите.", code: "totp_invalid" });
     }
-    storage.confirmTotpSetup(user.id);
+    const { firstConfirm } = storage.confirmTotpSetup(user.id);
+    if (!firstConfirm) {
+      // Lost a concurrent race past the guard above — another request confirmed
+      // first. Don't issue a session for a replayed token.
+      storage.audit("auth.confirm_signup_replayed", "user", user.id, { race: true });
+      return res.status(409).json({
+        message: "2FA already confirmed for this account. Please sign in.",
+        code: "already_confirmed",
+      });
+    }
     storage.audit("auth.totp_confirmed", "user", user.id, {});
 
     req.session.regenerate((regenErr) => {
