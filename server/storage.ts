@@ -4633,6 +4633,55 @@ export const storage = {
   },
 
   /**
+   * Keyset-paginated iterator over a driver's location pings in [startIso, endIso),
+   * ordered by captured_at ASC. Unlike listLocationPings (capped at 5000 for the
+   * driver portal), this returns EVERY ping in the window — required for the IFTA
+   * quarterly report, where a driver pinging every ~5 min can produce >5000 pings
+   * per quarter. Silently truncating those under-reports taxable miles in a legal
+   * filing. Pages in batches of `batchSize` so we never hold an unbounded result
+   * set in one prepared statement; ties on captured_at are disambiguated by id so
+   * pagination can't loop or skip rows.
+   */
+  listLocationPingsInWindow(
+    userId: string,
+    startIso: string,
+    endIso: string,
+    batchSize = 5000,
+  ): Array<{ lat: number; lng: number; captured_at: string }> {
+    const out: Array<{ lat: number; lng: number; captured_at: string }> = [];
+    const stmt = sqlite.prepare(`
+      SELECT id, lat, lng, captured_at FROM driver_location_pings
+      WHERE user_id = ?
+        AND captured_at >= ?
+        AND captured_at < ?
+        AND (captured_at > ? OR (captured_at = ? AND id > ?))
+      ORDER BY captured_at ASC, id ASC
+      LIMIT ?
+    `);
+    let lastCaptured = startIso;
+    let lastId = "";
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const rows = stmt.all(
+        userId,
+        startIso,
+        endIso,
+        lastCaptured,
+        lastCaptured,
+        lastId,
+        batchSize,
+      ) as Array<{ id: string; lat: number; lng: number; captured_at: string }>;
+      if (rows.length === 0) break;
+      for (const r of rows) out.push({ lat: r.lat, lng: r.lng, captured_at: r.captured_at });
+      const last = rows[rows.length - 1]!;
+      lastCaptured = last.captured_at;
+      lastId = last.id;
+      if (rows.length < batchSize) break;
+    }
+    return out;
+  },
+
+  /**
    * Phase 7 — вычисляем пройденные мили по пингам водителя в окне
    * от sinceIso. Haversine попарно между последовательными пингами. Игнорируем
    * скачки > 200km (водитель отправился самолётом в другой штат — GPS noise).
