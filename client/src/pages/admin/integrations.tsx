@@ -317,6 +317,10 @@ function IntegrationSetupDialog({
       qc.invalidateQueries({ queryKey: ["/api/admin/integrations"] });
       onClose();
     },
+    onError: (err: Error) => {
+      const msg = err instanceof ApiError ? err.message : "Ошибка очистки";
+      toast({ variant: "destructive", description: msg });
+    },
   });
 
   // Has at least one non-empty value to submit?

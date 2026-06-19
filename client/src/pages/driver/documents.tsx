@@ -121,7 +121,7 @@ export default function DriverDocumentsPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiJson("DELETE", `/api/me/documents/${id}`),
     onSuccess: () => {
-      toast({ title: t("driver.documents.upload_ok") });
+      toast({ title: t("driver.documents.deleted") });
       qc.invalidateQueries({ queryKey: ["/api/me/documents"] });
       qc.invalidateQueries({ queryKey: ["me", "dashboard"] });
     },

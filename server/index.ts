@@ -12,7 +12,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
-import { storage, backfillBrokerTrustSignals } from "./storage";
+import { storage, backfillBrokerTrustSignals, closeDatabase } from "./storage";
 
 const app = express();
 const isVdsMode = process.env.DISPATCHOS_DEPLOYMENT_MODE === "vds";
@@ -479,6 +479,9 @@ app.use((req, res, next) => {
     log(`shutting down on ${signal} — draining in-flight requests`);
     httpServer.close((err) => {
       if (err) console.error("[shutdown] httpServer.close error:", err);
+      // Checkpoint + close the DB so the WAL is truncated and we don't leave a
+      // dirty -wal across the deploy.
+      closeDatabase();
       log("shutdown complete");
       process.exit(0);
     });

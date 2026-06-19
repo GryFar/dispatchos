@@ -891,6 +891,19 @@ function DispatchDashboard() {
   const client = data.selectedClient;
   const best = data.topRecommendation;
 
+  // Guard: with zero loads the server sends topRecommendation=undefined; the
+  // render body below dereferences best.* / client.* unconditionally and would
+  // throw a blank screen. Show an empty-state instead.
+  if (!best || !client) {
+    return (
+      <main className="min-h-screen bg-background text-foreground">
+        <div className="mx-auto max-w-7xl px-5 py-20 text-center text-muted-foreground">
+          Пока нет данных для дашборда — добавьте клиента и грузы.
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-background text-foreground">
       <header className="border-b border-border bg-card/70 backdrop-blur">
