@@ -30,6 +30,7 @@ import {
 } from "@shared/schema";
 import { getCurrentUser, requireRole } from "../auth";
 import { storage } from "../storage";
+import { parseLimit } from "../lib/query";
 // Nominal car-hauler slot counts per equipment type. NOT live capacity —
 // "used" is derived from active loads. Tune these to your real fleet.
 const NOMINAL_CAPACITY_BY_EQUIPMENT: Record<string, number> = {
@@ -215,7 +216,7 @@ export function registerDispatchRoutes(app: Express): void {
       const filters = dispatchLoadsListFiltersSchema.parse({
         clientId: req.query.clientId,
         status: req.query.status,
-        limit: req.query.limit ? Number(req.query.limit) : undefined,
+        limit: parseLimit(req.query.limit),
         cursor: typeof req.query.cursor === "string" ? req.query.cursor : undefined,
       });
 
@@ -314,7 +315,7 @@ export function registerDispatchRoutes(app: Express): void {
         | "dismissed"
         | "all"
         | undefined;
-      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      const limit = parseLimit(req.query.limit);
       const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
       const out = storage.listApprovalTasksForDispatcher(me.id, {
         status: status === "all" || !status ? undefined : status,

@@ -25,6 +25,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { generateInviteCode } from "../lib/invite-code";
+import { parseLimit } from "../lib/query";
 import type { Express, Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { getEnrichedIntegrationStatus, INTEGRATIONS } from "../lib/integrations";
@@ -1406,7 +1407,7 @@ export function registerAdminRoutes(app: Express): void {
         status: req.query.status,
         taskType: req.query.taskType,
         assigneeRole: req.query.assigneeRole,
-        limit: req.query.limit ? Number(req.query.limit) : undefined,
+        limit: parseLimit(req.query.limit),
         cursor: typeof req.query.cursor === "string" ? req.query.cursor : undefined,
       });
       return res.json(storage.listApprovalTasksPaginated(filters));

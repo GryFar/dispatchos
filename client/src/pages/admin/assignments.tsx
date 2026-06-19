@@ -83,15 +83,7 @@ export default function AssignmentsPage() {
       toast({ title: "Назначение создано" });
     },
     onError: (err: Error) => {
-      if (isEndpointMissing(err)) {
-        toast({
-          variant: "destructive",
-          title: "Endpoint не реализован",
-          description: "POST /api/admin/assignments — Phase 3 (P1).",
-        });
-      } else {
-        toast({ variant: "destructive", title: "Ошибка", description: err.message });
-      }
+      toast({ variant: "destructive", title: "Ошибка", description: err.message });
     },
   });
 

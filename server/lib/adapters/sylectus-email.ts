@@ -6,6 +6,7 @@
 
 import { storage } from "../../storage";
 import { parseSylectusEmail } from "../parsers/sylectus";
+import { mapEquipment } from "../parsers/broker-email";
 import type {
   BoardAdapter,
   LoadSourceRow,
@@ -76,7 +77,7 @@ export const sylectusEmailAdapter: BoardAdapter = {
       loadedMiles: parsed.miles ?? 0,
       pickupAt: parsed.pickupAt ?? "",
       deliveryAt: "",
-      equipment: (parsed.equipment as never) ?? "van",
+      equipment: mapEquipment(parsed.equipment) ?? "sprinter_van",
       brokerName: parsed.broker?.name ?? "",
       brokerMc: parsed.broker?.mcNumber ?? "",
       weightLbs: parsed.weightLbs,

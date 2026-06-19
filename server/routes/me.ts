@@ -28,6 +28,7 @@ import { z } from "zod";
 import {
   createCheckinSchema,
   createExpenseSchema,
+  createFuelTransactionSchema,
   createIssueSchema,
   driverDocumentTypeSchema,
   driverStatusSchema,
@@ -41,6 +42,7 @@ import {
 } from "@shared/schema";
 import { enrichLoadSync } from "../lib/ai/enrich";
 import { parseReceipt } from "../lib/ai/receipt-ocr";
+import { parseLimit } from "../lib/query";
 import { getCurrentUser, requireRole } from "../auth";
 import { storage, uploadsRoot } from "../storage";
 import { upload } from "../upload";
@@ -482,7 +484,7 @@ export function registerMeRoutes(app: Express): void {
     ah((req, res) => {
       const user = getCurrentUser(req);
       if (!user) return res.status(401).json({ message: "Authentication required" });
-      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      const limit = parseLimit(req.query.limit);
       const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
       const out = storage.listDriverDocumentsForUser(user.id, { limit, cursor });
       return res.json(out);
@@ -668,7 +670,7 @@ export function registerMeRoutes(app: Express): void {
     ah((req, res) => {
       const user = getCurrentUser(req);
       if (!user) return res.status(401).json({ message: "Authentication required" });
-      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      const limit = parseLimit(req.query.limit);
       const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
       const loadId = typeof req.query.loadId === "string" ? req.query.loadId : undefined;
       const out = storage.listExpensesForUser(user.id, { limit, cursor, loadId });
@@ -785,6 +787,89 @@ export function registerMeRoutes(app: Express): void {
   );
 
   // ===========================================================================
+  // Fuel transactions — a driver's actual fuel purchases
+  // ===========================================================================
+  //
+  // GET  /api/me/fuel   — list own fuel purchases (last 90 days)
+  // POST /api/me/fuel   — log a fuel purchase
+  //
+  // Unlike a generic expense, a fuel transaction feeds IFTA gallons-per-state
+  // and MPG analytics (server/lib/ifta.ts). The fuel_transactions table existed
+  // and was read by those reports, but nothing ever wrote driver purchases into
+  // it — so gallons were always 0. This is that write path. Station coordinates
+  // drive IFTA state attribution; when the client doesn't supply them we fall
+  // back to the driver's last known GPS location (they're at the pump).
+
+  app.get(
+    "/api/me/fuel",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const since = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
+      const rows = storage.listFuelTransactionsForDriver(user.id, since);
+      return res.json({ items: rows.map((r) => storage.getFuelTransaction(String(r.id))!) });
+    }),
+  );
+
+  app.post(
+    "/api/me/fuel",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const body = createFuelTransactionSchema.parse(req.body);
+
+      // A referenced load must belong to this driver (same 404 anti-enumeration).
+      if (body.loadId) {
+        const owner = storage.getLoadDriverId(body.loadId);
+        if (!owner || owner !== user.id) {
+          return res.status(404).json({ message: "Load not found" });
+        }
+      }
+
+      // Station coords: use what the client sent, else the driver's last ping.
+      const stationLat = body.stationLat ?? user.lastLat ?? null;
+      const stationLng = body.stationLng ?? user.lastLng ?? null;
+
+      const pricePerGallonCents = Math.round(body.pricePerGallon * 100);
+      const totalCents =
+        body.total != null
+          ? Math.round(body.total * 100)
+          : Math.round(body.gallons * body.pricePerGallon * 100);
+
+      const id = storage.recordFuelTransaction({
+        userId: user.id,
+        clientId: user.linkedClientId ?? null,
+        loadId: body.loadId ?? null,
+        stationName: body.stationName ?? null,
+        stationLat,
+        stationLng,
+        fuelType: body.fuelType,
+        gallons: body.gallons,
+        pricePerGallonCents,
+        totalCents,
+        odometerMiles: body.odometerMiles ?? null,
+        receiptStoragePath: null,
+        notes: body.notes ?? null,
+        occurredAt: body.occurredAt || new Date().toISOString(),
+      });
+
+      storage.audit("driver.fuel_logged", "fuel_transaction", id, {
+        userId: user.id,
+        actorUserId: user.id,
+        gallons: body.gallons,
+        totalCents,
+        clientId: user.linkedClientId ?? null,
+        loadId: body.loadId ?? null,
+        hasStationGeo: stationLat != null && stationLng != null,
+      });
+
+      return res.status(201).json(storage.getFuelTransaction(id));
+    }),
+  );
+
+  // ===========================================================================
   // Phase 4 P1 — Issues (driver-reported problems)
   // ===========================================================================
   //
@@ -878,7 +963,7 @@ export function registerMeRoutes(app: Express): void {
     originState: z.string().min(2).max(2),
     destinationCity: z.string().min(1),
     destinationState: z.string().min(2).max(2),
-    rate: z.number().positive(),
+    rate: z.number().positive().max(1_000_000),
     pickupAt: z.string(),
     deliveryAt: z.string(),
     equipment: equipmentSchema,
@@ -932,9 +1017,12 @@ export function registerMeRoutes(app: Express): void {
         equipment: body.equipment,
         brokerName: body.brokerName,
         brokerMc: body.brokerMc,
-        brokerScore: 100,
-        fraudRisk: 0,
-        marketQuality: 100,
+        // M2: a self-dispatched load has NO third-party broker vetting — claiming
+        // a perfect score / zero fraud poisons the broker-trust & lane analytics.
+        // Use neutral/unknown values so self-dispatch can't skew the scoring.
+        brokerScore: 50,
+        fraudRisk: 50,
+        marketQuality: 50,
         notes: body.notes,
         // Server-injected tenant fields — never from body
         clientId: user.linkedClientId,

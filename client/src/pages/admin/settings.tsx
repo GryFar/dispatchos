@@ -333,6 +333,7 @@ function TwoFactorSection({ enabled }: { enabled: boolean }) {
       </p>
       {dialogOpen && (
         <TotpSetupDialog
+          enabled={enabled}
           onClose={() => setDialogOpen(false)}
         />
       )}
@@ -340,22 +341,38 @@ function TwoFactorSection({ enabled }: { enabled: boolean }) {
   );
 }
 
-function TotpSetupDialog({ onClose }: { onClose: () => void }) {
+function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () => void }) {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const [stage, setStage] = useState<"loading" | "scan" | "done">("loading");
+  // Re-enrolling an already-enabled 2FA (H3) requires the current password first;
+  // first-time setup goes straight to the QR.
+  const [stage, setStage] = useState<"password" | "loading" | "scan" | "done">(
+    enabled ? "password" : "loading",
+  );
   const [setupData, setSetupData] = useState<{ secret: string; otpauthUrl: string } | null>(null);
   const [token, setToken] = useState("");
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [pwError, setPwError] = useState<string | null>(null);
 
-  // Kick off setup immediately on open.
+  // Stages a new secret. For a re-enroll the backend requires currentPassword.
   const setupMutation = useMutation({
-    mutationFn: () => apiJson<{ secret: string; otpauthUrl: string }>("POST", "/api/me/totp/setup", {}),
+    mutationFn: (currentPassword?: string) =>
+      apiJson<{ secret: string; otpauthUrl: string }>(
+        "POST",
+        "/api/me/totp/setup",
+        currentPassword ? { currentPassword } : {},
+      ),
     onSuccess: (data) => {
       setSetupData(data);
       setStage("scan");
     },
     onError: (err) => {
+      // On the password step, keep the dialog open and surface the error inline.
+      if (enabled && stage === "password") {
+        setPwError(err instanceof ApiError ? err.message : "Неверный пароль.");
+        return;
+      }
       toast({
         variant: "destructive",
         description: err instanceof ApiError ? err.message : "Не удалось запустить настройку.",
@@ -364,11 +381,20 @@ function TotpSetupDialog({ onClose }: { onClose: () => void }) {
     },
   });
 
-  // Auto-start on mount.
+  // Auto-start only for first-time enrollment; re-enroll waits for the password.
   useEffect(() => {
-    setupMutation.mutate();
+    if (!enabled) setupMutation.mutate(undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function handleStartReenroll() {
+    setPwError(null);
+    if (!password) {
+      setPwError("Введите текущий пароль");
+      return;
+    }
+    setupMutation.mutate(password);
+  }
 
   const confirmMutation = useMutation({
     mutationFn: (code: string) =>
@@ -404,6 +430,26 @@ function TotpSetupDialog({ onClose }: { onClose: () => void }) {
             Отсканируйте QR в Google Authenticator, 1Password или Authy, затем введите 6-значный код для подтверждения.
           </DialogDescription>
         </DialogHeader>
+
+        {stage === "password" && (
+          <div className="space-y-2">
+            <Label htmlFor="totp-current-pw">Текущий пароль</Label>
+            <Input
+              id="totp-current-pw"
+              type="password"
+              autoComplete="current-password"
+              className="mt-1"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleStartReenroll(); }}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              2FA уже включена. Для перевыпуска подтвердите текущий пароль.
+            </p>
+            {pwError && <p className="text-xs text-destructive">{pwError}</p>}
+          </div>
+        )}
 
         {stage === "loading" && (
           <div className="flex h-48 items-center justify-center">
@@ -452,6 +498,17 @@ function TotpSetupDialog({ onClose }: { onClose: () => void }) {
         )}
 
         <DialogFooter>
+          {stage === "password" && (
+            <>
+              <Button variant="ghost" onClick={onClose} disabled={setupMutation.isPending}>
+                Отмена
+              </Button>
+              <Button onClick={handleStartReenroll} disabled={setupMutation.isPending || !password}>
+                {setupMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Продолжить
+              </Button>
+            </>
+          )}
           {stage === "scan" && (
             <>
               <Button variant="ghost" onClick={onClose} disabled={confirmMutation.isPending}>

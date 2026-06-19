@@ -7,6 +7,8 @@ import FormData from "form-data";
 const port = 5055;
 const baseUrl = `http://127.0.0.1:${port}`;
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+// M4: out-of-band token the locked bootstrap gate requires in production mode.
+const SMOKE_BOOTSTRAP_TOKEN = crypto.randomBytes(16).toString("hex");
 let cookieHeader = "";
 
 function wait(ms) {
@@ -28,6 +30,7 @@ function request(path, options = {}) {
           Origin: baseUrl,
           ...(cookieHeader ? { Cookie: cookieHeader } : {}),
           ...(body ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } : {}),
+          ...(options.headers || {}),
         },
       },
       (res) => {
@@ -210,6 +213,11 @@ const proc = spawn(process.execPath, ["dist/index.cjs"], {
     // round-trip and every post-login request would look unauthenticated.
     // Disable Secure for the local smoke run only.
     DISPATCHOS_COOKIE_SECURE: "false",
+    // M4: bootstrap is now locked whenever NODE_ENV=production (this smoke run
+    // starts the server in production mode), so the harness must present a
+    // bootstrap token to create the first admin. Send it via X-Bootstrap-Token
+    // on the /api/auth/setup + /api/auth/bootstrap calls below.
+    DISPATCHOS_BOOTSTRAP_TOKEN: SMOKE_BOOTSTRAP_TOKEN,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -225,6 +233,14 @@ proc.stderr.on("data", (data) => {
 try {
   await waitForServer(proc);
 
+  // Boot must be clean: the auth rate-limiter's custom keyGenerator has to
+  // normalize IPs via ipKeyGenerator, or express-rate-limit warns
+  // ERR_ERL_KEY_GEN_IPV6 (an IPv6 client could otherwise bypass the limit).
+  if (/ERR_ERL_KEY_GEN_IPV6/.test(output)) {
+    throw new Error("server logged ERR_ERL_KEY_GEN_IPV6 — rate-limiter keyGenerator must use ipKeyGenerator");
+  }
+  console.log("[OK] server boots without rate-limiter IPv6 keygen warning");
+
   const health = await request("/api/health");
   if (!health.ok) throw new Error("/api/health did not return ok=true");
 
@@ -232,6 +248,7 @@ try {
   if (initialAuth.isConfigured) throw new Error("Smoke DB auth should start unconfigured");
   const setup = await request("/api/auth/setup", {
     method: "POST",
+    headers: { "X-Bootstrap-Token": SMOKE_BOOTSTRAP_TOKEN },
     body: { username: "owner", password: "SmokePassword123!" },
   });
   if (!setup.totpSecret) throw new Error("Auth setup did not return TOTP secret");
@@ -572,11 +589,29 @@ try {
   }
   console.log("[OK] re-login produces same user id (persistent users table)");
 
-  // Bootstrap should refuse to run again now that an admin exists (409).
+  // M4 regression: in production mode the gate rejects a tokenless bootstrap
+  // with 401 *before* it even checks whether auth is configured.
+  let noTokenStatus = 0;
+  try {
+    await request("/api/auth/bootstrap", {
+      method: "POST",
+      body: { email: "no-token@example.com", password: "AnotherPass123!" },
+    });
+  } catch (err) {
+    noTokenStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (noTokenStatus !== 401) {
+    throw new Error(`/api/auth/bootstrap without token returned ${noTokenStatus}, expected 401`);
+  }
+  console.log("[OK] /api/auth/bootstrap rejects tokenless call in production mode (M4)");
+
+  // With a valid token, bootstrap should refuse to run again now that an admin
+  // exists (409).
   let bootstrapStatus = 0;
   try {
     await request("/api/auth/bootstrap", {
       method: "POST",
+      headers: { "X-Bootstrap-Token": SMOKE_BOOTSTRAP_TOKEN },
       body: { email: "second-admin@example.com", password: "AnotherPass123!" },
     });
   } catch (err) {
@@ -719,6 +754,18 @@ try {
     throw new Error("/api/me after signup did not reflect the new user");
   }
   console.log("[OK] POST /api/auth/signup + confirm-signup creates session (TOTP confirmed)");
+
+  // H1 (security regression): the legacy global routes are admin-only now — a
+  // dispatcher must NOT read other tenants' data through them (they use the
+  // tenant-scoped /api/dispatch/* API instead).
+  for (const ep of ["/api/clients", "/api/loads", "/api/dispatch-board"]) {
+    let st = 0;
+    try { await request(ep); } catch (err) { st = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0); }
+    if (st !== 403) {
+      throw new Error(`dispatcher reached ${ep} (status ${st}), expected 403 — cross-tenant IDOR guard (H1)`);
+    }
+  }
+  console.log("[OK] dispatcher blocked (403) from legacy admin-only routes (H1 IDOR guard)");
 
   // Re-using the consumed code → 400
   let reuseStatus = 0;
@@ -2345,6 +2392,67 @@ try {
     throw new Error(`scan-receipt must be driver-only (403 for admin), got ${JSON.stringify(scanForbidden)}`);
   }
   console.log("[OK] P1 POST /api/me/expenses/scan-receipt 403 for non-driver");
+  // -- Fuel transactions: log + list + scoping (feeds IFTA gallons) ----------
+  cookieHeader = driverACookie;
+  const fuelEmpty = await request("/api/me/fuel");
+  if (!Array.isArray(fuelEmpty.items) || fuelEmpty.items.length !== 0) {
+    throw new Error(`fuel: empty shape unexpected: ${JSON.stringify(fuelEmpty)}`);
+  }
+  console.log("[OK] GET /api/me/fuel (empty)");
+
+  const fuelTx = await request("/api/me/fuel", {
+    method: "POST",
+    body: {
+      loadId: driverALoad.id,
+      gallons: 50,
+      pricePerGallon: 4.3,
+      fuelType: "diesel",
+      stationName: "Pilot Dallas",
+      stationLat: 32.8,
+      stationLng: -96.8,
+      occurredAt: "2026-05-15T12:00:00.000Z",
+    },
+  });
+  if (fuelTx.gallons !== 50 || fuelTx.pricePerGallonCents !== 430) {
+    throw new Error(`fuel: shape wrong: ${JSON.stringify(fuelTx)}`);
+  }
+  // total omitted -> auto-computed: 50 * $4.30 = $215.00 -> 21500 cents.
+  if (fuelTx.totalCents !== 21500) {
+    throw new Error(`fuel: total not auto-computed, got ${fuelTx.totalCents}`);
+  }
+  if (fuelTx.userId !== driverA.id) throw new Error("fuel: userId leak/mismatch");
+  console.log("[OK] POST /api/me/fuel (log + total auto-compute)");
+
+  const fuelList = await request("/api/me/fuel");
+  if (fuelList.items.length !== 1 || fuelList.items[0].id !== fuelTx.id) {
+    throw new Error("fuel: list did not return the logged tx");
+  }
+  console.log("[OK] GET /api/me/fuel (lists own)");
+
+  // Cross-driver loadId -> 404 (anti-enumeration).
+  cookieHeader = driverB2Cookie;
+  let fuelCross = 0;
+  try {
+    await request("/api/me/fuel", {
+      method: "POST",
+      body: { loadId: driverALoad.id, gallons: 10, pricePerGallon: 4 },
+    });
+  } catch (e) {
+    fuelCross = Number(String(e.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (fuelCross !== 404) throw new Error(`fuel: cross-driver loadId should 404, got ${fuelCross}`);
+  console.log("[OK] POST /api/me/fuel 404 on cross-driver loadId");
+
+  // Admin (non-driver) -> 403.
+  cookieHeader = adminCookieHeader;
+  let fuelForbidden = 0;
+  try {
+    await request("/api/me/fuel", { method: "POST", body: { gallons: 10, pricePerGallon: 4 } });
+  } catch (e) {
+    fuelForbidden = Number(String(e.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (fuelForbidden !== 403) throw new Error(`fuel: non-driver should 403, got ${fuelForbidden}`);
+  console.log("[OK] POST /api/me/fuel 403 for non-driver");
   cookieHeader = driverACookie;
 
   // -- P1 issues: create driver_issue task ----------------------------------
@@ -3082,7 +3190,43 @@ try {
   if (!adaptersResp.adapters.some((a) => a.implemented === false)) {
     throw new Error("load-sources/adapters: expected at least one stub (implemented:false)");
   }
-  console.log("[OK] GET /api/admin/load-sources/adapters (mock implemented + stubs present)");
+  // Email-forwarding brokers are now real adapters (broker-email.ts), not stubs.
+  for (const key of ["rxo_email", "tql_email", "coyote_email", "echo_email", "landstar_email"]) {
+    const a = adaptersResp.adapters.find((x) => x.key === key);
+    if (!a || a.implemented !== true) {
+      throw new Error(`load-sources/adapters: ${key} should be implemented (real email adapter)`);
+    }
+    if (a.requiresCredentials !== false) {
+      throw new Error(`load-sources/adapters: ${key} should be credential-free (email forwarding)`);
+    }
+  }
+  console.log("[OK] GET /api/admin/load-sources/adapters (mock + 5 broker-email implemented, stubs present)");
+
+  // End-to-end: create an RXO email source and confirm the Test endpoint
+  // authenticates (config has the required inboundAddress) + fetches without
+  // error. No matching inbound email yet, so fetch returns 0 — the point is
+  // that the real adapter wires up end to end, not just that it exists.
+  const rxoSource = (
+    await request("/api/admin/load-sources", {
+      method: "POST",
+      body: {
+        clientId: "ivan-enclosed-01",
+        adapterKey: "rxo_email",
+        label: "RXO forwarding (smoke)",
+        configJson: { inboundAddress: "loads+smoke@dispatchos.co" },
+        pollIntervalMin: 20,
+        status: "paused",
+      },
+    })
+  ).loadSource;
+  if (!rxoSource?.id) throw new Error("rxo_email load source create did not return id");
+  const rxoTest = await request(`/api/admin/load-sources/${rxoSource.id}/test`, {
+    method: "POST",
+  });
+  if (rxoTest.ok !== true) {
+    throw new Error(`rxo_email test did not pass authenticate: ${JSON.stringify(rxoTest)}`);
+  }
+  console.log("[OK] POST /api/admin/load-sources (rxo_email create + Test authenticates)");
 
   // Create requires clientId/adapterKey/label.
   let lsBadStatus = 0;
