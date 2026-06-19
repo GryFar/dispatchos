@@ -387,8 +387,14 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
   );
 
   const reassignMutation = useMutation({
-    mutationFn: (driverId: string | null) =>
-      apiJson("PATCH", `/api/dispatch/loads/${load.id}`, { driverId }),
+    mutationFn: (input: { driverId: string | null; expectedDriverId: string | null }) =>
+      apiJson("PATCH", `/api/dispatch/loads/${load.id}`, {
+        driverId: input.driverId,
+        // Optimistic concurrency: the driverId we saw when the dialog opened.
+        // The server's atomic guard rejects the write (409) if the load moved
+        // since then, preventing a silent double-book (Корень #1).
+        expectedDriverId: input.expectedDriverId,
+      }),
     onSuccess: () => {
       toast({
         title: t("dispatch.load_detail.updated"),
@@ -403,6 +409,20 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
       setSelectedDriverId(null);
     },
     onError: (err: Error) => {
+      // 409 = someone reassigned this load first. Don't show a generic error —
+      // tell the user and refetch so they see the current driver before retrying.
+      if (err instanceof ApiError && err.status === 409) {
+        toast({
+          title: t("dispatch.load_detail.reassign_conflict_title"),
+          description: t("dispatch.load_detail.reassign_conflict_desc"),
+          variant: "destructive",
+        });
+        qc.invalidateQueries({ queryKey: ["dispatch", "load", load.id] });
+        qc.invalidateQueries({ queryKey: ["dispatch", "loads"] });
+        setReassignOpen(false);
+        setSelectedDriverId(null);
+        return;
+      }
       toast({
         title: t("dispatch.load_detail.update_error"),
         description: err.message,
@@ -622,7 +642,12 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
             {load.driverId && (
               <Button
                 variant="outline"
-                onClick={() => reassignMutation.mutate(null)}
+                onClick={() =>
+                  reassignMutation.mutate({
+                    driverId: null,
+                    expectedDriverId: load.driverId ?? null,
+                  })
+                }
                 disabled={reassignMutation.isPending}
                 className="mr-auto"
               >
@@ -640,7 +665,10 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
             <Button
               onClick={() => {
                 if (selectedDriverId && selectedDriverId !== load.driverId) {
-                  reassignMutation.mutate(selectedDriverId);
+                  reassignMutation.mutate({
+                    driverId: selectedDriverId,
+                    expectedDriverId: load.driverId ?? null,
+                  });
                 }
               }}
               disabled={
