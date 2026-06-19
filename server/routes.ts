@@ -1254,10 +1254,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     }
 
-    if (storage.getUserByEmail(body.email)) {
-      return res.status(409).json({ message: "Email already in use" });
-    }
-
     const { salt, hash } = hashPassword(body.password);
     const totpSecret = generateBase32Secret();
 
@@ -1279,6 +1275,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // we still refuse to consume it through public signup.
       if (invite.role === "admin") {
         return res.status(400).json({ message: "Invite not found or expired" });
+      }
+      // Enumeration: check email-taken only AFTER the invite is validated, so a
+      // probe without a valid code gets the generic "Invite not found or
+      // expired" first and can't distinguish registered emails. The invite is
+      // not consumed yet here, so a 409 does not burn it.
+      if (storage.getUserByEmail(body.email)) {
+        return res.status(409).json({ message: "Email already in use" });
       }
       // Atomic: create the user and consume the invite together. A concurrent
       // signup on the same code rolls back — a single-use invite can't mint two.
@@ -1310,6 +1313,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // invite. The account starts as a driver with NO carrier and NO trial;
       // load access / trial only unlock after a valid, unclaimed, FMCSA-active
       // MC is claimed during onboarding (which then provisions the carrier).
+      // Self-serve has no invite secret to protect; an email-taken 409 here is
+      // inherent to open registration (the auth brute-force limiter throttles
+      // probing). Without this check a duplicate email hits the users UNIQUE
+      // index and throws a 500 instead of returning a clean 409.
+      if (storage.getUserByEmail(body.email)) {
+        return res.status(409).json({ message: "Email already in use" });
+      }
       created = storage.createUser({
         email: body.email,
         fullName: body.fullName,
