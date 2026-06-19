@@ -429,7 +429,7 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
                 </p>
                 {load.bookedAt && (
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Booked: {load.bookedAt}
+                    Booked: {formatDateFull(load.bookedAt)}
                   </p>
                 )}
               </>

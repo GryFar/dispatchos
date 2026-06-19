@@ -90,7 +90,7 @@ export default function DriverDashboardPage() {
       <ContextCard client={data.client} dispatcher={data.dispatcher} />
       {data.client?.persona === "owner_operator" && <SelfDispatchButton />}
       <QuickActions
-        phone={data.driver.phone}
+        phone={data.dispatcher?.phone ?? undefined}
         currentLoadId={data.currentLoad?.id ?? null}
       />
       <RecentLoadsPanel loads={data.recentLoads} />

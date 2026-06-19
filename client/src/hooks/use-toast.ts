@@ -179,7 +179,10 @@ function useToast() {
         listeners.splice(index, 1)
       }
     }
-  }, [state])
+    // Subscribe ONCE on mount. The upstream shadcn template had `[state]` here,
+    // re-subscribing on every toast and dropping toasts dispatched in the
+    // unsubscribe/re-subscribe window.
+  }, [])
 
   return {
     ...state,
