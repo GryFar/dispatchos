@@ -295,9 +295,10 @@ export function requireActiveBilling(
   if (!clientId) return next(); // No carrier context — let through (bootstrap/onboarding)
 
   const client = storage.getClient(clientId) as
-    | (Record<string, unknown> & {
+| (Record<string, unknown> & {
         billingStatus?: string;
         trialEndsAt?: string;
+        pastDueSince?: string;
         stripeSubscriptionId?: string;
       })
     | undefined;
@@ -313,9 +314,15 @@ export function requireActiveBilling(
   }
   if (status === "past_due") {
     // Grace period: allow PAST_DUE_GRACE_DAYS after the most recent failed
-    // invoice (we approximate via trialEndsAt as the last known billing date).
-    // After grace, treat as expired.
-    const ref = client.trialEndsAt ? new Date(client.trialEndsAt).getTime() : Date.now();
+    // invoice, then treat as expired.
+    // Prefer the actual failed-payment date (stamped by the Stripe webhook on
+    // invoice.payment_failed). Fall back to trialEndsAt only for legacy records
+    // that pre-date pastDueSince — we can't reconstruct the failure date for those.
+    const ref = client.pastDueSince
+      ? new Date(client.pastDueSince).getTime()
+      : client.trialEndsAt
+        ? new Date(client.trialEndsAt).getTime()
+        : Date.now();
     const past = (Date.now() - ref) / (24 * 3600 * 1000);
     if (past > PAST_DUE_GRACE_DAYS) {
       return res.status(402).json({

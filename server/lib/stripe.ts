@@ -335,9 +335,18 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       if (!clientId) return { handled: false, clientId: null };
       const client = storage.getClient(clientId);
       if (!client) return { handled: false, clientId };
+      // Stamp the actual failure date so requireActiveBilling can compute the
+      // 7-day grace from THIS event, not from trialEndsAt (which could be months
+      // earlier for a long-active carrier — Nikita's 🟡). Only stamp on the FIRST
+      // failure of a past_due streak: if already past_due, keep the original date
+      // so retries don't keep resetting the grace clock.
+      const alreadyPastDue =
+        (client as { billingStatus?: string; pastDueSince?: string }).billingStatus === "past_due";
+      const existingSince = (client as { pastDueSince?: string }).pastDueSince;
       storage.upsertClient({
         ...(client as unknown as Parameters<typeof storage.upsertClient>[0]),
         billingStatus: "past_due",
+        pastDueSince: alreadyPastDue && existingSince ? existingSince : new Date().toISOString(),
       } as Parameters<typeof storage.upsertClient>[0]);
       storage.audit("billing.payment_failed", "client", clientId, {
         invoiceId: invoice.id,
@@ -364,6 +373,9 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
         storage.upsertClient({
           ...(client as unknown as Parameters<typeof storage.upsertClient>[0]),
           billingStatus: "active",
+          // Clear the failure marker — the streak is resolved, so a future
+          // payment_failed stamps a fresh date and gets a fresh grace window.
+          pastDueSince: undefined,
         } as Parameters<typeof storage.upsertClient>[0]);
       }
       storage.audit("billing.payment_succeeded", "client", clientId, {
