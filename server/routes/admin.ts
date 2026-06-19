@@ -54,6 +54,7 @@ import {
   requireRole,
 } from "../auth";
 import { storage, uploadsRoot } from "../storage";
+import { canAddDriver } from "../lib/plans";
 import { upload } from "../upload";
 import { uploadDriverDocumentSchema } from "@shared/schema";
 import { computeInvoiceForWeek } from "../lib/billing";
@@ -305,8 +306,20 @@ export function registerAdminRoutes(app: Express): void {
         if (body.role !== "driver") {
           return res.status(400).json({ message: "linkedClientId is only valid for role=driver" });
         }
-        if (!storage.getClient(body.linkedClientId)) {
+        const linkedClient = storage.getClient(body.linkedClientId);
+        if (!linkedClient) {
           return res.status(400).json({ message: "linkedClientId references unknown client" });
+        }
+        // Seat-limit enforcement (revenue leak fix): a $19 owner-operator must
+        // not be able to add drivers beyond their plan's included seats. Count
+        // existing seats live (active drivers + pending invites) and gate.
+        const seat = canAddDriver({
+          planTier: linkedClient.planTier,
+          persona: linkedClient.persona,
+          driverSeatCount: storage.countDriverSeats(body.linkedClientId),
+        });
+        if (!seat.allowed) {
+          return res.status(402).json({ message: seat.reason, needsUpgrade: seat.needsUpgrade });
         }
       }
 
@@ -485,8 +498,21 @@ export function registerAdminRoutes(app: Express): void {
         if (body.role !== "driver") {
           return res.status(400).json({ message: "linkedClientId is only valid for role=driver" });
         }
-        if (!storage.getClient(body.linkedClientId)) {
+        const linkedClient = storage.getClient(body.linkedClientId);
+        if (!linkedClient) {
           return res.status(400).json({ message: "linkedClientId references unknown client" });
+        }
+        // Seat-limit enforcement: a pending driver invite reserves a seat, so
+        // gate invite creation too — otherwise an admin could issue unlimited
+        // invites that each redeem past the plan cap (countDriverSeats already
+        // includes outstanding invites).
+        const seat = canAddDriver({
+          planTier: linkedClient.planTier,
+          persona: linkedClient.persona,
+          driverSeatCount: storage.countDriverSeats(body.linkedClientId),
+        });
+        if (!seat.allowed) {
+          return res.status(402).json({ message: seat.reason, needsUpgrade: seat.needsUpgrade });
         }
       }
 

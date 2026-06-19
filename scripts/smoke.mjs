@@ -720,6 +720,88 @@ try {
   console.log("[OK] /api/admin/invites refuses role=admin");
 
   // -------------------------------------------------------------------------
+  // Seat limits (P1 revenue leak): an oo_basic carrier (1 included seat, no
+  // paid overage) must not be able to add a second driver — neither directly
+  // nor via a pending invite. Previously canAddDriver was never called.
+  // -------------------------------------------------------------------------
+  const seatClient = await request("/api/clients", {
+    method: "POST",
+    body: {
+      name: "Seat Limit Carrier",
+      mc: "MC-SEAT01",
+      equipment: "open_car_hauler",
+      planTier: "oo_basic",
+      persona: "owner_operator",
+      targetPpm: 2.5,
+      minimumPpm: 2.0,
+      mpg: 9,
+      fuelPrice: 3.6,
+      fixedCostPerMile: 0.4,
+      preferredLanes: [],
+      avoidStates: [],
+      currentLocation: {
+        city: "Dallas",
+        state: "TX",
+        lat: 32.7767,
+        lng: -96.797,
+        source: "manual_checkin",
+        updatedAt: new Date().toISOString(),
+        status: "empty",
+        availableAt: new Date().toISOString(),
+      },
+    },
+  });
+  if (!seatClient.id) throw new Error("seat-limit: POST /api/clients did not create id");
+
+  // First driver fills the single included seat — allowed.
+  const firstDriver = await request("/api/admin/users", {
+    method: "POST",
+    body: {
+      email: "seat.driver1@example.com",
+      fullName: "Seat Driver One",
+      role: "driver",
+      linkedClientId: seatClient.id,
+    },
+  });
+  if (!firstDriver.id) throw new Error("seat-limit: first driver should be allowed");
+  console.log("[OK] seat-limit: first driver allowed on oo_basic");
+
+  // Second driver must be blocked with 402 (needs upgrade).
+  let secondDriverStatus = 0;
+  try {
+    await request("/api/admin/users", {
+      method: "POST",
+      body: {
+        email: "seat.driver2@example.com",
+        fullName: "Seat Driver Two",
+        role: "driver",
+        linkedClientId: seatClient.id,
+      },
+    });
+  } catch (err) {
+    secondDriverStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (secondDriverStatus !== 402) {
+    throw new Error(`seat-limit: second driver returned ${secondDriverStatus}, expected 402`);
+  }
+  console.log("[OK] seat-limit: second driver blocked (402) on oo_basic");
+
+  // A driver invite for the now-full carrier must also be blocked.
+  let seatInviteStatus = 0;
+  try {
+    await request("/api/admin/invites", {
+      method: "POST",
+      body: { role: "driver", linkedClientId: seatClient.id },
+    });
+  } catch (err) {
+    seatInviteStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (seatInviteStatus !== 402) {
+    throw new Error(`seat-limit: driver invite returned ${seatInviteStatus}, expected 402`);
+  }
+  console.log("[OK] seat-limit: driver invite blocked (402) on full oo_basic carrier");
+
+  // -------------------------------------------------------------------------
   // Signup as a brand-new user (separate cookie jar)
   // -------------------------------------------------------------------------
   const adminCookieHeader = cookieHeader;
