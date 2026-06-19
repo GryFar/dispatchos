@@ -135,10 +135,13 @@ export async function runInsuranceCheck(
   let ownerEmail: string | null =
     ownerEmailOverride ?? process.env.DISPATCHOS_OWNER_EMAIL ?? null;
   if (!ownerEmail) {
-    const owners = storage
+    const owner = storage
       .listUsers()
-      .filter((u) => u.role === "admin" && !u.blocked && !u.deletedAt);
-    if (owners.length > 0) ownerEmail = owners[0].email;
+      .find(
+        (u) =>
+          u.role === "admin" && !u.blocked && !u.deletedAt && typeof u.email === "string" && u.email.includes("@"),
+      );
+    if (owner) ownerEmail = owner.email;
   }
 
   const alertsSent: InsuranceCheckResult["alertsSent"] = [];

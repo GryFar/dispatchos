@@ -40,6 +40,13 @@ function verifyResendSignature(
 ): boolean {
   if (!svixId || !svixTimestamp || !svixSignatureHeader || !secret) return false;
 
+  // Reject stale/future timestamps (±5 min) so a captured-and-valid delivery
+  // can't be replayed indefinitely. The timestamp is part of the signed
+  // payload, so an attacker can't forge a fresh one. (svix/Standard Webhooks
+  // mandates this freshness window.)
+  const tsSec = Number(svixTimestamp);
+  if (!Number.isFinite(tsSec) || Math.abs(Date.now() / 1000 - tsSec) > 300) return false;
+
   // Strip prefix and decode base64 → raw secret bytes
   const cleaned = secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret;
   let secretBytes: Buffer;

@@ -121,10 +121,15 @@ export function registerInboundRoutes(app: Express): void {
     if (typeof body?.from !== "string" || typeof body?.body !== "string") {
       return res.status(400).json({ message: "from and body are required strings" });
     }
+    // Bound sizes so a leaked inbound secret can't write multi-MB blobs (DoS).
+    const subjectStr = typeof body.subject === "string" ? body.subject : "";
+    if (body.from.length > 998 || subjectStr.length > 998 || body.body.length > 1_000_000) {
+      return res.status(413).json({ message: "email fields exceed size limits" });
+    }
 
     const input = {
       from: body.from,
-      subject: typeof body.subject === "string" ? body.subject : "",
+      subject: subjectStr,
       body: body.body,
     };
 

@@ -81,6 +81,16 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Zod issues → `{ path, message }[]`, matching spec §0.2. */
+/** Parse a JSON string from a DB column without crashing on a corrupted row. */
+function safeJson<T>(value: unknown, fallback: T): T {
+  if (typeof value !== "string") return (value as T) ?? fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 function zodIssues(error: ZodError) {
   return error.issues.map((issue) => ({
     path: issue.path,
@@ -749,7 +759,7 @@ export function registerAdminRoutes(app: Express): void {
       const rows = storage.listInsuranceAlertsForClient(clientId, 50);
       return res.json({ alerts: rows.map((r) => ({
         ...r,
-        channels: typeof r.channels === "string" ? JSON.parse(r.channels as string) : r.channels,
+        channels: safeJson(r.channels, [] as unknown[]),
       })) });
     }),
   );
@@ -814,7 +824,10 @@ export function registerAdminRoutes(app: Express): void {
     ah((req, res) => {
       const target = storage.getUserById(String(req.params.id));
       if (!target) return res.status(404).json({ message: "User not found" });
-      const sinceHours = Math.min(Number(req.query.sinceHours ?? 24), 24 * 15);
+      // Guard NaN: ?sinceHours=abc -> Number = NaN -> new Date(NaN).toISOString()
+      // throws RangeError. Clamp to a sane [1, 360]h window with a 24h default.
+      const rawHours = Number(req.query.sinceHours ?? 24);
+      const sinceHours = Number.isFinite(rawHours) ? Math.min(Math.max(rawHours, 1), 24 * 15) : 24;
       const sinceIso = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
       const pings = storage.listLocationPings(target.id, { sinceIso });
       return res.json({
@@ -1646,7 +1659,7 @@ export function registerAdminRoutes(app: Express): void {
           dispatchScore: s.dispatch_score,
           verdict: s.verdict,
           estimatedNet: s.estimated_net,
-          breakdown: JSON.parse(s.breakdown_json),
+          breakdown: safeJson(s.breakdown_json, null),
           computedAt: s.computed_at,
         });
       }

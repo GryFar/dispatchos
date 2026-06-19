@@ -58,6 +58,7 @@ import { registerBillingRoutes } from "./routes/billing";
 import { enrichLoadSync } from "./lib/ai";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
+import { parseLimit } from "./lib/query";
 import { fetchByMc } from "./lib/ai/fmcsa";
 import { isDisposableEmail } from "./lib/disposable-domains";
 import {
@@ -1953,7 +1954,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.get("/api/email/ingest", requireRole("admin", "dispatcher"), (req, res) => {
-    const limit = Math.min(Number(req.query.limit || 50), 200);
+    // parseLimit guards against ?limit=abc -> NaN -> SQLite LIMIT NaN (returns
+    // every row / unbounded read).
+    const limit = Math.min(parseLimit(req.query.limit) ?? 50, 200);
     res.json(storage.listEmailIngest(limit));
   });
 

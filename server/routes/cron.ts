@@ -272,6 +272,11 @@ export function registerCronRoutes(app: Express): void {
     if (points.length === 0) {
       return res.status(400).json({ message: "Body must include points: [{lat, lng, radiusKm?}]" });
     }
+    // Cap fan-out so a single call can't trigger thousands of sequential vendor
+    // scrapes (rate-limit burn / long-running request).
+    if (points.length > 100) {
+      return res.status(413).json({ message: "Too many points (max 100 per call)" });
+    }
 
     const perPoint: Array<{ lat: number; lng: number; observed: number; error?: string }> = [];
     let totalObserved = 0;
@@ -279,7 +284,8 @@ export function registerCronRoutes(app: Express): void {
     for (const p of points) {
       const lat = Number(p?.lat);
       const lng = Number(p?.lng);
-      const radiusKm = typeof p?.radiusKm === "number" ? p.radiusKm : 8;
+      const rawRadius = typeof p?.radiusKm === "number" ? p.radiusKm : 8;
+      const radiusKm = Number.isFinite(rawRadius) ? Math.min(Math.max(rawRadius, 0.5), 100) : 8;
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
         perPoint.push({ lat, lng, observed: 0, error: "invalid_coords" });
         continue;
