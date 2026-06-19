@@ -61,5 +61,21 @@ if ("id" in result) {
 const again = storage.provisionCarrierFromOnboarding(user.id, { persona: "owner_operator" });
 assert("second provision is a no-op (already linked)", "skipped" in again && again.skipped === "already_linked");
 
+// no_mc invariant: a user who never claimed an MC cannot be provisioned,
+// even with a valid persona — no mc:"" trial carriers.
+const noMcUser = storage.createUser({
+  email: `nomc-${rnd()}@example.com`,
+  fullName: "No MC Owner",
+  role: "driver",
+  passwordSalt: "s",
+  passwordHash: "h",
+});
+const noMc = storage.provisionCarrierFromOnboarding(noMcUser.id, {
+  persona: "owner_operator",
+  companyName: "No MC LLC",
+});
+assert("provision without claimed MC is skipped (no_mc)", "skipped" in noMc && noMc.skipped === "no_mc");
+assert("no-mc user stays unlinked", !storage.getUserById(noMcUser.id)!.linkedClientId);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

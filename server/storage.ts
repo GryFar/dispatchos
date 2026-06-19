@@ -3335,11 +3335,15 @@ export const storage = {
       companyName?: string;
       planTier?: string;
     },
-  ): Client | { skipped: "already_linked" | "user_not_found" } {
+  ): Client | { skipped: "already_linked" | "user_not_found" | "no_mc" } {
     const user = this.getUserById(userId);
     if (!user) return { skipped: "user_not_found" };
     if (user.linkedClientId) return { skipped: "already_linked" };
     const claimed = this.findMcByUserId(userId);
+    // Defense-in-depth: never mint a carrier without a claimed MC docket. The
+    // route gates this too (V4-003), but keeping the invariant local means a
+    // future call site can't accidentally create an mc:"" trial carrier.
+    if (!claimed?.mcNormalized) return { skipped: "no_mc" };
     const nowIso = now();
     const planTier =
       input.planTier ||

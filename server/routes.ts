@@ -1556,7 +1556,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/me/onboarding", (req, res) => {
     const user = getCurrentUser(req);
     if (!user) return res.status(401).json({ message: "Authentication required" });
-    const progress = storage.getOnboardingProgress(user.id);
+    let progress = storage.getOnboardingProgress(user.id);
+
+    // Self-heal: a user "completed" but with no linked carrier (provision that
+    // failed after completedAt was stamped under the old order, or a legacy
+    // account from before this fix). If the saved data still carries a valid
+    // persona, re-provision now. provisionCarrierFromOnboarding is idempotent
+    // (no-ops once linked, skips with no_mc if no docket was ever claimed).
+    if (progress?.completedAt && !user.linkedClientId) {
+      const persona = (progress.data as { persona?: unknown })?.persona;
+      if (persona === "owner_operator" || persona === "fleet" || persona === "enterprise") {
+        const d = progress.data as { companyName?: string; planTier?: string };
+        const result = storage.provisionCarrierFromOnboarding(user.id, {
+          persona,
+          companyName: d.companyName,
+          planTier: d.planTier,
+        });
+        if ("id" in result) {
+          storage.audit("onboarding.carrier_self_healed", "user", user.id, {
+            clientId: result.id,
+          });
+        }
+        progress = storage.getOnboardingProgress(user.id);
+      }
+    }
+
     return res.json({
       progress: progress ?? {
         userId: user.id,
@@ -1635,16 +1659,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
 
-    // Audit v4 V4-003 — hard gate: cannot mark onboarding completed without
-    // having claimed an MC docket through this same flow. Previously a user
-    // could PATCH `{ completed: true }` with no MC and skip MC-uniqueness
-    // (V4-001 #104) + FMCSA REVOKED reject (V4-001 #107) entirely, getting
-    // a 14-day trial without any identity proof. Trial-farming hole.
-    //
-    // The MC can arrive either in THIS request (handled above) or be
-    // already claimed from an earlier PATCH — we check the registry for
-    // any docket owned by this user.
+// ---- Completion gates: run BEFORE we persist completedAt ----
+    // The carrier must exist before onboarding is marked done. Previously
+    // completedAt was stamped first and provision ran (unchecked) after, so a
+    // missing/typo'd persona stamped "completed" while the carrier was silently
+    // skipped — stranding the user in a portal with no client and no trial, and
+    // with no way back into the wizard (hasCompleted bounces them out).
+    let provisioned = false;
     if (body.completed) {
+      // V4-003 hard gate: cannot complete without a claimed MC docket. The MC
+      // can arrive in THIS request (handled above) or from an earlier PATCH.
       const claimedMc = storage.findMcByUserId(user.id);
       if (!claimedMc) {
         storage.audit("onboarding.completion_rejected_no_mc", "user", user.id, {
@@ -1656,36 +1680,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
           code: "mc_required_to_complete",
         });
       }
+
+      // Persona gate: provisioning requires a valid persona. Reject explicitly
+      // instead of silently skipping provision (the old failure mode).
+      const dPersona = (body.data as { persona?: unknown } | undefined)?.persona;
+      if (
+        dPersona !== "owner_operator" &&
+        dPersona !== "fleet" &&
+        dPersona !== "enterprise"
+      ) {
+        storage.audit("onboarding.completion_rejected_no_persona", "user", user.id, {
+          step: body.step,
+        });
+        return res.status(422).json({
+          message:
+            "Не выбран тип аккаунта (owner-operator / fleet / enterprise). Вернитесь на шаг «Тип аккаунта».",
+          code: "persona_required_to_complete",
+        });
+      }
+
+      // Provision the carrier. If it fails, do NOT mark onboarding complete.
+      if (!user.linkedClientId) {
+        const d = (body.data ?? {}) as { companyName?: string; planTier?: string };
+        const result = storage.provisionCarrierFromOnboarding(user.id, {
+          persona: dPersona,
+          companyName: d.companyName,
+          planTier: d.planTier,
+        });
+        if (!("id" in result) && result.skipped !== "already_linked") {
+          storage.audit("onboarding.provision_failed", "user", user.id, {
+            reason: result.skipped,
+            step: body.step,
+          });
+          return res.status(500).json({
+            message: "Не удалось создать carrier. Попробуйте ещё раз или напишите в поддержку.",
+            code: "provision_failed",
+          });
+        }
+        provisioned = true;
+      }
     }
 
+    // Persist progress (and completedAt) only after gates + provision succeeded.
     storage.upsertOnboardingProgress(user.id, {
       step: body.step,
       data: body.data,
       completed: body.completed,
     });
+
     if (body.completed) {
-      const d = (body.data ?? {}) as { persona?: string; companyName?: string; planTier?: string };
+      const d = (body.data ?? {}) as { persona?: string; planTier?: string };
       storage.audit("onboarding.completed", "user", user.id, {
         userId: user.id,
         persona: d.persona,
         planTier: d.planTier,
+        provisioned,
       });
-
-      // P0.1 — provision the carrier (create client + link user + start trial).
-      // Previously onboarding-complete only wrote progress, so the carrier never
-      // existed. Idempotent + atomic inside the storage method.
-      const personaVal = d.persona;
-      if (
-        !user.linkedClientId &&
-        (personaVal === "owner_operator" || personaVal === "fleet" || personaVal === "enterprise")
-      ) {
-        storage.provisionCarrierFromOnboarding(user.id, {
-          persona: personaVal,
-          companyName: d.companyName,
-          planTier: d.planTier,
-        });
-      }
     }
+
     const progress = storage.getOnboardingProgress(user.id);
     return res.json({ progress });
   });
