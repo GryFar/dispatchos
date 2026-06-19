@@ -40,6 +40,7 @@ import {
   type LoadFull,
 } from "@shared/schema";
 import { enrichLoadSync } from "../lib/ai/enrich";
+import { parseLimit } from "../lib/query";
 import { getCurrentUser, requireRole } from "../auth";
 import { storage, uploadsRoot } from "../storage";
 import { upload } from "../upload";
@@ -481,7 +482,7 @@ export function registerMeRoutes(app: Express): void {
     ah((req, res) => {
       const user = getCurrentUser(req);
       if (!user) return res.status(401).json({ message: "Authentication required" });
-      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      const limit = parseLimit(req.query.limit);
       const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
       const out = storage.listDriverDocumentsForUser(user.id, { limit, cursor });
       return res.json(out);
@@ -667,7 +668,7 @@ export function registerMeRoutes(app: Express): void {
     ah((req, res) => {
       const user = getCurrentUser(req);
       if (!user) return res.status(401).json({ message: "Authentication required" });
-      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      const limit = parseLimit(req.query.limit);
       const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
       const loadId = typeof req.query.loadId === "string" ? req.query.loadId : undefined;
       const out = storage.listExpensesForUser(user.id, { limit, cursor, loadId });
