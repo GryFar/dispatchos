@@ -81,6 +81,9 @@ function compactLoad(l: ScoredLoad) {
     dispatchScore: l.dispatchScore,
     verdict: l.verdict, // book | negotiate | skip
     counterOffer: l.counterOffer,
+    // Outbound-market strength at the destination (0..100). Low = delivers into
+    // a soft freight market → likely deadhead / wait for the next load.
+    backhaulScore: (l as ScoredLoad & { backhaulScore?: number }).backhaulScore ?? null,
     brokerName: brokerName ? sanitizeText(brokerName) : null,
     brokerMc: (l as ScoredLoad & { brokerMc?: string }).brokerMc ?? null,
     fraudRisk: (l as ScoredLoad & { fraudRisk?: number }).fraudRisk ?? null,
@@ -148,7 +151,11 @@ export async function getAiRecommendation(
     JSON.stringify(loads) +
     "\n\nRecommend which single load the dispatcher should book first. " +
     "Weigh net pay-per-mile, deadhead, broker/fraud risk, pickup feasibility, " +
-    "and fit with the carrier's lanes/avoid-states. You may disagree with the " +
+    "and fit with the carrier's lanes/avoid-states. Also weigh backhaulScore " +
+    "(0..100 outbound-market strength at the destination): a higher-paying load " +
+    "into a weak outbound market can net less over the next leg than a slightly " +
+    "lower load into a strong one — flag this in watchOuts when it matters. " +
+    "You may disagree with the " +
     "scorer's top pick if there's a good reason — explain it. " +
     "Return ONLY a JSON object, no prose, no markdown, with exactly these keys:\n" +
     '{"recommendedLoadId": string, "reasoning": string, "watchOuts": string[], "confidence": number}\n' +
