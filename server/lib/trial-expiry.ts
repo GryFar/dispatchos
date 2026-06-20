@@ -85,12 +85,17 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
   const outcomes: TrialOutcome[] = [];
 
   const ctx: NotifyContext = {
+    // Canonical telegram key is telegram_driver_bot/TELEGRAM_DRIVER_BOT_TOKEN
+    // (only telegram entry in the INTEGRATIONS registry). The old "telegram"/
+    // TELEGRAM_BOT_TOKEN lookup never matched the DB-configured token and fell
+    // back to an unset env var, so trial reminders/expiry alerts silently never
+    // sent. Mirror inbound/insurance/compliance.
     telegramBotToken:
-      getIntegrationValue("telegram", "TELEGRAM_BOT_TOKEN") ??
-      process.env.TELEGRAM_BOT_TOKEN ??
+      getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN") ??
+      process.env.TELEGRAM_DRIVER_BOT_TOKEN ??
       null,
     telegramChatId:
-      getIntegrationValue("telegram", "TELEGRAM_ALERT_CHAT_ID") ??
+      getIntegrationValue("telegram_driver_bot", "TELEGRAM_ALERT_CHAT_ID") ??
       process.env.TELEGRAM_ALERT_CHAT_ID ??
       null,
     resendFromEmail:
