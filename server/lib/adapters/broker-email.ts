@@ -12,6 +12,7 @@
 
 import { storage } from "../../storage";
 import { parseBrokerEmail } from "../parsers/broker-email";
+import { geocodeCityState } from "../geo-coords";
 import type { Equipment } from "../../../shared/schema";
 import type {
   AdapterKey,
@@ -99,6 +100,10 @@ export function makeBrokerEmailAdapter(opts: {
         body: String(raw.body ?? ""),
       });
 
+      // Geocode city/state offline so the scorer can compute a real deadhead.
+      // Without this the load carried lat/lng=0,0 and ranked as nonsense.
+      const og = geocodeCityState(parsed.origin?.city, parsed.origin?.state);
+      const dg = geocodeCityState(parsed.destination?.city, parsed.destination?.state);
       return {
         sourceId: row.id,
         sourceExternalId: String(raw.ingestId ?? raw.messageId ?? parsed.reference ?? ""),
@@ -106,12 +111,12 @@ export function makeBrokerEmailAdapter(opts: {
         source: opts.source,
         originCity: parsed.origin?.city ?? "",
         originState: parsed.origin?.state ?? "",
-        originLat: 0,
-        originLng: 0,
+        originLat: og?.lat ?? 0,
+        originLng: og?.lng ?? 0,
         destinationCity: parsed.destination?.city ?? "",
         destinationState: parsed.destination?.state ?? "",
-        destinationLat: 0,
-        destinationLng: 0,
+        destinationLat: dg?.lat ?? 0,
+        destinationLng: dg?.lng ?? 0,
         rate: parsed.rate ?? 0,
         loadedMiles: parsed.miles ?? 0,
         pickupAt: parsed.pickupAt ?? "",

@@ -6,6 +6,7 @@
 
 import { storage } from "../../storage";
 import { parseSylectusEmail } from "../parsers/sylectus";
+import { geocodeCityState } from "../geo-coords";
 import { mapEquipment } from "../parsers/broker-email";
 import type {
   BoardAdapter,
@@ -65,6 +66,8 @@ export const sylectusEmailAdapter: BoardAdapter = {
       body: String(raw.body ?? ""),
     });
 
+    const og = geocodeCityState(parsed.origin?.city, parsed.origin?.state);
+    const dg = geocodeCityState(parsed.destination?.city, parsed.destination?.state);
     return {
       sourceId: row.id,
       sourceExternalId: String(raw.ingestId ?? raw.messageId ?? Date.now()),
@@ -72,12 +75,12 @@ export const sylectusEmailAdapter: BoardAdapter = {
       source: "sylectus_email",
       originCity: parsed.origin?.city ?? "",
       originState: parsed.origin?.state ?? "",
-      originLat: 0,
-      originLng: 0,
+      originLat: og?.lat ?? 0,
+      originLng: og?.lng ?? 0,
       destinationCity: parsed.destination?.city ?? "",
       destinationState: parsed.destination?.state ?? "",
-      destinationLat: 0,
-      destinationLng: 0,
+      destinationLat: dg?.lat ?? 0,
+      destinationLng: dg?.lng ?? 0,
       rate: parsed.rate ?? 0,
       loadedMiles: parsed.miles ?? 0,
       pickupAt: parsed.pickupAt ?? "",
