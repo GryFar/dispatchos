@@ -1,7 +1,7 @@
 // Lane intelligence tests.
 // Run: npx tsx server/lib/ai/lanes.test.ts
 
-import { regionFor, quoteLane, classifyOffer, outboundMarketScore } from "./lanes";
+import { regionFor, quoteLane, classifyOffer, outboundMarketScore, observedLaneQualityAdjustment, MIN_LANE_OBSERVATIONS } from "./lanes";
 
 let pass = 0;
 let fail = 0;
@@ -137,6 +137,33 @@ function assert(name: string, cond: boolean, detail?: string) {
 // ---------------------------------------------------------------------------
 // Done
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Observed-rate lane quality refinement (completes the lane_history pipeline)
+// ---------------------------------------------------------------------------
+{
+  const eq = "open_car_hauler" as const;
+  const bench = quoteLane({ originState: "GA", destState: "FL", equipment: eq }).baselinePpm;
+
+  // cold-start / missing data -> no adjustment (non-regressive at launch)
+  assert("observed: undefined -> 0", observedLaneQualityAdjustment("GA", "FL", eq, undefined) === 0);
+  assert("observed: too few data points -> 0", observedLaneQualityAdjustment("GA", "FL", eq, { avgPpm: 9, loadsSeen: MIN_LANE_OBSERVATIONS - 1 }) === 0);
+  assert("observed: zero avgPpm -> 0", observedLaneQualityAdjustment("GA", "FL", eq, { avgPpm: 0, loadsSeen: 50 }) === 0);
+
+  // a hot lane (paying well above benchmark) -> positive boost, clamped at +15
+  const hot = observedLaneQualityAdjustment("GA", "FL", eq, { avgPpm: bench * 2, loadsSeen: 50 });
+  assert("observed: hot lane boosts quality", hot > 0, `${hot}`);
+  assert("observed: boost clamped to +15", hot <= 15);
+
+  // a soft lane (paying well below benchmark) -> negative, clamped at -15
+  const soft = observedLaneQualityAdjustment("GA", "FL", eq, { avgPpm: bench * 0.4, loadsSeen: 50 });
+  assert("observed: soft lane reduces quality", soft < 0, `${soft}`);
+  assert("observed: reduction clamped to -15", soft >= -15);
+
+  // at benchmark -> ~no change
+  const flat = observedLaneQualityAdjustment("GA", "FL", eq, { avgPpm: bench, loadsSeen: 50 });
+  assert("observed: at benchmark -> ~0", Math.abs(flat) < 0.001, `${flat}`);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
