@@ -39,7 +39,8 @@ export type AdapterKey =
   | "chr_navisphere"
   | "coyote_email"
   | "echo_email"
-  | "landstar_email";
+  | "landstar_email"
+  | "email_generic";
 
 /** Raw item returned by fetchLoads(); shape is adapter-specific. */
 export type RawLoad = Record<string, unknown>;
