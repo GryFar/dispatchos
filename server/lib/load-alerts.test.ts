@@ -18,6 +18,8 @@ const {
   shouldAlertLoad,
   formatMatchedLoadMessage,
   notifyMatchedLoad,
+  notifyMatchedLoadsBatch,
+  formatMatchedLoadsBatchMessage,
   matchAlertThreshold,
 } = await import("./load-alerts");
 import type { Client, ScoredLoad } from "@shared/schema";
@@ -155,6 +157,47 @@ const r3 = await notifyMatchedLoad(realClient, makeScored({ id: `load-${rnd()}` 
   send: async () => ({ ok: false, error: "tg 429" }),
 });
 assert("send failure captured in errors", r3.errors.length === 2 && r3.sent === 0);
+
+// --- (f) batch digest -------------------------------------------------------
+// 3 fresh loads → ONE digest message per recipient (not 3 each).
+const batchMsg = formatMatchedLoadsBatchMessage(realClient, [
+  makeScored({ id: "b1", dispatchScore: 90, originCity: "Dallas", destinationCity: "Atlanta" }),
+  makeScored({ id: "b2", dispatchScore: 75 }),
+  makeScored({ id: "b3", dispatchScore: 60 }),
+]);
+assert("batch: header shows count", batchMsg.includes("3 new matched loads"));
+assert("batch: lists a lane", batchMsg.includes("Dallas, TX → Atlanta, GA"));
+
+const sentMsgs: Array<{ chat: string; text: string }> = [];
+const batchDeps = {
+  listRecipients: (cid: string) => storage.listTelegramRecipientsForClient(cid),
+  claim: (loadId: string, chatId: string, cid: string, score: number) =>
+    storage.claimLoadAlert({ loadId, chatId, clientId: cid, dispatchScore: score }),
+  send: async (chatId: string, text: string) => {
+    sentMsgs.push({ chat: chatId, text });
+    return { ok: true };
+  },
+};
+const threeFresh = [
+  makeScored({ id: `b-${rnd()}`, dispatchScore: 92 }),
+  makeScored({ id: `b-${rnd()}`, dispatchScore: 80 }),
+  makeScored({ id: `b-${rnd()}`, dispatchScore: 71 }),
+];
+const rb = await notifyMatchedLoadsBatch(realClient, threeFresh, batchDeps);
+assert("batch: one message per recipient", rb.sent === 2 && sentMsgs.length === 2, `sent=${rb.sent} msgs=${sentMsgs.length}`);
+assert("batch: message is a digest", sentMsgs.every((m) => m.text.includes("new matched loads")));
+
+// re-run → all (load,chat) deduped → zero messages
+sentMsgs.length = 0;
+const rb2 = await notifyMatchedLoadsBatch(realClient, threeFresh, batchDeps);
+assert("batch: re-run sends nothing (deduped)", rb2.sent === 0 && sentMsgs.length === 0);
+assert("batch: re-run skipped = 3 loads × 2 chats", rb2.skipped === 6, `skipped=${rb2.skipped}`);
+
+// a SINGLE fresh load via batch → rich single-load format, not the digest
+sentMsgs.length = 0;
+const oneFresh = [makeScored({ id: `b-${rnd()}`, dispatchScore: 88 })];
+const rb3 = await notifyMatchedLoadsBatch(realClient, oneFresh, batchDeps);
+assert("batch: single load → rich format", rb3.sent === 2 && sentMsgs.every((m) => m.text.includes("New load match")));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

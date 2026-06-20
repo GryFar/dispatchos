@@ -16,10 +16,11 @@ import { decryptCredentials } from "../lib/crypto/keyring";
 import { scoreLoadForClient } from "../routes";
 import {
   shouldAlertLoad,
-  notifyMatchedLoad,
+  notifyMatchedLoadsBatch,
   notifyPickupReminder,
   pickupReminderLeadHours,
 } from "../lib/load-alerts";
+import type { ScoredLoad } from "@shared/schema";
 
 function timingSafeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
@@ -49,25 +50,33 @@ function requireCronSecret(req: Request, res: Response): boolean {
 // and swallowed so a notify problem never breaks the poll.
 async function pushMatchedLoadAlerts(clientId: string, newLoadIds: string[]): Promise<number> {
   if (!newLoadIds.length) return 0;
-  let sent = 0;
   const client = storage.getClient(clientId);
   if (!client) return 0;
+  // Score all new loads first, then send ONE digest per recipient instead of a
+  // ping per load — a poll that ingests many strong loads must not spam the
+  // carrier into muting the bot (which would kill the whole alert promise).
+  const scoredLoads: ScoredLoad[] = [];
   for (const loadId of newLoadIds) {
     try {
       const load = storage.getLoad(loadId);
       if (!load) continue;
       const scored = scoreLoadForClient(client, load);
-      if (!scored || !shouldAlertLoad(scored)) continue;
-      const res = await notifyMatchedLoad(client, scored);
-      sent += res.sent;
-      if (res.errors.length) {
-        console.error(`[cron/load-alerts] load ${loadId}: ${res.errors.join("; ")}`);
-      }
+      if (scored && shouldAlertLoad(scored)) scoredLoads.push(scored);
     } catch (err) {
-      console.error(`[cron/load-alerts] load ${loadId} failed:`, (err as Error).message);
+      console.error(`[cron/load-alerts] score ${loadId} failed:`, (err as Error).message);
     }
   }
-  return sent;
+  if (!scoredLoads.length) return 0;
+  try {
+    const res = await notifyMatchedLoadsBatch(client, scoredLoads);
+    if (res.errors.length) {
+      console.error(`[cron/load-alerts] client ${clientId}: ${res.errors.join("; ")}`);
+    }
+    return res.sent;
+  } catch (err) {
+    console.error(`[cron/load-alerts] client ${clientId} failed:`, (err as Error).message);
+    return 0;
+  }
 }
 
 export function registerCronRoutes(app: Express): void {

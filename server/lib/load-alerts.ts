@@ -190,6 +190,91 @@ export async function notifyMatchedLoad(
   return result;
 }
 
+/** Max loads listed in a batch message before collapsing to "+N more". */
+const BATCH_MAX_LINES = 6;
+
+/**
+ * One compact digest for several matched loads. Pure. Used when a single poll
+ * surfaces multiple qualifying loads for a carrier — sending one message instead
+ * of N avoids notification fatigue (which makes carriers mute the bot, breaking
+ * the whole alert promise).
+ */
+export function formatMatchedLoadsBatchMessage(client: Client, loads: ScoredLoad[]): string {
+  const clean = (s: unknown) => String(s ?? "").replace(/[\r\n\t]+/g, " ").trim();
+  const sorted = [...loads].sort((a, b) => b.dispatchScore - a.dispatchScore);
+  const shown = sorted.slice(0, BATCH_MAX_LINES);
+  const header =
+    `🚚 ${loads.length} new matched load${loads.length === 1 ? "" : "s"}` +
+    (clean(client.name) ? ` · ${clean(client.name)}` : "");
+  const lines = shown.map((l) => {
+    const icon = VERDICT_ICON[l.verdict] ?? "•";
+    const lane =
+      `${clean(l.originCity) || "?"}, ${clean(l.originState) || "?"} → ` +
+      `${clean(l.destinationCity) || "?"}, ${clean(l.destinationState) || "?"}`;
+    return `${icon} ${l.dispatchScore} ${l.verdict.toUpperCase()} · ${lane} · ${money(l.rate)} (${ppm(l.netPpmTotal)}/mi)`;
+  });
+  const more =
+    loads.length > shown.length ? [`…+${loads.length - shown.length} more on the board`] : [];
+  return [header, ...lines, ...more].join("\n");
+}
+
+/**
+ * Push a batch of matched loads to a carrier's recipients as ONE message each
+ * (rich format for a single load, digest for several). Dedup stays per
+ * (load, chat): each recipient only sees loads not already alerted to them, so
+ * a re-poll never re-pings. Best-effort, never throws. result.sent counts
+ * MESSAGES delivered; result.skipped counts deduped (load, chat) pairs.
+ */
+export async function notifyMatchedLoadsBatch(
+  client: Client,
+  scoredLoads: ScoredLoad[],
+  deps: NotifyDeps = defaultDeps(),
+): Promise<NotifyResult> {
+  const result: NotifyResult = {
+    loadId: scoredLoads[0]?.id ?? "",
+    clientId: client.id,
+    recipients: 0,
+    sent: 0,
+    skipped: 0,
+    errors: [],
+  };
+  if (!scoredLoads.length) return result;
+
+  let recipients: Array<{ userId: string; chatId: string; role: string }>;
+  try {
+    recipients = deps.listRecipients(client.id);
+  } catch (err) {
+    result.errors.push(`recipients: ${(err as Error).message}`);
+    return result;
+  }
+  result.recipients = recipients.length;
+  if (!recipients.length) return result;
+
+  for (const r of recipients) {
+    const fresh: ScoredLoad[] = [];
+    for (const l of scoredLoads) {
+      let ok: boolean;
+      try {
+        ok = deps.claim(l.id, r.chatId, client.id, l.dispatchScore);
+      } catch (err) {
+        result.errors.push(`claim ${r.chatId}/${l.id}: ${(err as Error).message}`);
+        continue;
+      }
+      if (ok) fresh.push(l);
+      else result.skipped += 1;
+    }
+    if (!fresh.length) continue;
+    const text =
+      fresh.length === 1
+        ? formatMatchedLoadMessage(client, fresh[0]!)
+        : formatMatchedLoadsBatchMessage(client, fresh);
+    const sendRes = await deps.send(r.chatId, text);
+    if (sendRes.ok) result.sent += 1;
+    else result.errors.push(`send ${r.chatId}: ${sendRes.error ?? "unknown"}`);
+  }
+  return result;
+}
+
 // ===========================================================================
 // Pickup reminders — ping the assigned driver before a load's pickup window.
 // ===========================================================================
