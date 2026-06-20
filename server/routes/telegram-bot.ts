@@ -361,38 +361,69 @@ async function handleApprovalLog(
     args,
   });
 
-  // Broker Trust Signal: /no = carrier refusing a load — auto-collect.
-  if (verb === "/no" && user.linkedClientId) {
-    const loadId = args.trim() || null;
-    const loadRec = loadId
-      ? (storage.getLoad?.(loadId) as
-          | { brokerMc?: string; broker_mc?: string; clientId?: string; client_id?: string }
-          | undefined)
-      : undefined;
-    // Tenant scope: loadId is fully driver-supplied and getLoad is global
-    // (keyed by id only). Only record a signal against a load that belongs to
-    // the driver's OWN carrier — otherwise a driver could probe arbitrary
-    // cross-tenant load ids and inject negative broker-trust signals.
-    const loadClientId = (loadRec?.clientId ?? loadRec?.client_id) as string | undefined;
-    if (loadRec && loadClientId === user.linkedClientId) {
-      const brokerMc = (loadRec.brokerMc ?? loadRec.broker_mc ?? "") as string;
-      if (brokerMc) {
-        storage.appendBrokerTrustSignal({
-          brokerMc, loadId, clientId: user.linkedClientId,
-          signalType: "load_refused_by_carrier", positive: false,
-          reportedByUserId: user.id, source: "driver",
-          notes: `Driver /no via Telegram (chatId=${chatId})`,
-        });
+  // Resolve the referenced load ONCE, tenant-scoped. The first token of args is
+  // the load id (/nego may add a free-text note after it). loadId is fully
+  // driver-supplied and storage.getLoad is global (keyed by id only), so only
+  // accept a load that belongs to the driver's OWN carrier — used both to record
+  // signals and to echo which load the driver acted on. Cross-tenant / unknown
+  // ids resolve to null (no probing, no false confirmation).
+  const loadId = args.trim().split(/\s+/)[0] || null;
+  let ownedLoad:
+    | {
+        brokerMc?: string; broker_mc?: string;
+        originCity?: string; originState?: string;
+        destinationCity?: string; destinationState?: string;
       }
+    | null = null;
+  if (loadId) {
+    const rec = storage.getLoad?.(loadId) as
+      | {
+          clientId?: string; client_id?: string;
+          brokerMc?: string; broker_mc?: string;
+          originCity?: string; originState?: string;
+          destinationCity?: string; destinationState?: string;
+        }
+      | undefined;
+    const recClientId = (rec?.clientId ?? rec?.client_id) as string | undefined;
+    if (rec && recClientId === user.linkedClientId) ownedLoad = rec;
+  }
+
+  // A load id was given but isn't on the driver's board (typo / wrong id /
+  // another carrier's load): tell them plainly instead of a misleading ack —
+  // and don't record any signal against a load they don't own.
+  if (loadId && !ownedLoad) {
+    await tgSend(
+      botToken,
+      chatId,
+      `Couldn't find load <code>${escapeHtml(loadId)}</code> on your board. Double-check the id from the alert and resend.`,
+    );
+    return;
+  }
+
+  // Broker Trust Signal: /no = carrier refusing this broker's load — auto-collect.
+  if (verb === "/no" && ownedLoad) {
+    const brokerMc = (ownedLoad.brokerMc ?? ownedLoad.broker_mc ?? "") as string;
+    if (brokerMc) {
+      storage.appendBrokerTrustSignal({
+        brokerMc, loadId, clientId: user.linkedClientId,
+        signalType: "load_refused_by_carrier", positive: false,
+        reportedByUserId: user.id, source: "driver",
+        notes: `Driver /no via Telegram (chatId=${chatId})`,
+      });
     }
   }
 
+  // Echo the matched load's lane so the driver knows exactly which load registered.
+  const laneSuffix = ownedLoad
+    ? ` for <b>${escapeHtml(ownedLoad.originCity ?? "?")}, ${escapeHtml(ownedLoad.originState ?? "?")} → ` +
+      `${escapeHtml(ownedLoad.destinationCity ?? "?")}, ${escapeHtml(ownedLoad.destinationState ?? "?")}</b>`
+    : "";
   const reply =
     verb === "/yes"
-      ? "👍 Approval logged. Dispatcher confirms with broker / rate con."
+      ? `👍 Approval logged${laneSuffix}. Dispatcher confirms with broker / rate con.`
       : verb === "/no"
-        ? "👎 Rejection logged."
-        : "🤝 Negotiation request logged. Dispatcher will follow up.";
+        ? `👎 Rejection logged${laneSuffix}.`
+        : `🤝 Negotiation request logged${laneSuffix}. Dispatcher will follow up.`;
   await tgSend(botToken, chatId, reply);
 }
 
