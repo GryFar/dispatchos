@@ -18,6 +18,7 @@ import { getCurrentUser, requireRole } from "../auth";
 import { storage } from "../storage";
 import { scoreLoadForClient } from "../routes";
 import { assignLoadsToFleet } from "../lib/fleet-assignment";
+import { planLoadChain, type ChainCandidate } from "../lib/load-chain";
 
 function ah(handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown> | unknown) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -60,6 +61,47 @@ export function registerFleetRoutes(app: Express): void {
         availableLoads: available.items.length,
         ...result,
       });
+    }),
+  );
+
+  // GET /api/dispatch/load-chain?clientId=...
+  // Plan the optimal MULTI-LEG chain for one carrier — keep the truck loaded,
+  // minimizing empty miles between consecutive loads over the horizon. Empty
+  // miles are pure loss, so this is the trip-level efficiency lever.
+  app.get(
+    "/api/dispatch/load-chain",
+    requireRole("dispatcher"),
+    ah((req, res) => {
+      const me = getCurrentUser(req);
+      if (!me) return res.status(401).json({ message: "Authentication required" });
+
+      const clientId = String(req.query.clientId ?? "");
+      if (!clientId) return res.status(400).json({ message: "clientId is required" });
+      // Tenant scope: the dispatcher must be assigned to this carrier.
+      if (!storage.listAssignedClientsForDispatcher(me.id).some((c) => c.id === clientId)) {
+        return res.status(404).json({ message: "Carrier not found for this dispatcher" });
+      }
+      const carrier = storage.getClient(clientId) as Client | undefined;
+      if (!carrier) return res.status(404).json({ message: "Carrier not found" });
+
+      const loc = carrier.currentLocation;
+      const available = storage.listLoadsForClientIds([clientId], { status: "available", limit: 200 });
+      const candidates: ChainCandidate[] = (available.items as Load[]).map((l) => ({
+        id: l.id,
+        originCity: l.originCity, originState: l.originState,
+        destinationCity: l.destinationCity, destinationState: l.destinationState,
+        originLat: l.originLat, originLng: l.originLng,
+        destinationLat: l.destinationLat, destinationLng: l.destinationLng,
+        pickupAt: l.pickupAt, deliveryAt: l.deliveryAt,
+        rate: l.rate, loadedMiles: l.loadedMiles,
+      }));
+
+      const chain = planLoadChain(
+        { lat: loc.lat, lng: loc.lng, availableAt: loc.availableAt || new Date().toISOString() },
+        candidates,
+      );
+
+      return res.json({ generatedAt: new Date().toISOString(), clientId, clientName: carrier.name, ...chain });
     }),
   );
 }
