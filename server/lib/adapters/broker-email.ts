@@ -72,14 +72,13 @@ export function makeBrokerEmailAdapter(opts: {
       const out: RawLoad[] = [];
       for (const r of rows) {
         if (new Date(r.createdAt).getTime() < cutoff) continue;
-        // Parse once, guarded: a single corrupted email_ingest.payload must not
-        // abort the whole ingest pass (it would drop every load from this source).
-        let payload: Record<string, unknown>;
-        try {
-          payload = typeof r.payload === "string" ? JSON.parse(r.payload) : (r.payload as Record<string, unknown>);
-        } catch {
-          continue;
-        }
+        // storage.listEmailIngest already JSON-parses the stored payload and
+        // SPREADS its fields (from/to/subject/body) onto the row alongside
+        // id/createdAt — so the row itself IS the email payload. The previous
+        // code re-read r.payload, which no longer exists after that spread, so
+        // `payload` was always undefined and EVERY email was silently dropped
+        // (the email source ingested nothing). Use the row directly.
+        const payload = r as unknown as Record<string, unknown>;
         // Scope to this source's mailbox sub-address (if set) AND to the
         // broker's sender domains (so two broker sources sharing one mailbox
         // don't steal each other's emails).
@@ -176,10 +175,25 @@ export const landstarEmailAdapter = makeBrokerEmailAdapter({
   defaultEquipment: "open_car_hauler",
 });
 
+// Generic email source for ANY broker not covered by a named adapter above.
+// Ships with no sender domains, so the carrier MUST scope it via config —
+// inboundAddress (a unique forwarding sub-address) and/or senderDomains — which
+// the shared authenticate() guard enforces. Reuses the same generic parser +
+// offline geocoding, so a carrier whose broker isn't one of the five named ones
+// can still ingest load-offer emails.
+export const genericEmailAdapter = makeBrokerEmailAdapter({
+  key: "email_generic",
+  label: "Generic broker email (set inboundAddress / sender domains)",
+  source: "email_generic",
+  senderDomains: [],
+  defaultEquipment: "open_car_hauler",
+});
+
 export const brokerEmailAdapters: BoardAdapter[] = [
   rxoEmailAdapter,
   tqlEmailAdapter,
   coyoteEmailAdapter,
   echoEmailAdapter,
   landstarEmailAdapter,
+  genericEmailAdapter,
 ];

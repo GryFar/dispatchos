@@ -43,13 +43,10 @@ export const sylectusEmailAdapter: BoardAdapter = {
     const out: RawLoad[] = [];
     for (const r of rows) {
       if (new Date(r.createdAt).getTime() < cutoff) continue;
-      // Parse once, guarded — a single corrupted payload must not abort the pass.
-      let payload: Record<string, unknown>;
-      try {
-        payload = typeof r.payload === "string" ? JSON.parse(r.payload) : (r.payload as Record<string, unknown>);
-      } catch {
-        continue;
-      }
+      // listEmailIngest already parses + spreads the email fields onto the row,
+      // so the row IS the payload. The old r.payload re-read was always
+      // undefined post-spread → every email was silently dropped.
+      const payload = r as unknown as Record<string, unknown>;
       if (inbox) {
         const to = String((payload?.to as string) ?? "").toLowerCase();
         if (!to.includes(inbox)) continue;
