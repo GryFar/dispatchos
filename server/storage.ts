@@ -4928,6 +4928,33 @@ export const storage = {
       input.capturedAt, input.accuracyM ?? null,
       input.source, receivedAt, input.userId,
     );
+    // Sync the carrier's currentLocation from this live GPS fix. Without it the
+    // scorer (which reads client.currentLocation) kept using the stale manual
+    // /loc position and IGNORED live GPS entirely — deadhead/ranking computed
+    // from the wrong place, and "location confidence" nagged for /loc even while
+    // fresh GPS was streaming. Owner-operators only (one driver == the carrier's
+    // position); a fleet shares one carrier location across many drivers, so
+    // auto-syncing from every driver would thrash it.
+    const pinger = this.getUserById(input.userId);
+    if (pinger?.linkedClientId) {
+      const carrier = this.getClient(pinger.linkedClientId) as
+        | (Client & { persona?: string; ownerUserId?: string })
+        | undefined;
+      if (carrier && (carrier.persona === "owner_operator" || carrier.ownerUserId === input.userId)) {
+        const mappedSource: DriverLocation["source"] =
+          input.source === "telegram_live"
+            ? "telegram_live"
+            : input.source === "manual"
+              ? "manual_checkin"
+              : "live_gps";
+        this.updateClientLocation(pinger.linkedClientId, {
+          lat: input.lat,
+          lng: input.lng,
+          updatedAt: input.capturedAt,
+          source: mappedSource,
+        });
+      }
+    }
     return id;
   },
 
