@@ -5246,6 +5246,16 @@ export const storage = {
   }) {
     const id = makeId("ls");
     const t = now();
+    // Self-serve email source: auto-provision a unique inbound forwarding
+    // address so the carrier just forwards their broker offer emails there — a
+    // real, zero-API, zero-cost load source. The broker-email adapters scope
+    // ingest to this address (configJson.inboundAddress), so each carrier only
+    // sees their own mail. Domain is env-configurable.
+    const config: Record<string, unknown> = { ...(input.configJson ?? {}) };
+    if (input.adapterKey.includes("email") && !config.inboundAddress) {
+      const domain = process.env.DISPATCHOS_INBOUND_DOMAIN || "inbound.dispatchos.co";
+      config.inboundAddress = `loads+${id.replace(/^ls-/, "")}@${domain}`;
+    }
     sqlite.prepare(`
       INSERT INTO load_sources (
         id, client_id, adapter_key, label, status, config_json,
@@ -5258,7 +5268,7 @@ export const storage = {
       input.adapterKey,
       input.label,
       input.status ?? "active",
-      JSON.stringify(input.configJson ?? {}),
+      JSON.stringify(config),
       input.credentialsEnc ?? null,
       input.credentialsIv ?? null,
       input.credentialsKeyId ?? null,
