@@ -55,7 +55,7 @@ import { registerCronRoutes } from "./routes/cron";
 import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { registerBillingRoutes } from "./routes/billing";
-import { enrichLoadSync, outboundMarketScore } from "./lib/ai";
+import { enrichLoadSync, outboundMarketScore, getRouteFuelPrice } from "./lib/ai";
 import { resolveScoreWeights } from "./lib/score-weights";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
@@ -444,7 +444,15 @@ export function scoreLoadForClient(client: Client, load: Load, persist = true): 
   );
   const totalMiles = load.loadedMiles + deadheadMiles;
   const deadheadRatio = deadheadMiles / totalMiles;
-  const fuelCost = (totalMiles / client.mpg) * client.fuelPrice;
+  // Real per-route diesel price (EIA cache → PADD regional baseline → national
+  // fallback) instead of the static placeholder client.fuelPrice, which is set
+  // once at onboarding and never updated. getRouteFuelPrice was computed and
+  // EIA-refreshed by cron but NEVER read by the scorer — so fuel cost (and thus
+  // net PPM / dispatchScore) ignored real regional diesel entirely. Falls back
+  // to the client's price only if the lookup is somehow non-positive.
+  const routeFuelPrice = getRouteFuelPrice(load.originState, load.destinationState).price;
+  const fuelPricePerGallon = routeFuelPrice > 0 ? routeFuelPrice : client.fuelPrice;
+  const fuelCost = (totalMiles / client.mpg) * fuelPricePerGallon;
   // Phase 5: split fixedCost into addressable categories. Falls back to the
   // legacy single number when client doesn't expose breakdowns.
   const tollsCost = totalMiles * (extras.tollsCostPerMile ?? 0);
