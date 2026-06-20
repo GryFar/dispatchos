@@ -597,6 +597,19 @@ sqlite.exec(`
   );
   CREATE UNIQUE INDEX IF NOT EXISTS load_alerts_sent_unique_idx
     ON load_alerts_sent(load_id, chat_id);
+
+  -- Pickup-reminder de-dup. One row per (load, driver) reminded, so the cron
+  -- pings the assigned driver at most once as a load's pickup window approaches
+  -- even though the cron re-runs and the load stays in the lead-time window.
+  CREATE TABLE IF NOT EXISTS pickup_reminders_sent (
+    id TEXT PRIMARY KEY,
+    load_id TEXT NOT NULL,
+    driver_id TEXT NOT NULL,
+    pickup_at TEXT NOT NULL,
+    sent_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS pickup_reminders_sent_unique_idx
+    ON pickup_reminders_sent(load_id, driver_id);
 `);
 
 // ---------------------------------------------------------------------------
@@ -1574,6 +1587,46 @@ export const storage = {
         Math.round(input.dispatchScore),
         now(),
       );
+    return info.changes > 0;
+  },
+
+  // Pickup reminders — loads assigned to a driver whose pickup time falls in
+  // [fromIso, toIso]. pickupAt lives in the JSON payload; driver_id is a
+  // mirrored column. ISO timestamps compare lexicographically = chronologically.
+  listLoadsDueForPickupReminder(
+    fromIso: string,
+    toIso: string,
+  ): Array<{ load: Load; driverId: string; pickupAt: string }> {
+    const rows = sqlite
+      .prepare(
+        `SELECT payload, driver_id, json_extract(payload, '$.pickupAt') AS pickup_at
+           FROM loads
+          WHERE driver_id IS NOT NULL
+            AND json_extract(payload, '$.pickupAt') >= ?
+            AND json_extract(payload, '$.pickupAt') <= ?`,
+      )
+      .all(fromIso, toIso) as Array<{ payload: string; driver_id: string; pickup_at: string }>;
+    const out: Array<{ load: Load; driverId: string; pickupAt: string }> = [];
+    for (const r of rows) {
+      try {
+        const load = JSON.parse(r.payload) as Load;
+        out.push({ load, driverId: r.driver_id, pickupAt: r.pickup_at });
+      } catch {
+        // skip a corrupt payload rather than failing the whole reminder pass
+      }
+    }
+    return out;
+  },
+
+  // Atomic pickup-reminder de-dup. True exactly once per (load, driver).
+  claimPickupReminder(input: { loadId: string; driverId: string; pickupAt: string }): boolean {
+    const info = sqlite
+      .prepare(
+        `INSERT OR IGNORE INTO pickup_reminders_sent
+           (id, load_id, driver_id, pickup_at, sent_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(makeId("pickrem"), input.loadId, input.driverId, input.pickupAt, now());
     return info.changes > 0;
   },
 
