@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { marketQualityFor } from "./lib/ai/lanes";
 import type {
   ApprovalTask,
   ApprovalTaskStatus,
@@ -18,6 +19,7 @@ import type {
   DriverExpense,
   DriverLocation,
   DriverStatus,
+  Equipment,
   ExpenseCategory,
   FuelTransaction,
   InsertClient,
@@ -1157,6 +1159,28 @@ function now() {
 
 function makeId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Fill the scorer inputs a source adapter may not provide, so every persisted
+// source load is rankable (missing marketQuality/brokerScore/fraudRisk made
+// dispatchScore NaN). Idempotent: keeps any value the adapter already set.
+function ensureScoreableSourceLoad(payload: Record<string, unknown>): Record<string, unknown> {
+  const p = payload;
+  const marketQuality =
+    typeof p.marketQuality === "number"
+      ? p.marketQuality
+      : marketQualityFor({
+          originState: String(p.originState ?? ""),
+          destinationState: String(p.destinationState ?? ""),
+          equipment: (p.equipment as Equipment) ?? "open_car_hauler",
+          pickupAt: typeof p.pickupAt === "string" ? p.pickupAt : undefined,
+        });
+  return {
+    ...p,
+    marketQuality,
+    brokerScore: typeof p.brokerScore === "number" ? p.brokerScore : 50,
+    fraudRisk: typeof p.fraudRisk === "number" ? p.fraudRisk : 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -5342,16 +5366,26 @@ export const storage = {
     clientId: string;
     payload: Record<string, unknown>;
   }): { id: string; inserted: boolean } {
+    // Source adapters produce a normalized load but skip the manual-create
+    // path's enrichment, so the scorer's lane/broker inputs were missing →
+    // dispatchScore came out NaN and the load was unrankable. Fill them at this
+    // single source-ingest chokepoint so every stored load is scoreable: real
+    // lane marketQuality + neutral broker defaults (FMCSA scoring is the async
+    // path's job, gated on a webkey).
+    const base = ensureScoreableSourceLoad(input.payload);
     const existing = sqlite.prepare(
       "SELECT id FROM loads WHERE source_id = ? AND source_external_id = ?",
     ).get(input.sourceId, input.sourceExternalId) as { id: string } | undefined;
     if (existing) {
-      // Refresh rate / pickupAt only — leave broker_score etc untouched.
+      // Persist the row id INTO the payload — NormalizedLoad carries no id, and
+      // the read paths (getLoad/listLoads) return the payload verbatim, so
+      // without this source loads come back id-less (breaks UI deep-links and
+      // alert dedup keyed on load id).
       sqlite.prepare(`
         UPDATE loads
         SET payload = ?, updated_at = ?
         WHERE id = ?
-      `).run(JSON.stringify(input.payload), now(), existing.id);
+      `).run(JSON.stringify({ ...base, id: existing.id }), now(), existing.id);
       return { id: existing.id, inserted: false };
     }
     const id = makeId("load");
@@ -5361,7 +5395,7 @@ export const storage = {
     `).run(
       id,
       input.clientId,
-      JSON.stringify(input.payload),
+      JSON.stringify({ ...base, id }),
       input.sourceId,
       input.sourceExternalId,
       now(),
