@@ -57,6 +57,7 @@ interface CockpitSuggestion {
   verdict: string;
   estimatedNet: number;
   lane: string;
+  backhaulScore: number;
 }
 
 // V5-001 / PERF-034: the AI advisor is an expensive Claude call. Cap per
@@ -154,6 +155,7 @@ export function registerCockpitRoutes(app: Express): void {
             verdict: s.verdict,
             estimatedNet: s.estimatedNet,
             lane: `${s.originCity}, ${s.originState} → ${s.destinationCity}, ${s.destinationState}`,
+            backhaulScore: s.backhaulScore ?? 0,
           });
           topLoadIds.add(s.id);
         }

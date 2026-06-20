@@ -4,6 +4,7 @@ import { Link } from "wouter";
 import {
   AlertTriangle,
   Loader2,
+  LogOut,
   MapPin,
   RefreshCw,
   Sparkles,
@@ -51,6 +52,9 @@ interface CockpitSuggestion {
   verdict: string;
   estimatedNet: number;
   lane: string;
+  // Outbound-market strength at the destination (0..100). Low = the load
+  // delivers into a soft freight market (likely deadhead / wait for next load).
+  backhaulScore: number;
 }
 
 interface CockpitResponse {
@@ -368,9 +372,20 @@ function SuggestionCard({ suggestion }: { suggestion: CockpitSuggestion }) {
           <StatusBadge variant={verdictVariant(suggestion.verdict)} dot>
             {suggestion.verdict}
           </StatusBadge>
-          <span className="text-[11px] text-muted-foreground">
-            ≈ {formatMoney(suggestion.estimatedNet)}
-          </span>
+          <div className="flex items-center gap-2">
+            <span
+              className={`flex items-center gap-0.5 text-[11px] tabular-nums ${
+                suggestion.backhaulScore < 55 ? "text-amber-600" : "text-muted-foreground"
+              }`}
+              title="Outbound freight market at destination (higher is easier to get the next load)"
+            >
+              <LogOut className="h-3 w-3" />
+              {suggestion.backhaulScore}
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              ≈ {formatMoney(suggestion.estimatedNet)}
+            </span>
+          </div>
         </div>
       </Card>
     </Link>
