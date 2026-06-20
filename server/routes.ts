@@ -871,14 +871,21 @@ function buildIntegrationStatus() {
       {
         key: "telegram",
         label: "Telegram bot commands",
-        status: process.env.TELEGRAM_BOT_TOKEN && process.env.DISPATCHOS_PUBLIC_URL ? "ready" : "local_endpoint_ready",
-        missing: ["TELEGRAM_BOT_TOKEN", "DISPATCHOS_PUBLIC_URL"].filter((key) => !process.env[key]),
-      },
-      {
-        key: "gmail",
-        label: "Gmail broker email ingest",
-        status: process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET ? "ready" : "manual_paste_ready",
-        missing: ["GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET"].filter((key) => !process.env[key]),
+        // Canonical var is TELEGRAM_DRIVER_BOT_TOKEN (the only telegram entry in
+        // the INTEGRATIONS registry; may be set via the admin UI / DB). The old
+        // TELEGRAM_BOT_TOKEN check showed "needs config" even when configured.
+        status:
+          (getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN") ??
+            process.env.TELEGRAM_DRIVER_BOT_TOKEN) && process.env.DISPATCHOS_PUBLIC_URL
+            ? "ready"
+            : "local_endpoint_ready",
+        missing: [
+          ...(getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN") ??
+          process.env.TELEGRAM_DRIVER_BOT_TOKEN
+            ? []
+            : ["TELEGRAM_DRIVER_BOT_TOKEN"]),
+          ...(process.env.DISPATCHOS_PUBLIC_URL ? [] : ["DISPATCHOS_PUBLIC_URL"]),
+        ],
       },
       {
         key: "googleDrive",
