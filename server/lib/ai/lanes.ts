@@ -337,6 +337,35 @@ export function marketQualityFor(load: MinimalLoad): number {
   }).marketQuality;
 }
 
+/**
+ * Refine a lane's marketQuality with REAL observed rates (lane_history avgPpm),
+ * which the system records on every score but previously never used (getLaneAvgPpm
+ * was dead code). A lane whose loads consistently pay above its benchmark is
+ * hotter than the static curve says (boost quality); below, softer (reduce).
+ *
+ * Cold-start safe: returns 0 (no adjustment) until a lane has at least
+ * MIN_LANE_OBSERVATIONS data points, so at launch (empty lane_history) and for
+ * sparse lanes the score is unchanged — it only kicks in as real data accrues.
+ * Pure: the caller fetches the observed aggregate and passes it in.
+ */
+export const MIN_LANE_OBSERVATIONS = 10;
+
+export function observedLaneQualityAdjustment(
+  originState: string,
+  destState: string,
+  equipment: Equipment,
+  observed: { avgPpm: number; loadsSeen: number } | undefined | null,
+  asOfDate?: string,
+): number {
+  if (!observed || observed.loadsSeen < MIN_LANE_OBSERVATIONS) return 0;
+  if (!(observed.avgPpm > 0)) return 0;
+  const benchmark = quoteLane({ originState, destState, equipment, asOfDate }).baselinePpm;
+  if (!(benchmark > 0)) return 0;
+  const ratio = observed.avgPpm / benchmark; // >1 hotter than benchmark, <1 softer
+  // ±15 quality points at a ±50% deviation from benchmark; gentle, clamped.
+  return clamp((ratio - 1) * 30, -15, 15);
+}
+
 // One representative freight hub per region — used to sample outbound lanes
 // without enumerating every state. Chosen as the busiest market in each region.
 const REGION_HUB: Readonly<Record<Region, string>> = Object.freeze({

@@ -55,7 +55,7 @@ import { registerCronRoutes } from "./routes/cron";
 import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { registerBillingRoutes } from "./routes/billing";
-import { enrichLoadSync, outboundMarketScore, getRouteFuelPrice } from "./lib/ai";
+import { enrichLoadSync, outboundMarketScore, getRouteFuelPrice, observedLaneQualityAdjustment } from "./lib/ai";
 import { resolveScoreWeights } from "./lib/score-weights";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
@@ -479,7 +479,21 @@ export function scoreLoadForClient(client: Client, load: Load, persist = true): 
   const feasibilityScore =
     pickupFeasibility === "easy" ? 100 : pickupFeasibility === "tight" ? 58 : 0;
   const brokerSafetyScore = clamp((load.brokerScore * 0.65) + ((100 - load.fraudRisk) * 0.35), 0, 100);
-  const laneScore = load.marketQuality;
+  // Refine lane quality with REAL observed rates (lane_history) when a lane has
+  // enough data — completes the recordLaneObservation -> getLaneAvgPpm pipeline
+  // that previously wrote observations but never read them. Cold-start safe
+  // (no data -> 0 adjustment, so launch/sparse lanes are unchanged) and
+  // env-tunable: DISPATCHOS_LANE_OBSERVED_WEIGHT (default 1; set 0 to disable).
+  const laneObsWeightRaw = Number.parseFloat(process.env.DISPATCHOS_LANE_OBSERVED_WEIGHT ?? "");
+  const laneObsWeight = Number.isFinite(laneObsWeightRaw) ? clamp(laneObsWeightRaw, 0, 2) : 1;
+  let laneScore = load.marketQuality;
+  if (laneObsWeight > 0) {
+    const observed = storage.getLaneAvgPpm(load.originState, load.destinationState);
+    const adj = observedLaneQualityAdjustment(
+      load.originState, load.destinationState, load.equipment, observed, load.pickupAt,
+    );
+    laneScore = clamp(load.marketQuality + laneObsWeight * adj, 0, 100);
+  }
   const locationScore =
     locationConfidence === "high" ? 100 : locationConfidence === "medium" ? 72 : 32;
 
