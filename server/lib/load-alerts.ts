@@ -94,8 +94,10 @@ export interface NotifyDeps {
   listRecipients: (clientId: string) => Array<{ userId: string; chatId: string; role: string }>;
   /** Atomically claim (load, chat); false = already alerted. */
   claim: (loadId: string, chatId: string, clientId: string, score: number) => boolean;
+  /** Release a claim (so the next poll retries) after a transient send failure. */
+  release?: (loadId: string, chatId: string) => void;
   /** Deliver text to one chat. Resolves {ok}. Must not throw. */
-  send: (chatId: string, text: string) => Promise<{ ok: boolean; error?: string }>;
+  send: (chatId: string, text: string) => Promise<SendResult>;
 }
 
 export interface NotifyResult {
@@ -107,9 +109,15 @@ export interface NotifyResult {
   errors: string[];
 }
 
+/** A send outcome. `permanent` = retrying THIS chat is pointless (bot blocked /
+ *  chat not found), so the caller should keep the de-dup claim (stop retrying)
+ *  rather than releasing it. Transient failures (429/5xx/network/timeout) leave
+ *  permanent falsy → caller releases the claim so the next poll retries. */
+type SendResult = { ok: boolean; error?: string; permanent?: boolean };
+
 const realFetchSend =
   (token: string | null) =>
-  async (chatId: string, text: string): Promise<{ ok: boolean; error?: string }> => {
+  async (chatId: string, text: string): Promise<SendResult> => {
     if (!token) return { ok: false, error: "driver bot token not configured" };
     try {
       const res = await fetchWithTimeout(
@@ -120,7 +128,9 @@ const realFetchSend =
           body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
         },
       );
-      if (!res.ok) return { ok: false, error: `tg ${res.status}` };
+      // 400 (chat not found) / 403 (bot blocked or kicked) are permanent for this
+      // chat — no point retrying. Everything else (429 rate-limit, 5xx) is transient.
+      if (!res.ok) return { ok: false, error: `tg ${res.status}`, permanent: res.status === 400 || res.status === 403 };
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -133,6 +143,7 @@ function defaultDeps(): NotifyDeps {
     listRecipients: (clientId) => storage.listTelegramRecipientsForClient(clientId),
     claim: (loadId, chatId, clientId, score) =>
       storage.claimLoadAlert({ loadId, chatId, clientId, dispatchScore: score }),
+    release: (loadId, chatId) => storage.releaseLoadAlert(loadId, chatId),
     send: realFetchSend(token),
   };
 }
@@ -185,6 +196,10 @@ export async function notifyMatchedLoad(
       result.sent += 1;
     } else {
       result.errors.push(`send ${r.chatId}: ${sendRes.error ?? "unknown"}`);
+      // Transient failure: release the claim so the next poll retries instead of
+      // permanently suppressing this alert. Permanent (bot blocked / chat gone):
+      // keep the claim so we don't hammer a dead chat forever.
+      if (!sendRes.permanent) deps.release?.(scored.id, r.chatId);
     }
   }
   return result;
@@ -270,7 +285,15 @@ export async function notifyMatchedLoadsBatch(
         : formatMatchedLoadsBatchMessage(client, fresh);
     const sendRes = await deps.send(r.chatId, text);
     if (sendRes.ok) result.sent += 1;
-    else result.errors.push(`send ${r.chatId}: ${sendRes.error ?? "unknown"}`);
+    else {
+      result.errors.push(`send ${r.chatId}: ${sendRes.error ?? "unknown"}`);
+      // One failed digest claimed up to BATCH_MAX_LINES+ loads — release ALL of
+      // them on a transient failure so the next poll re-sends, instead of
+      // silently dropping the whole batch for this recipient.
+      if (!sendRes.permanent) {
+        for (const l of fresh) deps.release?.(l.id, r.chatId);
+      }
+    }
   }
   return result;
 }
@@ -317,7 +340,8 @@ export function formatPickupReminderMessage(load: Load, pickupAtIso: string, now
 
 export interface PickupReminderDeps {
   claim: (loadId: string, driverId: string, pickupAt: string) => boolean;
-  send: (chatId: string, text: string) => Promise<{ ok: boolean; error?: string }>;
+  release?: (loadId: string, driverId: string, pickupAt: string) => void;
+  send: (chatId: string, text: string) => Promise<SendResult>;
 }
 
 function defaultPickupDeps(): PickupReminderDeps {
@@ -325,6 +349,8 @@ function defaultPickupDeps(): PickupReminderDeps {
   return {
     claim: (loadId, driverId, pickupAt) =>
       storage.claimPickupReminder({ loadId, driverId, pickupAt }),
+    release: (loadId, driverId, pickupAt) =>
+      storage.releasePickupReminder(loadId, driverId, pickupAt),
     send: realFetchSend(token),
   };
 }
@@ -349,5 +375,8 @@ export async function notifyPickupReminder(
   }
   if (!fresh) return "skipped";
   const res = await deps.send(chatId, formatPickupReminderMessage(load, pickupAtIso, nowMs));
-  return res.ok ? "sent" : "error";
+  if (res.ok) return "sent";
+  // Transient failure: release so the next poll retries. Permanent: keep claim.
+  if (!res.permanent) deps.release?.(load.id, driverId, pickupAtIso);
+  return "error";
 }

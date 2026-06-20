@@ -388,7 +388,11 @@ function calculatePickupFeasibility(client: Client, load: Load, deadheadMiles: n
   return { pickupFeasibility: "not_feasible" as const, bufferMinutes };
 }
 
-export function scoreLoadForClient(client: Client, load: Load): ScoredLoad | null {
+// persist=false skips the two synchronous DB writes below (lane_history +
+// load_scores). Read-only callers that score many (client, load) pairs per
+// request — e.g. the auto-refreshing cockpit — must pass false, or each page
+// render fires N×loads synchronous SQLite writes that block the event loop.
+export function scoreLoadForClient(client: Client, load: Load, persist = true): ScoredLoad | null {
   // -------------------------------------------------------------------------
   // Phase 5 hard filters — these reject before scoring even starts. Skipping
   // means the load never appears in dispatcher view (different from verdict
@@ -540,6 +544,7 @@ export function scoreLoadForClient(client: Client, load: Load): ScoredLoad | nul
     `${locationConfidence} location confidence`,
   ];
 
+  if (persist) {
   // Phase 5: feed lane_history (one observation per (load, client) pair is
   // fine — lane_history is keyed by (origin_state, dest_state) and we just
   // accumulate). Cheap, idempotent-ish counts.
@@ -576,6 +581,7 @@ export function scoreLoadForClient(client: Client, load: Load): ScoredLoad | nul
   } catch (err) {
     // Cache write is best-effort; don't fail the request.
     console.error("[score] cache write failed:", err);
+  }
   }
 
   return {

@@ -85,7 +85,12 @@ function compactLoad(l: ScoredLoad) {
     // a soft freight market → likely deadhead / wait for the next load.
     backhaulScore: (l as ScoredLoad & { backhaulScore?: number }).backhaulScore ?? null,
     brokerName: brokerName ? sanitizeText(brokerName) : null,
-    brokerMc: (l as ScoredLoad & { brokerMc?: string }).brokerMc ?? null,
+    // brokerMc is broker-supplied (load source / email) → untrusted; sanitize
+    // before it enters the LLM prompt (prompt-injection defense).
+    brokerMc: (() => {
+      const mc = (l as ScoredLoad & { brokerMc?: string }).brokerMc;
+      return mc ? sanitizeText(mc, 32) : null;
+    })(),
     fraudRisk: (l as ScoredLoad & { fraudRisk?: number }).fraudRisk ?? null,
     pickupFeasibility: l.pickupFeasibility,
     warnings: (l.warnings ?? []).slice(0, 8).map((w) => sanitizeText(w, 200)),
@@ -132,16 +137,18 @@ export async function getAiRecommendation(
   const loads = scoredLoads.slice(0, 8).map(compactLoad);
   const validIds = new Set(loads.map((l) => l.id));
 
+  // Carrier free-text fields are operator-set but still flow into the LLM
+  // prompt — sanitize them too (defense-in-depth against prompt injection).
   const carrier = {
-    name: client.name,
-    equipment: client.equipment,
+    name: sanitizeText(client.name),
+    equipment: client.equipment, // enum — safe
     targetPpm: client.targetPpm,
     minimumPpm: client.minimumPpm,
     currentLocation: client.currentLocation
-      ? `${client.currentLocation.city ?? "?"}, ${client.currentLocation.state ?? "?"}`
+      ? sanitizeText(`${client.currentLocation.city ?? "?"}, ${client.currentLocation.state ?? "?"}`)
       : "unknown",
-    avoidStates: client.avoidStates ?? [],
-    preferredLanes: client.preferredLanes ?? [],
+    avoidStates: (client.avoidStates ?? []).map((s) => sanitizeText(s, 8)),
+    preferredLanes: (client.preferredLanes ?? []).map((s) => sanitizeText(s, 64)),
   };
 
   const userPrompt =

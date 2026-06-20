@@ -137,12 +137,16 @@ export function registerCockpitRoutes(app: Express): void {
       // Score each available load against each carrier; keep the best pairing
       // per load, and surface the strongest suggestions overall.
       const suggestions: CockpitSuggestion[] = [];
-      const topLoadIds = new Set<string>();
+      // Track the best score each load earned across carriers, so topLoads can be
+      // ordered by relevance (not just board recency).
+      const bestScoreByLoadId = new Map<string, number>();
       for (const summary of assigned) {
         const client = storage.getClient(summary.id) as Client | undefined;
         if (!client) continue;
         const scored = available.items
-          .map((load: Load) => scoreLoadForClient(client, load))
+          // persist=false: this is a read-only (auto-refreshing) view — don't fire
+          // a synchronous lane_history + load_scores write per (carrier, load) pair.
+          .map((load: Load) => scoreLoadForClient(client, load, false))
           .filter((l): l is ScoredLoad => Boolean(l))
           .sort((a, b) => b.dispatchScore - a.dispatchScore)
           .slice(0, 3);
@@ -157,15 +161,32 @@ export function registerCockpitRoutes(app: Express): void {
             lane: `${s.originCity}, ${s.originState} → ${s.destinationCity}, ${s.destinationState}`,
             backhaulScore: s.backhaulScore ?? 0,
           });
-          topLoadIds.add(s.id);
+          const prev = bestScoreByLoadId.get(s.id) ?? -Infinity;
+          if (s.dispatchScore > prev) bestScoreByLoadId.set(s.id, s.dispatchScore);
         }
       }
       suggestions.sort((a, b) => b.score - a.score);
 
-      // Top loads = the available loads that appear in suggestions, by best score.
+      // Top loads = the loads that appear in suggestions, ordered by best score
+      // (desc), projected to UI-safe fields only (no internal/raw payload leak).
       const topLoads = available.items
-        .filter((l) => topLoadIds.has(l.id))
-        .slice(0, 15);
+        .filter((l) => bestScoreByLoadId.has(l.id))
+        .sort((a, b) => (bestScoreByLoadId.get(b.id) ?? 0) - (bestScoreByLoadId.get(a.id) ?? 0))
+        .slice(0, 15)
+        .map((l) => ({
+          id: l.id,
+          originCity: l.originCity,
+          originState: l.originState,
+          destinationCity: l.destinationCity,
+          destinationState: l.destinationState,
+          rate: l.rate,
+          loadedMiles: l.loadedMiles,
+          equipment: l.equipment,
+          pickupAt: l.pickupAt,
+          deliveryAt: l.deliveryAt,
+          brokerName: (l as Load & { brokerName?: string }).brokerName ?? null,
+          score: bestScoreByLoadId.get(l.id) ?? 0,
+        }));
 
       return res.json({
         generatedAt: new Date().toISOString(),

@@ -158,6 +158,38 @@ const r3 = await notifyMatchedLoad(realClient, makeScored({ id: `load-${rnd()}` 
 });
 assert("send failure captured in errors", r3.errors.length === 2 && r3.sent === 0);
 
+// --- (e2) release-on-transient-failure: a transient send error must NOT
+// permanently suppress the alert; a later retry must deliver. A PERMANENT error
+// (bot blocked) must keep the claim so we don't hammer a dead chat.
+const relDeps = {
+  ...deps,
+  release: (loadId: string, chatId: string) => storage.releaseLoadAlert(loadId, chatId),
+};
+const transientLoad = makeScored({ id: `load-${rnd()}` });
+const t1 = await notifyMatchedLoad(realClient, transientLoad, {
+  ...relDeps,
+  send: async () => ({ ok: false, error: "tg 429" }), // transient → release
+});
+assert("transient failure: nothing sent yet", t1.sent === 0);
+const retrySent: string[] = [];
+const t2 = await notifyMatchedLoad(realClient, transientLoad, {
+  ...relDeps,
+  send: async (chatId: string) => { retrySent.push(chatId); return { ok: true }; },
+});
+assert("transient failure released claim → retry delivers", t2.sent === 2 && retrySent.length === 2, `sent=${t2.sent}`);
+
+const permLoad = makeScored({ id: `load-${rnd()}` });
+const p1 = await notifyMatchedLoad(realClient, permLoad, {
+  ...relDeps,
+  send: async () => ({ ok: false, error: "tg 403", permanent: true }), // permanent → keep claim
+});
+assert("permanent failure: nothing sent", p1.sent === 0);
+const p2 = await notifyMatchedLoad(realClient, permLoad, {
+  ...relDeps,
+  send: async () => ({ ok: true }),
+});
+assert("permanent failure kept claim → retry deduped (no spam)", p2.sent === 0 && p2.skipped === 2, `sent=${p2.sent} skipped=${p2.skipped}`);
+
 // --- (f) batch digest -------------------------------------------------------
 // 3 fresh loads → ONE digest message per recipient (not 3 each).
 const batchMsg = formatMatchedLoadsBatchMessage(realClient, [
