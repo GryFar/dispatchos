@@ -413,6 +413,50 @@ async function handleApprovalLog(
     }
   }
 
+  // /nego = driver asks the dispatcher to negotiate this load. Surface it as a
+  // real task in the dispatcher's queue (admin fallback if no dispatcher is
+  // assigned) — same routing as POST /api/me/issues — so the note isn't lost in
+  // the audit log. Only for an owned load (cross-tenant ids already rejected).
+  if (verb === "/nego" && ownedLoad) {
+    const note = args
+      .trim()
+      .split(/\s+/)
+      .slice(1)
+      .join(" ")
+      .replace(/[\r\n\t]+/g, " ")
+      .slice(0, 500);
+    let assigneeRole: "dispatcher" | "admin" = "admin";
+    let dispatcherUserId: string | null = null;
+    let routedTo: "dispatcher" | "admin_fallback" = "admin_fallback";
+    const active = storage.getActiveDispatcherForClient(user.linkedClientId);
+    if (active) {
+      assigneeRole = "dispatcher";
+      dispatcherUserId = active.dispatcherUserId;
+      routedTo = "dispatcher";
+    }
+    const task = storage.createApprovalTask({
+      taskType: "driver_booking_request",
+      assigneeRole,
+      payload: {
+        loadId,
+        lane: `${ownedLoad.originCity ?? "?"}, ${ownedLoad.originState ?? "?"} → ${ownedLoad.destinationCity ?? "?"}, ${ownedLoad.destinationState ?? "?"}`,
+        note: note || null,
+        brokerMc: ownedLoad.brokerMc ?? ownedLoad.broker_mc ?? null,
+        reporterUserId: user.id,
+        source: "telegram_nego",
+        dispatcherUserId,
+        routedTo,
+      },
+      createdByUserId: user.id,
+    });
+    storage.audit("driver.nego_requested", "approval_task", task.id, {
+      userId: user.id,
+      actorUserId: user.id,
+      loadId,
+      routedTo,
+    });
+  }
+
   // Echo the matched load's lane so the driver knows exactly which load registered.
   const laneSuffix = ownedLoad
     ? ` for <b>${escapeHtml(ownedLoad.originCity ?? "?")}, ${escapeHtml(ownedLoad.originState ?? "?")} → ` +
