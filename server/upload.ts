@@ -54,5 +54,3 @@ export const upload = multer({
     cb(null, true);
   },
 });
-
-export { allowedUploadExtensions, allowedUploadMime };

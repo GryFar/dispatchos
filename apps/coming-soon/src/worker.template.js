@@ -64,8 +64,15 @@ export default {
     }
 
     if (url.pathname === '/api/admin/subscribers' && req.method === 'GET') {
-      const auth = req.headers.get('authorization');
-      if (!env.ADMIN_TOKEN || auth !== 'Bearer ' + env.ADMIN_TOKEN) return jsonResp({ error: 'unauthorized' }, 401);
+      // Constant-time token compare — this endpoint returns subscriber PII, so a
+      // plain `!==` would leak the token byte-by-byte via response timing.
+      const auth = req.headers.get('authorization') || '';
+      const expected = 'Bearer ' + (env.ADMIN_TOKEN || '');
+      if (!env.ADMIN_TOKEN || !timingSafeEqual(auth, expected)) return jsonResp({ error: 'unauthorized' }, 401);
+      // NOTE: _index is maintained via a read-modify-write below and can drop
+      // entries under concurrent subscribes (KV has no CAS). These endpoints are
+      // currently unused by the live frontend (it posts to the Fly backend) —
+      // prefer removing them, or switch to KV list({prefix:'sub:'}) if revived.
       const indexRaw = (await env.SUBSCRIBERS.get('_index')) || '[]';
       return new Response(indexRaw, { headers: { 'content-type': 'application/json' }});
     }
@@ -77,4 +84,11 @@ export default {
 };
 function jsonResp(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...SECURITY_HEADERS }});
+}
+// Constant-time string compare (content-timing-safe; length is not secret here).
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }

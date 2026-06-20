@@ -98,6 +98,11 @@ export const clientSchema = z.object({
   // Персона определяет ветку онбординга и default tier.
   // ==========================================================================
   persona: z.enum(["owner_operator", "fleet", "enterprise"]).optional(),
+  // The account owner's user id (set at onboarding provisioning). For an
+  // owner_operator carrier this distinguishes THE owner from hired drivers
+  // linked to the same client — only the owner sees the carrier's commercial
+  // load data. Optional for backward-compat with pre-existing clients.
+  ownerUserId: z.string().optional(),
   onboardingCompletedAt: z.string().optional(),
   /** "trial" | "oo_basic" | "oo_premium" | "fleet_starter" | "fleet_growth" | "fleet_scale" | "enterprise" */
   planTier: z.string().optional(),
@@ -794,10 +799,17 @@ export type TotpResumeSetupResponse = z.infer<typeof totpResumeSetupResponseSche
 // run an indexed SQL query rather than a full table scan.
 // ---------------------------------------------------------------------------
 
-/** YYYY-MM-DD validator. Reused for bookedAt and for weekStart/weekEnd. */
+/** YYYY-MM-DD validator. Reused for bookedAt and for weekStart/weekEnd.
+ *  The regex only checks shape, so refine with a UTC round-trip to reject
+ *  impossible calendar dates (e.g. 2026-02-31, 2026-13-01) that would otherwise
+ *  feed bad values into billing/expiry math. */
 export const dateOnlySchema = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD");
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD")
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00.000Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }, "Not a valid calendar date");
 
 /**
  * Optional billing-link fields, additively applied to loadSchema / insertLoadSchema.

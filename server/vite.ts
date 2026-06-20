@@ -34,6 +34,12 @@ export async function setupVite(server: Server, app: Express) {
   app.use("/{*path}", async (req, res, next) => {
     const url = req.originalUrl;
 
+    // Never serve the SPA shell for unmatched API routes — fail loud as JSON
+    // (mirrors production serveStatic) so an unmounted route doesn't return HTML.
+    if (req.path.startsWith("/api/")) {
+      return res.status(404).json({ message: "Not found" });
+    }
+
     try {
       const clientTemplate = path.resolve(
         import.meta.dirname,

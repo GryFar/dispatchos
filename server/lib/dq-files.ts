@@ -137,11 +137,25 @@ export interface DriverDqStatus {
  * Find the latest non-expired doc of a given type for a user, or fall back
  * to the latest expired one (so UI can show "expired" rather than "missing").
  */
-function pickLatestDoc(docs: DriverDocument[], type: DriverDocumentType): DriverDocument | null {
+function pickLatestDoc(
+  docs: DriverDocument[],
+  type: DriverDocumentType,
+  today: string,
+): DriverDocument | null {
   const matching = docs.filter((d) => d.type === type);
   if (matching.length === 0) return null;
-  // Already ORDER BY created_at DESC from storage.
-  return matching[0]!;
+  // docs arrive newest-first (ORDER BY created_at DESC). Prefer the newest doc
+  // that is still VALID; only fall back to the newest-overall (so the UI can
+  // show "expired") when none are valid. Without this, a newer expired (or
+  // expiry-less, for a type that requires expiry) upload masked an older
+  // still-valid doc and falsely flagged the driver non-compliant — and this
+  // drives FMCSA compliance status, so it's penalty-sensitive.
+  const isValid = (d: DriverDocument): boolean => {
+    if (d.expiresAt) return daysBetween(today, d.expiresAt) >= 0;
+    // No expiry recorded: valid only for types that don't require one.
+    return !REQUIRES_EXPIRY.has(type);
+  };
+  return matching.find(isValid) ?? matching[0]!;
 }
 
 /**
@@ -158,7 +172,7 @@ export function computeDqStatusForDriver(userId: string): DriverDqStatus {
   const today = new Date().toISOString();
 
   const lines: DqLineStatus[] = DQ_REQUIREMENTS.map((req) => {
-    const doc = pickLatestDoc(docs, req.type);
+    const doc = pickLatestDoc(docs, req.type, today);
     if (!doc) {
       return {
         type: req.type,

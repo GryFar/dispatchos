@@ -76,6 +76,20 @@ function shapeSignal(row: Record<string, unknown>) {
   };
 }
 
+// Tenant-safe projection for the cross-broker detail view. broker_trust_signals
+// are GLOBAL (keyed only by broker MC), so /api/broker-trust/:mc aggregates
+// signals from ALL tenants. The aggregate score is the intended shared moat,
+// but per-signal `notes` (free-text typed by another tenant's dispatcher),
+// `clientId` and `reportedByUserId` would leak which competing carriers work a
+// broker and their internal notes. Expose only the non-identifying fields.
+function shapeSignalPublic(row: Record<string, unknown>) {
+  return {
+    signalType: row.signal_type as string,
+    positive: Boolean(row.positive),
+    reportedAt: row.reported_at as string,
+  };
+}
+
 function safeParse(s: string): unknown {
   try {
     return JSON.parse(s);
@@ -186,7 +200,7 @@ export function registerBrokerTrustRoutes(app: Express): void {
         score,
         tier: trustTier(score),
         breakdown,
-        recentSignals: rows.slice(0, 10).map(shapeSignal),
+        recentSignals: rows.slice(0, 10).map(shapeSignalPublic),
       });
     }),
   );

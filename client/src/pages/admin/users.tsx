@@ -840,7 +840,7 @@ function InviteSuccessView({
           variant="outline"
           onClick={() => {
             const msg = `DispatchOS invite: ${url}`;
-            window.open(`https://t.me/share/url?url=${encodeURIComponent(msg)}`, "_blank");
+            window.open(`https://t.me/share/url?url=${encodeURIComponent(msg)}`, "_blank", "noopener,noreferrer");
           }}
         >
           <Send className="h-4 w-4" />

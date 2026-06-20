@@ -12,6 +12,11 @@ declare module "express-session" {
      *  session is authenticated under the role recorded in this same payload. */
     userId?: string;
     role?: UserRole;
+    /** Session epoch stamped at login. If it no longer matches the user's
+     *  session_epoch column (bumped on admin password/TOTP reset), the session
+     *  is stale and getCurrentUser destroys it. Absent on legacy sessions →
+     *  treated as 0, which matches the default so a deploy won't force re-login. */
+    epoch?: number;
     /** Kept for backward compat with v1.2.7 frontend that reads this flag
      *  from /api/auth/status. New code should consult userId / role. */
     authenticated?: boolean;
@@ -197,6 +202,12 @@ export function getCurrentUser(req: Request): UserInternal | undefined {
     return undefined;
   }
   if (user.blocked) return undefined;
+  // Session invalidation: if this session was minted before an admin reset the
+  // user's password/TOTP (which bumps session_epoch), it's stale — kill it.
+  if ((req.session.epoch ?? 0) !== (user.sessionEpoch ?? 0)) {
+    req.session.destroy(() => {});
+    return undefined;
+  }
   return user;
 }
 

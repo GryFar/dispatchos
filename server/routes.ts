@@ -1223,6 +1223,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       req.session.userId = user.id;
       req.session.role = user.role;
+      req.session.epoch = user.sessionEpoch ?? 0; // for session invalidation on reset
       req.session.authenticated = true; // legacy flag, kept for old frontend
       req.session.save((saveErr) => {
         if (saveErr) {
@@ -1460,6 +1461,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       req.session.userId = user.id;
       req.session.role = user.role;
+      req.session.epoch = user.sessionEpoch ?? 0; // for session invalidation on reset
       req.session.authenticated = true;
       req.session.save((saveErr) => {
         if (saveErr) {

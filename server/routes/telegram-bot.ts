@@ -365,16 +365,25 @@ async function handleApprovalLog(
   if (verb === "/no" && user.linkedClientId) {
     const loadId = args.trim() || null;
     const loadRec = loadId
-      ? (storage.getLoad?.(loadId) as { brokerMc?: string; broker_mc?: string } | undefined)
+      ? (storage.getLoad?.(loadId) as
+          | { brokerMc?: string; broker_mc?: string; clientId?: string; client_id?: string }
+          | undefined)
       : undefined;
-    const brokerMc = (loadRec?.brokerMc ?? loadRec?.broker_mc ?? "") as string;
-    if (brokerMc) {
-      storage.appendBrokerTrustSignal({
-        brokerMc, loadId, clientId: user.linkedClientId,
-        signalType: "load_refused_by_carrier", positive: false,
-        reportedByUserId: user.id, source: "driver",
-        notes: `Driver /no via Telegram (chatId=${chatId})`,
-      });
+    // Tenant scope: loadId is fully driver-supplied and getLoad is global
+    // (keyed by id only). Only record a signal against a load that belongs to
+    // the driver's OWN carrier — otherwise a driver could probe arbitrary
+    // cross-tenant load ids and inject negative broker-trust signals.
+    const loadClientId = (loadRec?.clientId ?? loadRec?.client_id) as string | undefined;
+    if (loadRec && loadClientId === user.linkedClientId) {
+      const brokerMc = (loadRec.brokerMc ?? loadRec.broker_mc ?? "") as string;
+      if (brokerMc) {
+        storage.appendBrokerTrustSignal({
+          brokerMc, loadId, clientId: user.linkedClientId,
+          signalType: "load_refused_by_carrier", positive: false,
+          reportedByUserId: user.id, source: "driver",
+          notes: `Driver /no via Telegram (chatId=${chatId})`,
+        });
+      }
     }
   }
 

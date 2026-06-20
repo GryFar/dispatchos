@@ -28,10 +28,24 @@
 // ---------------------------------------------------------------------------
 
 import type { Express, Request, Response, NextFunction } from "express";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { ZodError } from "zod";
 import { z } from "zod";
 import { getCurrentUser, generateBase32Secret, buildOtpAuthUrl, verifyTotp, verifyPassword } from "../auth";
 import { storage } from "../storage";
+
+// POST /api/me/totp/setup runs verifyPassword for already-enrolled users, so it
+// is a password-guessing oracle for anyone holding a valid session cookie.
+// Rate-limit it. Keyed on the session user (NOT IP), so it binds to the targeted
+// account and never locks out a shared-NAT office — safe to keep always on.
+const totpSetupLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: Number(process.env.DISPATCHOS_TOTP_SETUP_LIMIT || 10),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.session?.userId ?? ipKeyGenerator(req.ip || "unknown"),
+  message: { message: "Too many 2FA setup attempts. Try again in 15 minutes." },
+});
 
 function ah(
   handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown> | unknown,
@@ -72,6 +86,7 @@ export function registerMeTotpRoutes(app: Express): void {
   // the manual-entry fallback; the otpauthUrl is for QR rendering.
   app.post(
     "/api/me/totp/setup",
+    totpSetupLimiter,
     ah((req, res) => {
       const user = getCurrentUser(req);
       if (!user) return res.status(401).json({ message: "Authentication required" });
@@ -131,9 +146,16 @@ export function registerMeTotpRoutes(app: Express): void {
         return res.status(401).json({ message: "Invalid 2FA token" });
       }
 
+      // Replay guard: claim the counter atomically BEFORE persisting the
+      // secret. setLastUsedTotpCounter returns false if this counter was
+      // already used (a replayed code or a concurrent confirm), so reject it —
+      // mirrors the login and confirm-signup paths, which already check this.
+      if (!storage.setLastUsedTotpCounter(user.id, acceptedCounter)) {
+        return res.status(401).json({ message: "Invalid 2FA token" });
+      }
+
       const updated = storage.updateUser(user.id, { totpSecret: pending }, user.id);
       if (!updated) return res.status(404).json({ message: "User not found" });
-      storage.setLastUsedTotpCounter(user.id, acceptedCounter);
       // CRITICAL: stamp totp_confirmed_at. The login gate rejects any user with
       // a secret but no confirmation (code: "totp_setup_required"). updateUser
       // does NOT touch totp_confirmed_at, so without this the user who just

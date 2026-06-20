@@ -154,8 +154,10 @@ export async function createPortalSession(
   const client = storage.getClient(clientId) as
     | (Record<string, unknown> & { stripeCustomerId?: string; deletedAt?: string | null })
     | undefined;
-  if (client?.deletedAt) throw new Error("Client not found");
-  if (!client?.stripeCustomerId) {
+  // Mirror createCheckoutSession exactly: a missing OR archived carrier is
+  // "not found" — an archived tenant must not reach the billing portal.
+  if (!client || client.deletedAt) throw new Error("Client not found");
+  if (!client.stripeCustomerId) {
     throw new Error(
       "No Stripe customer for this client. Complete a Checkout first.",
     );
@@ -211,6 +213,40 @@ export function constructWebhookEvent(
 }
 
 /**
+ * Map a live Stripe.Subscription to our client billing fields. Single source of
+ * truth so checkout.session.completed and subscription.created/updated agree on
+ * status/trial/tier — all derived from the authoritative subscription object,
+ * never hardcoded. `trialEndsAt` is left undefined (not cleared) when the sub
+ * has no trial. planTier is set only when resolvable from the paid price.
+ */
+export function deriveSubscriptionUpdates(
+  sub: Stripe.Subscription,
+  client: unknown,
+): Record<string, unknown> {
+  const billingStatus =
+    sub.status === "trialing"
+      ? "trial"
+      : sub.status === "active"
+        ? "active"
+        : sub.status === "past_due" || sub.status === "unpaid"
+          ? "past_due"
+          : sub.status === "canceled"
+            ? "canceled"
+            : (client as { billingStatus?: string }).billingStatus ?? "trial";
+
+  const paidPriceId = sub.items?.data?.[0]?.price?.id ?? "";
+  const resolvedTier = tierForStripePrice(paidPriceId);
+
+  const updates: Record<string, unknown> = {
+    stripeSubscriptionId: sub.id,
+    billingStatus,
+    trialEndsAt: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : undefined,
+  };
+  if (resolvedTier) updates.planTier = resolvedTier;
+  return updates;
+}
+
+/**
  * Apply a parsed Stripe event to our DB. Idempotent — safe to retry. We use
  * Stripe's event types to drive a small state machine over the client's
  * billing fields.
@@ -229,23 +265,59 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       const client = storage.getClient(clientId);
       if (!client) return { handled: false, clientId };
 
-      const updates: Record<string, unknown> = {
-        stripeCustomerId:
-          typeof session.customer === "string" ? session.customer : session.customer?.id,
-        stripeSubscriptionId:
-          typeof session.subscription === "string"
-            ? session.subscription
-            : session.subscription?.id,
-        planTier: tier,
-        billingStatus: "trial",
-        // trial_period_days = 14
-        trialEndsAt: new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString(),
-      };
+      const stripeCustomerId =
+        typeof session.customer === "string" ? session.customer : session.customer?.id;
+      const subId =
+        typeof session.subscription === "string"
+          ? session.subscription
+          : session.subscription?.id;
+
+      // Derive the real billing state from the subscription instead of blindly
+      // stamping the just-paid carrier as 'trial' with a fake 14d window. The
+      // old code did exactly that, so a customer who paid immediately (no trial)
+      // sat as 'trial' until a later subscription.updated happened to correct it
+      // — order-dependent and wrong if that event was delayed/dropped. Pull the
+      // authoritative status/trial_end/tier from Stripe.
+      let updates: Record<string, unknown>;
+      const stripe = stripeClient();
+      let derivedFromSub = false;
+      if (stripe && subId) {
+        try {
+          const sub = await stripe.subscriptions.retrieve(subId);
+          updates = { stripeCustomerId, ...deriveSubscriptionUpdates(sub, client) };
+          derivedFromSub = true;
+        } catch (err) {
+          console.error(
+            `[stripe] checkout.session.completed: retrieve ${subId} failed:`,
+            (err as Error).message,
+          );
+          updates = {
+            stripeCustomerId,
+            stripeSubscriptionId: subId,
+            planTier: tier,
+            billingStatus: "trial",
+            trialEndsAt: new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString(),
+          };
+        }
+      } else {
+        // No subscription on the session (or Stripe not configured) → keep the
+        // legacy trial default so non-subscription checkouts still provision.
+        updates = {
+          stripeCustomerId,
+          stripeSubscriptionId: subId,
+          planTier: tier,
+          billingStatus: "trial",
+          trialEndsAt: new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString(),
+        };
+      }
       storage.upsertClient({
         ...(client as unknown as Parameters<typeof storage.upsertClient>[0]),
         ...updates,
       } as Parameters<typeof storage.upsertClient>[0]);
-      storage.audit("billing.subscription_started", "client", clientId, updates);
+      storage.audit("billing.subscription_started", "client", clientId, {
+        ...updates,
+        derivedFromSub,
+      });
       return { handled: true, clientId, changes: updates };
     }
 
@@ -257,43 +329,18 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       const client = storage.getClient(clientId);
       if (!client) return { handled: false, clientId };
 
-      // Stripe statuses: incomplete, incomplete_expired, trialing, active,
-      // past_due, canceled, unpaid, paused.
-      const billingStatus =
-        sub.status === "trialing"
-          ? "trial"
-          : sub.status === "active"
-            ? "active"
-            : sub.status === "past_due" || sub.status === "unpaid"
-              ? "past_due"
-              : sub.status === "canceled"
-                ? "canceled"
-                : (client as { billingStatus?: string }).billingStatus ?? "trial";
-
-      // V4-010: derive the plan tier from the price actually on the
-      // subscription, not from metadata. metadata.tier is set once at checkout
-      // and never changes — so a Customer-Portal plan change (which swaps the
-      // subscription's price) would otherwise leave planTier stale, and a
-      // mismatched metadata could grant a tier that wasn't paid for. The price
-      // on the live subscription is the authoritative, Stripe-verified signal.
-      const paidPriceId = sub.items?.data?.[0]?.price?.id ?? "";
-      const resolvedTier = tierForStripePrice(paidPriceId);
+      // V4-010: derive status + plan tier from the live subscription (price &
+      // status), not from one-time checkout metadata — a Customer-Portal plan
+      // change swaps the price, and mismatched metadata could grant an unpaid
+      // tier. Shared with checkout.session.completed via deriveSubscriptionUpdates.
       const metadataTier = sub.metadata?.tier ?? null;
-      if (resolvedTier && metadataTier && resolvedTier !== metadataTier) {
+      const updates = deriveSubscriptionUpdates(sub, client);
+      if (updates.planTier && metadataTier && updates.planTier !== metadataTier) {
         console.warn(
           `[stripe] tier mismatch on ${sub.id}: metadata=${metadataTier} ` +
-            `price=${resolvedTier} — using price-derived tier`,
+            `price=${updates.planTier} — using price-derived tier`,
         );
       }
-
-      const updates: Record<string, unknown> = {
-        stripeSubscriptionId: sub.id,
-        billingStatus,
-        trialEndsAt: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : undefined,
-      };
-      // Only set planTier when we could resolve it from the price; never
-      // downgrade to an unverified metadata value or wipe an existing tier.
-      if (resolvedTier) updates.planTier = resolvedTier;
       storage.upsertClient({
         ...(client as unknown as Parameters<typeof storage.upsertClient>[0]),
         ...updates,

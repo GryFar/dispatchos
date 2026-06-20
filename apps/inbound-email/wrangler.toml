@@ -13,6 +13,16 @@ workers_dev = false
 #   DISPATCHOS_INBOUND_SECRET — must match Fly secret on demo.dispatchos.co
 #
 # Vars (plain config, can be in this file):
-#   INGEST_URL — full URL to POST parsed emails to
+#   INGEST_URL          — full URL to POST parsed emails to
+#   INBOUND_ALLOWED_TO  — comma-separated recipient allowlist (worker drops others)
 [vars]
 INGEST_URL = "https://demo.dispatchos.co/api/inbound/email"
+INBOUND_ALLOWED_TO = "loads@dispatchos.co"
+
+# Per-sender rate-limit KV. WITHOUT this binding, checkRateLimit() no-ops and the
+# 30/hr cap is effectively OFF. Create + bind once:
+#   wrangler kv:namespace create INBOUND_RL
+# then paste the returned id below and uncomment:
+# [[kv_namespaces]]
+# binding = "INBOUND_RL"
+# id = "<paste-kv-namespace-id>"

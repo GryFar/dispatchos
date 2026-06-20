@@ -49,12 +49,15 @@ export function maybeAutoCheckin(
   lng: number,
 ): AutoCheckinResult[] {
   try {
-    const page = storage.listLoadsForDriver(userId, { limit: 20 });
+    // Inspect ALL active booked loads, not the 20 most-recent of all loads —
+    // an older still-open load would otherwise never get an auto check-in.
+    const activeLoads = storage.listActiveBookedLoadsForDriver(userId);
     const written: AutoCheckinResult[] = [];
 
-    for (const load of page.items) {
+    for (const load of activeLoads) {
       const l = load as unknown as Record<string, unknown>;
-      // Only act on currently booked loads (have a driver + bookedAt).
+      // Already filtered to booked + in-progress by the query, but keep the
+      // bookedAt guard as a defensive no-op.
       if (!l.bookedAt) continue;
 
       const existing = storage.listCheckinsForLoad(load.id);
