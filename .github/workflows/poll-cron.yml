@@ -1,0 +1,50 @@
+name: Poll Cron (load sources + driver reminders)
+
+# Business-critical FREQUENT jobs that the daily cron can't cover:
+#   1. /api/cron/run-load-sources  — poll every due load_source, ingest new
+#      loads, score them, and push high-score matches to carriers' Telegram
+#      (the core "start receiving offers" loop). MUST run often or carriers see
+#      stale boards and miss loads.
+#   2. /api/cron/pickup-reminders  — ping assigned drivers before a load's
+#      pickup window (default 3h lead). Needs sub-hourly cadence to be useful.
+#
+# These were NOT scheduled anywhere, so in prod load sources were never polled
+# (no matched-load alerts) and pickup reminders never fired. Runs every 15 min.
+#
+# Set repo variable DISPATCHOS_BASE_URL to the live app URL (falls back to demo)
+# and secret CRON_SECRET (must equal the app's DISPATCHOS_CRON_SECRET).
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: poll-cron
+  cancel-in-progress: false
+
+env:
+  BASE_URL: ${{ vars.DISPATCHOS_BASE_URL || 'https://demo.dispatchos.co' }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Poll load sources (ingest + score + alert)
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS -X POST "$BASE_URL/api/cron/run-load-sources" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            --max-time 120 | head -c 1200
+          echo ""
+
+      - name: Pickup reminders
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS -X POST "$BASE_URL/api/cron/pickup-reminders" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            --max-time 60 | head -c 800
+          echo ""
