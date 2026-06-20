@@ -76,14 +76,20 @@ interface ProgressDto {
   completedAt: string | null;
 }
 
-const STEP_LABELS = ["Welcome", "Account type", "Company", "Plan", "Done"];
+const STEP_KEYS = [
+  "onboarding.steps.welcome",
+  "onboarding.steps.accountType",
+  "onboarding.steps.company",
+  "onboarding.steps.plan",
+  "onboarding.steps.done",
+];
 
 export default function OnboardingPage() {
   const { user, isLoading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const { t: _t } = useT();
+  const { t } = useT();
 
   const [step, setStep] = useState(0);
   const [persona, setPersona] = useState<Persona | null>(null);
@@ -153,7 +159,7 @@ export default function OnboardingPage() {
     if (planTier) dataPatch.planTier = planTier;
 
     const next = step + 1;
-    const isFinal = next === STEP_LABELS.length - 1;
+    const isFinal = next === STEP_KEYS.length - 1;
 
     try {
       await saveMutation.mutateAsync({
@@ -163,11 +169,14 @@ export default function OnboardingPage() {
       });
       setStep(next);
       if (isFinal) {
-        toast({ title: "🎉 Welcome to DispatchOS", description: "You're all set." });
+        toast({
+          title: t("onboarding.toast.welcome.title"),
+          description: t("onboarding.toast.welcome.description"),
+        });
       }
     } catch (err) {
       toast({
-        title: "Не удалось сохранить",
+        title: t("onboarding.toast.saveError.title"),
         description: (err as Error).message,
         variant: "destructive",
       });
@@ -237,8 +246,8 @@ export default function OnboardingPage() {
             DispatchOS
           </div>
           <div className="ml-auto flex items-center gap-2">
-            {STEP_LABELS.map((label, idx) => (
-              <div key={label} className="flex items-center gap-1.5">
+            {STEP_KEYS.map((labelKey, idx) => (
+              <div key={labelKey} className="flex items-center gap-1.5">
                 <div
                   className={`h-2 w-2 rounded-full transition-colors ${
                     idx === step
@@ -253,7 +262,7 @@ export default function OnboardingPage() {
                     idx === step ? "text-white" : "text-[#6b7390]"
                   }`}
                 >
-                  {label}
+                  {t(labelKey)}
                 </span>
               </div>
             ))}
@@ -297,7 +306,7 @@ export default function OnboardingPage() {
         </div>
 
         {/* Footer — navigation */}
-        {step < STEP_LABELS.length - 1 && (
+        {step < STEP_KEYS.length - 1 && (
           <div className="mt-10 flex items-center justify-between">
             <Button
               variant="ghost"
@@ -306,7 +315,7 @@ export default function OnboardingPage() {
               className="text-[#9aa3ba] hover:text-white"
             >
               <ArrowLeft className="mr-2 h-4 w-4" />
-              Back
+              {t("onboarding.nav.back")}
             </Button>
             <Button
               onClick={goNext}
@@ -316,7 +325,9 @@ export default function OnboardingPage() {
               {saveMutation.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : null}
-              {step === STEP_LABELS.length - 2 ? "Start your 14-day trial" : "Continue"}
+              {step === STEP_KEYS.length - 2
+                ? t("onboarding.nav.startTrial")
+                : t("onboarding.nav.continue")}
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           </div>
@@ -331,18 +342,22 @@ export default function OnboardingPage() {
 // ============================================================================
 
 function WelcomeStep({ userName }: { userName: string }) {
+  const { t } = useT();
   return (
     <div className="space-y-6">
       <div className="inline-flex items-center gap-2 rounded-full border border-[rgba(245,158,11,0.3)] bg-[rgba(245,158,11,0.08)] px-3 py-1 text-xs font-medium text-[#f59e0b]">
         <Sparkles className="h-3 w-3" />
-        Setup takes about 5 minutes
+        {t("onboarding.welcome.badge")}
       </div>
       <h1 className="text-4xl font-bold leading-tight tracking-tight text-white md:text-5xl">
-        Привет{userName ? `, ${userName}` : ""}.<br />
-        <span className="text-[#f59e0b]">Давайте настроим DispatchOS под вас.</span>
+        {userName
+          ? t("onboarding.welcome.greetingNamed", { name: userName })
+          : t("onboarding.welcome.greeting")}
+        <br />
+        <span className="text-[#f59e0b]">{t("onboarding.welcome.tagline")}</span>
       </h1>
       <p className="max-w-xl text-base leading-relaxed text-[#9aa3ba]">
-        За 4 шага: выберем тип аккаунта, привяжем MC#, подберём тариф. Документы — позже, на спокойной голове. 14 дней триал на любом тарифе.
+        {t("onboarding.welcome.subtitle")}
       </p>
     </div>
   );
@@ -355,6 +370,7 @@ function PersonaStep({
   value: Persona | null;
   onChange: (p: Persona) => void;
 }) {
+  const { t } = useT();
   const tiles: Array<{
     id: Persona;
     icon: React.ReactNode;
@@ -366,37 +382,47 @@ function PersonaStep({
     {
       id: "owner_operator",
       icon: <Truck className="h-7 w-7" />,
-      title: "Owner-Operator",
-      description: "I drive my own truck",
-      priceHint: "Starting at $19/mo",
-      bullets: ["Single MC", "I'm the driver AND the boss", "1-2 trucks"],
+      title: t("onboarding.persona.owner.title"),
+      description: t("onboarding.persona.owner.description"),
+      priceHint: t("onboarding.persona.owner.priceHint"),
+      bullets: [
+        t("onboarding.persona.owner.bullet1"),
+        t("onboarding.persona.owner.bullet2"),
+        t("onboarding.persona.owner.bullet3"),
+      ],
     },
     {
       id: "fleet",
       icon: <Building2 className="h-7 w-7" />,
-      title: "Carrier / Fleet",
-      description: "We have multiple drivers",
-      priceHint: "Starting at $49/mo",
-      bullets: ["Multiple MCs or 2+ drivers", "Dispatchers + drivers separate", "2-50 trucks"],
+      title: t("onboarding.persona.fleet.title"),
+      description: t("onboarding.persona.fleet.description"),
+      priceHint: t("onboarding.persona.fleet.priceHint"),
+      bullets: [
+        t("onboarding.persona.fleet.bullet1"),
+        t("onboarding.persona.fleet.bullet2"),
+        t("onboarding.persona.fleet.bullet3"),
+      ],
     },
     {
       id: "enterprise",
       icon: <Crown className="h-7 w-7" />,
-      title: "Enterprise",
-      description: "Large fleet, custom needs",
-      priceHint: "Custom pricing",
-      bullets: ["50+ trucks", "API access, SSO, dedicated CSM", "On-prem option"],
+      title: t("onboarding.persona.enterprise.title"),
+      description: t("onboarding.persona.enterprise.description"),
+      priceHint: t("onboarding.persona.enterprise.priceHint"),
+      bullets: [
+        t("onboarding.persona.enterprise.bullet1"),
+        t("onboarding.persona.enterprise.bullet2"),
+        t("onboarding.persona.enterprise.bullet3"),
+      ],
     },
   ];
 
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold leading-tight tracking-tight text-white md:text-4xl">
-        Какой тип аккаунта вам нужен?
+        {t("onboarding.persona.heading")}
       </h1>
-      <p className="text-[#9aa3ba]">
-        От этого зависит набор вопросов на следующих шагах и стартовая цена.
-      </p>
+      <p className="text-[#9aa3ba]">{t("onboarding.persona.subtitle")}</p>
       <div className="grid gap-4 sm:grid-cols-3">
         {tiles.map((tile) => {
           const selected = value === tile.id;
@@ -542,6 +568,7 @@ function CompanyStep({
   fleetSize: string;
   setFleetSize: (s: string) => void;
 }) {
+  const { t } = useT();
   const isFleet = persona === "fleet" || persona === "enterprise";
   const { result: mcLookup, loading: mcLoading } = useMcLookup(mc);
 
@@ -562,31 +589,31 @@ function CompanyStep({
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold leading-tight tracking-tight text-white md:text-4xl">
-        {isFleet ? "Информация о компании" : "Информация о вашем MC"}
+        {isFleet
+          ? t("onboarding.company.heading.fleet")
+          : t("onboarding.company.heading.owner")}
       </h1>
-      <p className="text-[#9aa3ba]">
-        Эти данные нужны для broker scoring, FMCSA snapshot, и для compliance мониторинга. Вы сможете поменять их потом в Settings.
-      </p>
+      <p className="text-[#9aa3ba]">{t("onboarding.company.subtitle")}</p>
 
       <div className="space-y-4 rounded-xl border border-[rgba(255,255,255,0.08)] bg-[#161c2e]/40 p-5">
         <div className="space-y-1.5">
-          <Label className="text-xs text-[#9aa3ba]">Company name (legal/DBA from MC filing) *</Label>
+          <Label className="text-xs text-[#9aa3ba]">{t("onboarding.company.name.label")}</Label>
           <Input
             value={companyName}
             onChange={(e) => setCompanyName(e.target.value)}
-            placeholder="e.g. ACME Trucking LLC"
+            placeholder={t("onboarding.company.name.placeholder")}
             className="border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-white placeholder:text-[#6b7390]"
           />
           <p className="text-[10px] text-[#6b7390]">
             {persona === "owner_operator"
-              ? "If you're an owner-operator, use your business name, not your personal name."
-              : "Legal entity name as registered with FMCSA / your state."}
+              ? t("onboarding.company.name.hint.owner")
+              : t("onboarding.company.name.hint.fleet")}
           </p>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label className="text-xs text-[#9aa3ba]">MC# *</Label>
+            <Label className="text-xs text-[#9aa3ba]">{t("onboarding.company.mc.label")}</Label>
             <Input
               value={mc}
               onChange={(e) => setMc(e.target.value.toUpperCase())}
@@ -597,15 +624,15 @@ function CompanyStep({
               {mcLoading ? (
                 <>
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  <span>Проверяем FMCSA SAFER...</span>
+                  <span>{t("onboarding.company.mc.checking")}</span>
                 </>
               ) : (
-                <span>We'll auto-pull authority status from FMCSA SAFER.</span>
+                <span>{t("onboarding.company.mc.hint")}</span>
               )}
             </p>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs text-[#9aa3ba]">DOT# (optional)</Label>
+            <Label className="text-xs text-[#9aa3ba]">{t("onboarding.company.dot.label")}</Label>
             <Input
               value={dot}
               onChange={(e) => setDot(e.target.value)}
@@ -620,24 +647,24 @@ function CompanyStep({
 
         {isFleet && (
           <div className="space-y-1.5">
-            <Label className="text-xs text-[#9aa3ba]">Fleet size</Label>
+            <Label className="text-xs text-[#9aa3ba]">{t("onboarding.company.fleetSize.label")}</Label>
             <select
               value={fleetSize}
               onChange={(e) => setFleetSize(e.target.value)}
               className="h-10 w-full rounded-md border border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] px-3 text-sm text-white"
             >
-              <option value="">Select size...</option>
-              <option value="2-5">2-5 trucks</option>
-              <option value="6-20">6-20 trucks</option>
-              <option value="21-50">21-50 trucks</option>
-              <option value="50+">50+ trucks</option>
+              <option value="">{t("onboarding.company.fleetSize.placeholder")}</option>
+              <option value="2-5">{t("onboarding.company.fleetSize.opt.2to5")}</option>
+              <option value="6-20">{t("onboarding.company.fleetSize.opt.6to20")}</option>
+              <option value="21-50">{t("onboarding.company.fleetSize.opt.21to50")}</option>
+              <option value="50+">{t("onboarding.company.fleetSize.opt.50plus")}</option>
             </select>
           </div>
         )}
 
         {!isFleet && (
           <p className="rounded-md border border-[rgba(52,211,153,0.2)] bg-[rgba(52,211,153,0.05)] p-3 text-xs text-[#34d399]">
-            ✓ Owner-operator setup. Документы (CDL, medical, insurance) можно загрузить позже — система не блокирует работу без них, но напомнит alert'ами.
+            {t("onboarding.company.ownerNote")}
           </p>
         )}
       </div>
@@ -668,14 +695,15 @@ function McLookupFeedback({
   loading: boolean;
   mc: string;
 }) {
+  const { t } = useT();
   if (loading || !result || !mc) return null;
 
   if (result.claimedByOther) {
     return (
       <div className="rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] p-3 text-xs text-[#fca5a5]">
-        <p className="font-semibold">MC уже используется другим аккаунтом.</p>
+        <p className="font-semibold">{t("onboarding.mcLookup.claimed.title")}</p>
         <p className="mt-1 text-[#fca5a5]/80">
-          Один MC docket = один аккаунт. Если это ваша компания и вы видите это сообщение поошибке — напишите support@dispatchos.co, поможем вернуть доступ. До тех пор продолжить нельзя.
+          {t("onboarding.mcLookup.claimed.body")}
         </p>
       </div>
     );
@@ -685,10 +713,12 @@ function McLookupFeedback({
     return (
       <div className="rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] p-3 text-xs text-[#fca5a5]">
         <p className="font-semibold">
-          FMCSA status: {result.operatingStatus ?? "INACTIVE"}
+          {t("onboarding.mcLookup.blocked.title", {
+            status: result.operatingStatus ?? "INACTIVE",
+          })}
         </p>
         <p className="mt-1 text-[#fca5a5]/80">
-          Этот MC docket отображается как OUT OF SERVICE или NOT AUTHORIZED в FMCSA. Если это ошибка (recent reinstatement, DataQ ожидается) — пришлите PDF выписки в support@dispatchos.co.
+          {t("onboarding.mcLookup.blocked.body")}
         </p>
       </div>
     );
@@ -697,7 +727,7 @@ function McLookupFeedback({
   if (result.found) {
     return (
       <div className="rounded-md border border-[rgba(52,211,153,0.25)] bg-[rgba(52,211,153,0.06)] p-3 text-xs text-[#34d399]">
-        <p className="font-semibold">✓ FMCSA SAFER подтверждён.</p>
+        <p className="font-semibold">{t("onboarding.mcLookup.found.title")}</p>
         <p className="mt-1 text-[#34d399]/80">
           {[
             result.legalName,
@@ -719,16 +749,16 @@ function McLookupFeedback({
   if (!result.fmcsaConfigured) {
     return (
       <p className="text-[10px] text-[#6b7390]">
-        FMCSA SAFER не подключён в этом environment'е — пропускаем верификацию. Uniqueness MC проверяется на save.
+        {t("onboarding.mcLookup.notConfigured")}
       </p>
     );
   }
 
   return (
     <div className="rounded-md border border-[rgba(245,158,11,0.25)] bg-[rgba(245,158,11,0.06)] p-3 text-xs text-[#fbbf24]">
-      <p className="font-semibold">FMCSA SAFER не нашёл этот MC.</p>
+      <p className="font-semibold">{t("onboarding.mcLookup.notFound.title")}</p>
       <p className="mt-1 text-[#fbbf24]/80">
-        Ещё не ввели полный номер? Или docket совсем свежий и ещё не попал в публичный SAFER? Продолжить можно — верифицируем позже автоматически.
+        {t("onboarding.mcLookup.notFound.body")}
       </p>
     </div>
   );
@@ -747,15 +777,16 @@ function PlanStep({
   value: string;
   onChange: (tier: string) => void;
 }) {
+  const { t } = useT();
   const filtered = plans.filter((p) => p.persona === persona);
 
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold leading-tight tracking-tight text-white md:text-4xl">
-        Выберите план
+        {t("onboarding.plan.heading")}
       </h1>
       <p className="text-[#9aa3ba]">
-        Первые {trialDays} дней — бесплатно на любом тарифе. Без карты на старте. Cancel anytime.
+        {t("onboarding.plan.subtitle", { days: trialDays })}
       </p>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -780,17 +811,21 @@ function PlanStep({
                 <span className="text-3xl font-bold text-white">
                   ${(plan.monthlyCents / 100).toFixed(0)}
                 </span>
-                <span className="text-sm text-[#9aa3ba]">/mo</span>
+                <span className="text-sm text-[#9aa3ba]">{t("onboarding.plan.perMonth")}</span>
               </div>
               <ul className="space-y-1.5 text-xs text-[#9aa3ba]">
                 <li className="flex items-start gap-1.5">
                   <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-[#34d399]" />
                   <span>
                     {plan.includedDriverSeats === 999
-                      ? "Unlimited driver seats"
-                      : `${plan.includedDriverSeats} driver seat${plan.includedDriverSeats === 1 ? "" : "s"}`}
+                      ? t("onboarding.plan.driverSeats.unlimited")
+                      : t("onboarding.plan.driverSeats.count", {
+                          count: plan.includedDriverSeats,
+                        })}
                     {plan.additionalDriverCents > 0
-                      ? ` (+$${(plan.additionalDriverCents / 100).toFixed(0)}/mo per add'l)`
+                      ? t("onboarding.plan.driverSeats.additional", {
+                          price: (plan.additionalDriverCents / 100).toFixed(0),
+                        })
                       : ""}
                   </span>
                 </li>
@@ -799,8 +834,10 @@ function PlanStep({
                     <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-[#34d399]" />
                     <span>
                       {plan.includedDispatcherSeats === 999
-                        ? "Unlimited dispatcher seats"
-                        : `${plan.includedDispatcherSeats} dispatcher seat${plan.includedDispatcherSeats === 1 ? "" : "s"}`}
+                        ? t("onboarding.plan.dispatcherSeats.unlimited")
+                        : t("onboarding.plan.dispatcherSeats.count", {
+                            count: plan.includedDispatcherSeats,
+                          })}
                     </span>
                   </li>
                 )}
@@ -808,36 +845,36 @@ function PlanStep({
                   <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-[#34d399]" />
                   <span>
                     {plan.maxMcCount === null || plan.maxMcCount >= 999
-                      ? "Unlimited MCs"
-                      : `${plan.maxMcCount} MC${plan.maxMcCount === 1 ? "" : "s"}`}
+                      ? t("onboarding.plan.mcs.unlimited")
+                      : t("onboarding.plan.mcs.count", { count: plan.maxMcCount })}
                   </span>
                 </li>
                 {plan.features.carrierSafetyProfile && (
                   <li className="flex items-start gap-1.5">
                     <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-[#34d399]" />
-                    <span>Carrier Safety Profile (Montgomery)</span>
+                    <span>{t("onboarding.plan.feature.carrierSafetyProfile")}</span>
                   </li>
                 )}
                 {plan.features.counterpartyVettingPremium && (
                   <li className="flex items-start gap-1.5">
                     <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-[#34d399]" />
-                    <span>Counterparty vetting premium</span>
+                    <span>{t("onboarding.plan.feature.counterpartyVetting")}</span>
                   </li>
                 )}
                 {plan.features.apiAccess && (
                   <li className="flex items-start gap-1.5">
                     <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-[#34d399]" />
-                    <span>REST API + webhooks</span>
+                    <span>{t("onboarding.plan.feature.apiAccess")}</span>
                   </li>
                 )}
                 {plan.features.ssoSaml && (
                   <li className="flex items-start gap-1.5">
                     <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-[#34d399]" />
-                    <span>SSO / SAML</span>
+                    <span>{t("onboarding.plan.feature.ssoSaml")}</span>
                   </li>
                 )}
                 <li className="text-[10px] text-[#6b7390]">
-                  Audit log retention: {plan.auditRetentionDays}d
+                  {t("onboarding.plan.auditRetention", { days: plan.auditRetentionDays })}
                 </li>
               </ul>
             </button>
@@ -849,24 +886,25 @@ function PlanStep({
 }
 
 function DoneStep({ onContinue }: { onContinue: () => void }) {
+  const { t } = useT();
   return (
     <div className="space-y-6">
       <div className="inline-flex items-center gap-2 rounded-full border border-[rgba(52,211,153,0.3)] bg-[rgba(52,211,153,0.08)] px-3 py-1 text-xs font-medium text-[#34d399]">
         <CheckCircle2 className="h-3 w-3" />
-        Setup complete
+        {t("onboarding.done.badge")}
       </div>
       <h1 className="text-4xl font-bold leading-tight tracking-tight text-white md:text-5xl">
-        🎉 Вы готовы.
+        {t("onboarding.done.heading")}
       </h1>
       <p className="max-w-xl text-base leading-relaxed text-[#9aa3ba]">
-        Триал начался — 14 дней без оплаты. Загрузить документы (insurance, CDL, medical) можно из dashboard в разделе Compliance — alerts уже подключены.
+        {t("onboarding.done.subtitle")}
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
         <Button
           onClick={onContinue}
           className="bg-[#f59e0b] text-[#0a0e1a] hover:bg-[#fbbf24]"
         >
-          Go to dashboard
+          {t("onboarding.done.gotoDashboard")}
           <ArrowRight className="ml-2 h-4 w-4" />
         </Button>
         <Button
@@ -874,7 +912,7 @@ function DoneStep({ onContinue }: { onContinue: () => void }) {
           onClick={() => window.open("https://t.me/DispatchOS_Computer_Bot", "_blank")}
           className="border-[rgba(255,255,255,0.14)] bg-transparent text-white hover:bg-[rgba(255,255,255,0.06)]"
         >
-          Connect Telegram bot
+          {t("onboarding.done.connectTelegram")}
         </Button>
       </div>
     </div>
