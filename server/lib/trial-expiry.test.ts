@@ -16,6 +16,7 @@ import { join } from "node:path";
 
 process.env.DISPATCHOS_DB_PATH = join(tmpdir(), "dispatchos-trial-test.db");
 delete process.env.TELEGRAM_BOT_TOKEN;
+delete process.env.TELEGRAM_DRIVER_BOT_TOKEN;
 delete process.env.TELEGRAM_ALERT_CHAT_ID;
 delete process.env.OWNER_EMAIL;
 delete process.env.RESEND_FROM_EMAIL;
