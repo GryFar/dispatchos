@@ -38,6 +38,7 @@ import { getIntegrationValue } from "./integration-config";
 import { sendEmail } from "./email";
 import { daysBetween } from "./date-utils";
 import { pickAlertThreshold } from "./alert-thresholds";
+import { resolveOwnerEmail } from "./owner-email";
 
 /** Alert thresholds in days-before-expiry. Mirrors insurance-monitor. */
 const ALERT_THRESHOLDS: number[] = [60, 30, 14, 7, 1, 0, -1, -7];
@@ -200,8 +201,7 @@ export async function runComplianceRenewalsCheck(): Promise<ComplianceAlertOutco
       getIntegrationValue("resend", "RESEND_FROM_EMAIL") ??
       process.env.RESEND_FROM_EMAIL ??
       null,
-    ownerEmail:
-      getIntegrationValue("notifications", "OWNER_EMAIL") ?? process.env.OWNER_EMAIL ?? null,
+    ownerEmail: resolveOwnerEmail(),
   };
 
   const clients = storage.listClients();

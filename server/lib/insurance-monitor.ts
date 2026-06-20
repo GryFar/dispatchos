@@ -20,6 +20,7 @@ import { getIntegrationValue } from "./integration-config";
 import { sendEmail } from "./email";
 import { daysBetween } from "./date-utils";
 import { pickAlertThreshold } from "./alert-thresholds";
+import { resolveOwnerEmail } from "./owner-email";
 
 /** Alert thresholds in days-before-expiry. 0 = expired today, -N = N days past. */
 const ALERT_THRESHOLDS: number[] = [14, 7, 3, 1, 0, -1, -7];
@@ -132,18 +133,8 @@ export async function runInsuranceCheck(
     getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN") ?? null;
   const tgChatId = process.env.TELEGRAM_ALERT_CHAT_ID ?? null;
 
-  // Owner email: explicit override > env > first active admin user.
-  let ownerEmail: string | null =
-    ownerEmailOverride ?? process.env.DISPATCHOS_OWNER_EMAIL ?? null;
-  if (!ownerEmail) {
-    const owner = storage
-      .listUsers()
-      .find(
-        (u) =>
-          u.role === "admin" && !u.blocked && !u.deletedAt && typeof u.email === "string" && u.email.includes("@"),
-      );
-    if (owner) ownerEmail = owner.email;
-  }
+  // Owner email — unified resolver (override > integration > env > first admin).
+  const ownerEmail = resolveOwnerEmail(ownerEmailOverride);
 
   const alertsSent: InsuranceCheckResult["alertsSent"] = [];
   let skipped = 0;

@@ -21,6 +21,7 @@ import { fetchWithTimeout } from "./fetch-timeout";
 import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
 import { sendEmail } from "./email";
+import { resolveOwnerEmail } from "./owner-email";
 
 const REMINDER_DAYS = [7, 3, 1];
 
@@ -102,8 +103,7 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
       getIntegrationValue("resend", "RESEND_FROM_EMAIL") ??
       process.env.RESEND_FROM_EMAIL ??
       null,
-    ownerEmail:
-      getIntegrationValue("notifications", "OWNER_EMAIL") ?? process.env.OWNER_EMAIL ?? null,
+    ownerEmail: resolveOwnerEmail(),
   };
 
   const clients = storage.listClients();
