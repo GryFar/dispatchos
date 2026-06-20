@@ -901,6 +901,51 @@ try {
   await request("/api/auth/logout", { method: "POST" });
   cookieHeader = adminCookieHeader; // back to admin session
 
+  // Security: a BLOCKED user must not be able to finish signup and obtain a
+  // session via a still-valid pending-confirmation token (minted before the
+  // block). Fresh invite → signup user B → block as admin → confirm-signup→403.
+  const blockInvite = await request("/api/admin/invites", {
+    method: "POST",
+    body: { role: "dispatcher", ttlHours: 24 },
+  });
+  const adminCookieForBlockTest = cookieHeader;
+  cookieHeader = ""; // signup is unauthenticated (separate jar)
+  const blockedSignup = await request("/api/auth/signup", {
+    method: "POST",
+    body: {
+      inviteCode: blockInvite.code,
+      email: "smoke.blocked@example.com",
+      fullName: "Blocked Signup",
+      password: "BlockedSignup1!",
+    },
+  });
+  if (!blockedSignup.id || !blockedSignup.pendingConfirmationToken || !blockedSignup.totpSecret) {
+    throw new Error("blocked-signup setup missing id/pendingConfirmationToken/totpSecret");
+  }
+  cookieHeader = adminCookieForBlockTest; // back to admin to block them
+  await request(`/api/admin/users/${blockedSignup.id}`, {
+    method: "PATCH",
+    body: { blocked: true },
+  });
+  cookieHeader = ""; // confirm-signup is unauthenticated
+  let blockedConfirmStatus = 0;
+  try {
+    await request("/api/auth/totp/confirm-signup", {
+      method: "POST",
+      body: {
+        pendingConfirmationToken: blockedSignup.pendingConfirmationToken,
+        token: totp(blockedSignup.totpSecret),
+      },
+    });
+  } catch (err) {
+    blockedConfirmStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (blockedConfirmStatus !== 403) {
+    throw new Error(`blocked user confirm-signup returned ${blockedConfirmStatus}, expected 403`);
+  }
+  cookieHeader = adminCookieForBlockTest; // restore admin session for the rest
+  console.log("[OK] blocked user cannot finish signup via pending token (403)");
+
   // F2 AI Dispatcher: admin is the wrong role for /api/dispatch/* — 403.
   let aiAdminStatus = 0;
   try {

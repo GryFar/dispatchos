@@ -256,19 +256,43 @@ if (AUTH_RATE_LIMIT_ENABLED) {
     },
     message: { message: "Too many attempts. Try again in 15 minutes." },
   });
+
+  // Secondary per-IP-only limiter. The tuple limiter above keys on (IP, email),
+  // so password-spray — one password tried across MANY emails from one IP —
+  // mints a fresh key per email and slips through (only the global 240/min
+  // /api cap applies otherwise). This caps the aggregate auth volume from a
+  // single IP. The cap is deliberately generous (default 100/15min) so a busy
+  // office NAT of legitimate users isn't locked out, while a spray over dozens+
+  // of accounts still trips it. Both limiters run; either can block.
+  const authIpLimiter = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: Number(process.env.DISPATCHOS_AUTH_RATE_LIMIT_IP_PER_15MIN || 100),
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: skipTrusted,
+    keyGenerator: (req) => ipKeyGenerator(req.ip || "unknown"),
+    message: { message: "Too many attempts from this network. Try again later." },
+  });
+
   // Cover ALL credential / 2FA / bootstrap paths, not just login.
   // V4-001 noted that signup/bootstrap/setup were quietly uncovered after #98.
-  app.use("/api/auth/login", authBruteLimiter);
-  app.use("/api/auth/signup", authBruteLimiter);
-  app.use("/api/auth/bootstrap", authBruteLimiter);
-  app.use("/api/auth/setup", authBruteLimiter);
-  app.use("/api/me/totp/confirm", authBruteLimiter);
   // H2: resume-setup is a password->TOTP-secret oracle and confirm-signup verifies
   // a TOTP code — both were uncovered. Rate-limit them like the rest.
-  app.use("/api/auth/totp/resume-setup", authBruteLimiter);
-  app.use("/api/auth/totp/confirm-signup", authBruteLimiter);
+  const AUTH_LIMITED_PATHS = [
+    "/api/auth/login",
+    "/api/auth/signup",
+    "/api/auth/bootstrap",
+    "/api/auth/setup",
+    "/api/me/totp/confirm",
+    "/api/auth/totp/resume-setup",
+    "/api/auth/totp/confirm-signup",
+  ];
+  for (const p of AUTH_LIMITED_PATHS) {
+    app.use(p, authBruteLimiter);
+    app.use(p, authIpLimiter);
+  }
   console.log(
-    "[auth] brute-force limiter ENABLED (15min / 20 attempts per IP+email)",
+    "[auth] brute-force limiter ENABLED (15min: 20/IP+email and 100/IP)",
   );
 
   // M1: public GPS ingest (/api/track/*) is token-only auth. A real device pings
