@@ -55,7 +55,7 @@ import { registerCronRoutes } from "./routes/cron";
 import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { registerBillingRoutes } from "./routes/billing";
-import { enrichLoadSync } from "./lib/ai";
+import { enrichLoadSync, outboundMarketScore } from "./lib/ai";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
 import { parseLimit } from "./lib/query";
@@ -470,13 +470,25 @@ export function scoreLoadForClient(client: Client, load: Load): ScoredLoad | nul
   const locationScore =
     locationConfidence === "high" ? 100 : locationConfidence === "medium" ? 72 : 32;
 
-  const dispatchScore = Math.round(
+  // Backhaul / outbound-market awareness: how strong is the freight market
+  // LEAVING this load's destination? A great-paying load into a dead market is
+  // a trap — you deadhead far or sit waiting for the next load. We always
+  // compute + surface this (field + warning); it only changes the rank when
+  // DISPATCHOS_BACKHAUL_WEIGHT > 0, so default behavior is byte-for-byte the
+  // same (fully backward-compatible).
+  const backhaulScore = outboundMarketScore(load.destinationState, load.equipment, load.pickupAt);
+
+  const baseScore =
     ppmScore * 0.42 +
-      deadheadScore * 0.18 +
-      feasibilityScore * 0.15 +
-      brokerSafetyScore * 0.12 +
-      laneScore * 0.08 +
-      locationScore * 0.05,
+    deadheadScore * 0.18 +
+    feasibilityScore * 0.15 +
+    brokerSafetyScore * 0.12 +
+    laneScore * 0.08 +
+    locationScore * 0.05;
+  const wRaw = Number.parseFloat(process.env.DISPATCHOS_BACKHAUL_WEIGHT ?? "");
+  const backhaulWeight = Number.isFinite(wRaw) ? clamp(wRaw, 0, 0.4) : 0;
+  const dispatchScore = Math.round(
+    (1 - backhaulWeight) * baseScore + backhaulWeight * backhaulScore,
   );
 
   const warnings: string[] = [];
@@ -485,6 +497,15 @@ export function scoreLoadForClient(client: Client, load: Load): ScoredLoad | nul
   if (pickupFeasibility === "not_feasible") warnings.push("Pickup window is not feasible from current position.");
   if (load.fraudRisk >= 25) warnings.push("Broker/fraud risk is elevated; verify MC and rate confirmation.");
   if (netPpmTotal < client.minimumPpm) warnings.push("Net total PPM is below client minimum.");
+  // Relative backhaul flag: hauling from a strong inbound lane into a notably
+  // weaker outbound market means a likely deadhead / wait for the next load.
+  // Relative (vs the inbound laneScore) rather than absolute, so it stays
+  // meaningful without hand-calibrating to the benchmark's compressed range.
+  if (laneScore - backhaulScore >= 12) {
+    warnings.push(
+      `Outbound market at destination (${backhaulScore}/100) is weaker than the inbound lane (${Math.round(laneScore)}/100): line up the next load before booking.`,
+    );
+  }
 
   let verdict: ScoredLoad["verdict"] = "book";
   if (
@@ -544,6 +565,7 @@ export function scoreLoadForClient(client: Client, load: Load): ScoredLoad | nul
         netPpmTotal: Number(netPpmTotal.toFixed(3)),
         counterOffer,
         warnings,
+        backhaulScore,
       },
     });
   } catch (err) {
@@ -571,6 +593,7 @@ export function scoreLoadForClient(client: Client, load: Load): ScoredLoad | nul
     counterOffer,
     rankReason: reasonParts.join(" · "),
     warnings,
+    backhaulScore,
   };
 }
 

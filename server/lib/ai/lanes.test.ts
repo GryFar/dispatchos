@@ -1,7 +1,7 @@
 // Lane intelligence tests.
 // Run: npx tsx server/lib/ai/lanes.test.ts
 
-import { regionFor, quoteLane, classifyOffer } from "./lanes";
+import { regionFor, quoteLane, classifyOffer, outboundMarketScore } from "./lanes";
 
 let pass = 0;
 let fail = 0;
@@ -103,6 +103,35 @@ function assert(name: string, cond: boolean, detail?: string) {
   const lowball = classifyOffer(lane.baselinePpm * 0.50 * 400, 400, lane);
   assert("classify: 50% below → lowball", lowball.classification === "lowball");
   assert("classify: lowball → skip", lowball.recommendedAction === "skip");
+}
+
+// ---------------------------------------------------------------------------
+// Backhaul / outbound-market score
+// ---------------------------------------------------------------------------
+{
+  const tx = outboundMarketScore("TX", "open_car_hauler");   // GLF — high outbound
+  const ga = outboundMarketScore("GA", "open_car_hauler");   // SE — strong (FL produce)
+  const ks = outboundMarketScore("KS", "open_car_hauler");   // GP — ag-heavy, weak outbound
+
+  assert("outbound: TX in 0..100", tx > 0 && tx <= 100, `tx=${tx}`);
+  assert("outbound: GA in 0..100", ga > 0 && ga <= 100, `ga=${ga}`);
+  assert("outbound: KS in 0..100", ks > 0 && ks <= 100, `ks=${ks}`);
+
+  // Strong outbound regions must beat the ag-heavy plains — the whole point of
+  // the signal is to reflect how easy it is to get the NEXT load out.
+  assert("outbound: GLF(TX) >= GP(KS)", tx >= ks, `tx=${tx} ks=${ks}`);
+  assert("outbound: SE(GA) >= GP(KS)", ga >= ks, `ga=${ga} ks=${ks}`);
+
+  // Deterministic — same inputs, same output (pure benchmark lookup).
+  assert("outbound: deterministic", outboundMarketScore("TX", "open_car_hauler") === tx);
+
+  // Unknown state falls back to a region (regionFor → "MW") and still scores.
+  const zz = outboundMarketScore("ZZ", "open_car_hauler");
+  assert("outbound: unknown state still scores 0..100", zz > 0 && zz <= 100, `zz=${zz}`);
+
+  // Equipment changes the economics → the score can move with it.
+  const txEnclosed = outboundMarketScore("TX", "enclosed_car_hauler");
+  assert("outbound: enclosed (higher PPM) >= open for TX", txEnclosed >= tx, `enc=${txEnclosed} open=${tx}`);
 }
 
 // ---------------------------------------------------------------------------
