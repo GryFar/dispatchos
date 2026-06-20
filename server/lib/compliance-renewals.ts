@@ -181,12 +181,17 @@ export async function runComplianceRenewalsCheck(): Promise<ComplianceAlertOutco
   const todayIso = new Date().toISOString().slice(0, 10); // YYYY-MM-DD for date math
 
   const ctx: NotifyContext = {
+    // Canonical Telegram integration key is `telegram_driver_bot` /
+    // TELEGRAM_DRIVER_BOT_TOKEN (the only telegram entry in the INTEGRATIONS
+    // registry). The old "telegram"/TELEGRAM_BOT_TOKEN lookup never matched the
+    // DB-configured token and fell back to an env var that isn't set in prod, so
+    // UCR/IRP renewal alerts silently never sent. Mirror inbound/insurance/admin.
     telegramBotToken:
-      getIntegrationValue("telegram", "TELEGRAM_BOT_TOKEN") ??
-      process.env.TELEGRAM_BOT_TOKEN ??
+      getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN") ??
+      process.env.TELEGRAM_DRIVER_BOT_TOKEN ??
       null,
     telegramChatId:
-      getIntegrationValue("telegram", "TELEGRAM_ALERT_CHAT_ID") ??
+      getIntegrationValue("telegram_driver_bot", "TELEGRAM_ALERT_CHAT_ID") ??
       process.env.TELEGRAM_ALERT_CHAT_ID ??
       null,
     resendApiKey:
