@@ -37,6 +37,7 @@ export {
   quoteLane,
   classifyOffer,
   marketQualityFor,
+  outboundMarketScore,
 } from "./lanes";
 export type { Region, LaneQuery, LaneQuote, OfferClassification } from "./lanes";
 

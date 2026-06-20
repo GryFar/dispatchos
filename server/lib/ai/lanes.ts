@@ -337,5 +337,55 @@ export function marketQualityFor(load: MinimalLoad): number {
   }).marketQuality;
 }
 
+// One representative freight hub per region — used to sample outbound lanes
+// without enumerating every state. Chosen as the busiest market in each region.
+const REGION_HUB: Readonly<Record<Region, string>> = Object.freeze({
+  NE: "NJ",
+  SE: "GA",
+  GLF: "TX",
+  MW: "IL",
+  GP: "MO",
+  SW: "AZ",
+  MTN: "CO",
+  PNW: "WA",
+  CA: "CA",
+});
+const ALL_REGIONS = Object.keys(REGION_HUB) as Region[];
+
+/**
+ * Backhaul awareness: how strong is the freight market LEAVING a destination?
+ *
+ * scoreLoadForClient ranks the load you'd haul IN, but a great-paying load into
+ * a dead market is a trap — you then deadhead far or sit waiting for the next
+ * load. This estimates outbound strength from `destState` as the average lane
+ * marketQuality from that state to every other region's hub (excluding lanes
+ * back into its own region — those are short repositioning, not a real exit).
+ *
+ * Returns 0..100. Strong outbound regions (SE/GLF/PNW) score high; historically
+ * inbound-heavy ones (CA) and ag-heavy plains (GP) score lower — matching how a
+ * human dispatcher weighs the destination.
+ */
+export function outboundMarketScore(
+  destState: string,
+  equipment: MinimalLoad["equipment"],
+  asOfDate?: string,
+): number {
+  const destRegion = regionFor(destState);
+  const targets = ALL_REGIONS.filter((r) => r !== destRegion);
+  if (!targets.length) return 50;
+  const sum = targets.reduce(
+    (acc, r) =>
+      acc +
+      quoteLane({
+        originState: destState,
+        destState: REGION_HUB[r],
+        equipment,
+        asOfDate,
+      }).marketQuality,
+    0,
+  );
+  return Math.round(sum / targets.length);
+}
+
 // Re-export for tests
 export const __test_only = { STATE_REGION, VAN_BASELINE_PPM, EQUIPMENT_MULTIPLIER, SEASONAL_FACTOR };

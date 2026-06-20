@@ -308,6 +308,11 @@ export const scoredLoadSchema = loadSchema.extend({
   counterOffer: z.number().nullable(),
   rankReason: z.string(),
   warnings: z.array(z.string()),
+  // Backhaul / outbound-market awareness (0..100): how strong the freight
+  // market is LEAVING this load's destination. Low = likely deadhead / wait for
+  // the next load after delivery. Informational by default; only folds into
+  // dispatchScore when DISPATCHOS_BACKHAUL_WEIGHT > 0.
+  backhaulScore: z.number().optional(),
 });
 
 export const dispatchBoardSchema = z.object({
