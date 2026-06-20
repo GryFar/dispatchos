@@ -48,6 +48,7 @@ import { registerTrackRoutes } from "./routes/track";
 import { registerDispatchRoutes } from "./routes/dispatch";
 import { registerBrokerTrustRoutes } from "./routes/broker-trust";
 import { registerCockpitRoutes } from "./routes/cockpit";
+import { registerFleetRoutes } from "./routes/fleet";
 import { registerPredictiveRoutes } from "./routes/predictive";
 import { registerLeadRoutes } from "./routes/leads";
 import { registerWebhookRoutes } from "./routes/webhooks";
@@ -1921,6 +1922,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerDispatchRoutes(app);
   registerBrokerTrustRoutes(app);
   registerCockpitRoutes(app);
+  registerFleetRoutes(app);
   registerPredictiveRoutes(app);
 
   // -------------------------------------------------------------------------
