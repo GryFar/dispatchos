@@ -1042,7 +1042,9 @@ export function registerMeRoutes(app: Express): void {
         // Server-injected tenant fields — never from body
         clientId: user.linkedClientId,
         driverId: user.id,
-        bookedAt: new Date().toISOString(),
+        // date-only convention (see billing week boundaries + dateOnlySchema);
+        // full ISO here 400s loadFullSchema on every view of this load.
+        bookedAt: new Date().toISOString().slice(0, 10),
       };
 
       const enriched = enrichLoadSync(rawLoad);

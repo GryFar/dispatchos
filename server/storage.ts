@@ -3986,7 +3986,11 @@ export const storage = {
   ): { ok: true; load: Load } | { ok: false; conflict: true; actual: string | null } {
     const ALREADY = "__LOAD_REASSIGN_CONFLICT__";
     const timestamp = now();
-    const bookedAt = newDriverId ? timestamp : null;
+    // bookedAt is a date-only "YYYY-MM-DD" value by convention (billing week
+    // boundaries + dateOnlySchema both require it; a full ISO timestamp fails
+    // loadFullSchema and 400s every dispatcher/driver load view). `timestamp`
+    // is full ISO, so slice to the calendar date.
+    const bookedAt = newDriverId ? timestamp.slice(0, 10) : null;
     const txn = sqlite.transaction(() => {
       // Guard on the driver_id column. `IS` (not `=`) so NULL compares correctly
       // — `driver_id = NULL` is never true in SQL, but `driver_id IS NULL` is.

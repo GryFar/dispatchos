@@ -184,8 +184,14 @@ export const loadSchema = z.object({
   fraudRisk: z.number(),
   marketQuality: z.number(),
   notes: z.string().optional(),
-  /** First-class driver assignment. Replaces the additive loadDriverFieldsSchema addon. */
-  driverId: z.string().optional(),
+  /** First-class driver assignment. Replaces the additive loadDriverFieldsSchema addon.
+   *  `.nullish()` not `.optional()`: an unassigned / un-booked load persists
+   *  {"driverId": null} (e.g. after a driver is removed). Plain `.optional()`
+   *  rejected the stored null ("Expected string, received null") and made
+   *  loadFullSchema.parse throw on every driverless load — 400-ing load-detail
+   *  and dropping the load from the dashboard peek. Same .optional()-vs-.nullable()
+   *  trap as bookedAt. */
+  driverId: z.string().nullish(),
 });
 
 export const insertLoadSchema = loadSchema.partial({ id: true }).extend({
@@ -818,7 +824,11 @@ export const dateOnlySchema = z
  */
 export const loadBookingFieldsSchema = z.object({
   clientId: z.string().optional(),
-  bookedAt: dateOnlySchema.optional(),
+  // `.nullish()` = optional (key absent on fresh inserts) OR null (persisted
+  // for an un-booked load — e.g. {"bookedAt": null}). `.optional()` alone
+  // rejected the stored null and made loadFullSchema.parse throw on every
+  // un-booked load, 400-ing the whole dispatcher dashboard.
+  bookedAt: dateOnlySchema.nullish(),
 });
 
 /** loadSchema extended with the optional booking-link fields. */

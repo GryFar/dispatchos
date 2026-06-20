@@ -76,6 +76,15 @@ function toLoadFull(load: unknown): LoadFull {
   return loadFullSchema.parse(load);
 }
 
+/** Like toLoadFull but never throws: returns null if the row fails schema
+ *  validation. Used by list/peek endpoints so one malformed legacy load
+ *  doesn't 400 the entire response (e.g. the dashboard peek). The detail
+ *  endpoint keeps strict toLoadFull — there a bad load SHOULD surface. */
+function toLoadFullSafe(load: unknown): LoadFull | null {
+  const parsed = loadFullSchema.safeParse(load);
+  return parsed.success ? parsed.data : null;
+}
+
 /**
  * Phase 6: enrich a Load (or list of Loads) with denormalized human-readable
  * names so the dispatcher UI doesn't render raw IDs. We pull clientName and
@@ -179,7 +188,9 @@ export function registerDispatchRoutes(app: Express): void {
           createdByUserId: t.createdByUserId,
           createdAt: t.createdAt,
         })),
-        recentLoads: loadsPeek.items.map((l) => toLoadFull(l)),
+        recentLoads: loadsPeek.items
+          .map((l) => toLoadFullSafe(l))
+          .filter((l): l is LoadFull => l !== null),
         assignedClients,
       };
       return res.json(body);
