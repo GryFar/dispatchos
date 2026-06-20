@@ -626,8 +626,13 @@ sqlite.exec(`
     pickup_at TEXT NOT NULL,
     sent_at TEXT NOT NULL
   );
+  -- De-dup keyed on (load, driver, pickup_at): a load whose pickup window is
+  -- RESCHEDULED (broker moves it / re-ingested with a new pickupAt) must produce
+  -- a fresh reminder. The old 2-col index (load_id, driver_id) suppressed that
+  -- forever; drop it so the 3-col index below applies on existing DBs too.
+  DROP INDEX IF EXISTS pickup_reminders_sent_unique_idx;
   CREATE UNIQUE INDEX IF NOT EXISTS pickup_reminders_sent_unique_idx
-    ON pickup_reminders_sent(load_id, driver_id);
+    ON pickup_reminders_sent(load_id, driver_id, pickup_at);
 `);
 
 // ---------------------------------------------------------------------------
@@ -752,6 +757,9 @@ sqlite.exec("CREATE INDEX IF NOT EXISTS loads_client_created_id_idx ON loads(cli
 // index can't serve a booked_at-only filter, so these were full table scans.
 sqlite.exec("CREATE INDEX IF NOT EXISTS loads_created_at_idx ON loads(created_at)");
 sqlite.exec("CREATE INDEX IF NOT EXISTS loads_booked_at_idx ON loads(booked_at) WHERE booked_at IS NOT NULL");
+// Expression index for listLoadsDueForPickupReminder (cron) — avoids a full
+// table scan of every load's payload.pickupAt on each reminder poll.
+sqlite.exec("CREATE INDEX IF NOT EXISTS loads_pickup_at_idx ON loads(json_extract(payload, '$.pickupAt')) WHERE driver_id IS NOT NULL");
 
 // ---------------------------------------------------------------------------
 // Phase 5: smart-matching cache + history tables.
@@ -1654,6 +1662,25 @@ export const storage = {
       )
       .run(makeId("pickrem"), input.loadId, input.driverId, input.pickupAt, now());
     return info.changes > 0;
+  },
+
+  /**
+   * Release a claimed alert/reminder so the next poll retries it. Called when a
+   * claim succeeded but the Telegram send FAILED transiently — otherwise the
+   * de-dup row would permanently suppress the alert (the very "nobody got
+   * pinged" failure this module exists to fix).
+   */
+  releaseLoadAlert(loadId: string, chatId: string): void {
+    sqlite
+      .prepare("DELETE FROM load_alerts_sent WHERE load_id = ? AND chat_id = ?")
+      .run(loadId, chatId);
+  },
+  releasePickupReminder(loadId: string, driverId: string, pickupAt: string): void {
+    sqlite
+      .prepare(
+        "DELETE FROM pickup_reminders_sent WHERE load_id = ? AND driver_id = ? AND pickup_at = ?",
+      )
+      .run(loadId, driverId, pickupAt);
   },
 
   listUsers(filter?: { role?: UserRole; includeBlocked?: boolean }): UserInternal[] {
