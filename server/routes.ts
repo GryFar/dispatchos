@@ -56,6 +56,7 @@ import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { registerBillingRoutes } from "./routes/billing";
 import { enrichLoadSync, outboundMarketScore } from "./lib/ai";
+import { resolveScoreWeights } from "./lib/score-weights";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
 import { parseLimit } from "./lib/query";
@@ -478,13 +479,17 @@ export function scoreLoadForClient(client: Client, load: Load): ScoredLoad | nul
   // same (fully backward-compatible).
   const backhaulScore = outboundMarketScore(load.destinationState, load.equipment, load.pickupAt);
 
+  // Per-client weight tuning (clientSchema.scoreWeights). Resolves to the
+  // defaults — which sum to 1.0 — when a carrier has no overrides, so existing
+  // carriers' scores are unchanged. Normalized, so any magnitudes are safe.
+  const w = resolveScoreWeights((client as Client & { scoreWeights?: unknown }).scoreWeights as any);
   const baseScore =
-    ppmScore * 0.42 +
-    deadheadScore * 0.18 +
-    feasibilityScore * 0.15 +
-    brokerSafetyScore * 0.12 +
-    laneScore * 0.08 +
-    locationScore * 0.05;
+    ppmScore * w.ppm +
+    deadheadScore * w.deadhead +
+    feasibilityScore * w.feasibility +
+    brokerSafetyScore * w.broker +
+    laneScore * w.lane +
+    locationScore * w.location;
   const wRaw = Number.parseFloat(process.env.DISPATCHOS_BACKHAUL_WEIGHT ?? "");
   const backhaulWeight = Number.isFinite(wRaw) ? clamp(wRaw, 0, 0.4) : 0;
   const dispatchScore = Math.round(
