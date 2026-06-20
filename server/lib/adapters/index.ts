@@ -6,7 +6,19 @@ import { sylectusEmailAdapter } from "./sylectus-email";
 import { brokerEmailAdapters } from "./broker-email";
 import { stubAdapters } from "./stubs";
 
-const REAL: BoardAdapter[] = [mockAdapter, sylectusEmailAdapter, ...brokerEmailAdapters];
+// mockAdapter generates fabricated loads — it must NEVER be selectable in
+// production, where it would pollute a live tenant's load board with fake
+// brokers/rates/lanes. Register it only in non-prod, or when explicitly
+// enabled via DISPATCHOS_ENABLE_MOCK_ADAPTER=true (e.g. a staging demo).
+const allowMock =
+  process.env.NODE_ENV !== "production" ||
+  process.env.DISPATCHOS_ENABLE_MOCK_ADAPTER === "true";
+
+const REAL: BoardAdapter[] = [
+  ...(allowMock ? [mockAdapter] : []),
+  sylectusEmailAdapter,
+  ...brokerEmailAdapters,
+];
 const ALL: BoardAdapter[] = [...REAL, ...stubAdapters];
 
 const byKey = new Map<AdapterKey, BoardAdapter>(ALL.map((a) => [a.key, a]));

@@ -196,13 +196,24 @@ async function waitForServer(proc) {
   throw new Error("Server did not become ready within 15 seconds");
 }
 
+// Per-run artifacts — captured so the finally block can delete them (otherwise
+// every smoke run leaves a smoke-*.db + smoke-data-*/ behind; ~hundreds of MB
+// piled up before this cleanup was added).
+const SMOKE_STAMP = Date.now();
+const SMOKE_DB_PATH = `smoke-${SMOKE_STAMP}.db`;
+const SMOKE_DATA_ROOT = `smoke-data-${SMOKE_STAMP}`;
+
 const proc = spawn(process.execPath, ["dist/index.cjs"], {
   env: {
     ...process.env,
     NODE_ENV: "production",
     PORT: String(port),
-    DISPATCHOS_DB_PATH: `smoke-${Date.now()}.db`,
-    DISPATCHOS_DATA_ROOT: `smoke-data-${Date.now()}`,
+    DISPATCHOS_DB_PATH: SMOKE_DB_PATH,
+    DISPATCHOS_DATA_ROOT: SMOKE_DATA_ROOT,
+    // The mock load-board adapter is gated out of production (it fabricates
+    // loads). The smoke run boots in NODE_ENV=production but needs it to
+    // exercise the load-source pipeline, so opt in explicitly here.
+    DISPATCHOS_ENABLE_MOCK_ADAPTER: "true",
     DISPATCHOS_RATE_LIMIT_PER_MINUTE: "5000",
     // Boot-gate (Critical #3, PR #71) refuses to start in production mode
     // without a real session secret. Provide an ephemeral 64-char hex secret
@@ -3285,7 +3296,9 @@ try {
 
   const reassigned = await request(`/api/dispatch/loads/${driverALoad.id}`, {
     method: "PATCH",
-    body: { driverId: driverA.id },
+    // expectedDriverId required when assigning (anti double-book); load was just
+    // unassigned above, so the current driver is null.
+    body: { driverId: driverA.id, expectedDriverId: null },
   });
   if (reassigned.driverId !== driverA.id) {
     throw new Error(`Dispatcher PATCH load: driverId not persisted, got ${reassigned.driverId}`);
@@ -3301,6 +3314,19 @@ try {
   }
   console.log("[OK] Dispatcher PATCH /api/dispatch/loads/:id (reassign + audit)");
 
+  // -- PATCH assign WITHOUT expectedDriverId is rejected (anti double-book) ---
+  cookieHeader = dispCookie;
+  try {
+    await request(`/api/dispatch/loads/${driverALoad.id}`, {
+      method: "PATCH",
+      body: { driverId: driverA.id }, // no expectedDriverId
+    });
+    throw new Error("Dispatcher PATCH assign without expectedDriverId should 400");
+  } catch (e) {
+    if (!/400/.test(e.message)) throw e;
+  }
+  console.log("[OK] Dispatcher PATCH assign w/o expectedDriverId → 400 (anti double-book)");
+
   // -- PATCH rejects cross-client driver -------------------------------------
   // driverB2 is linked to billingClient2 (oleg), not billingClient (ivan).
   // driverALoad is on billingClient (ivan). Assigning driverB2 → 400.
@@ -3308,7 +3334,9 @@ try {
   try {
     await request(`/api/dispatch/loads/${driverALoad.id}`, {
       method: "PATCH",
-      body: { driverId: driverB2.id },
+      // driverALoad now has driverA assigned; provide the token so we reach the
+      // cross-client validation (not the missing-token 400).
+      body: { driverId: driverB2.id, expectedDriverId: driverA.id },
     });
     throw new Error("Dispatcher PATCH load should 400 when driver linked to different client");
   } catch (e) {
@@ -3749,5 +3777,38 @@ try {
   console.error(output);
   process.exitCode = 1;
 } finally {
-  proc.kill("SIGTERM");
+  // Clean up this run's DB + data root (and SQLite WAL/SHM sidecars) so smoke
+  // artifacts don't accumulate in the repo. On Windows the server holds the
+  // SQLite file lock until it fully exits, so wait for proc 'exit' (with a
+  // short fallback) before deleting — otherwise rmSync races the lock.
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    proc.once("exit", finish);
+    proc.kill("SIGTERM");
+    setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      finish();
+    }, 3000);
+  });
+  for (const f of [
+    SMOKE_DB_PATH,
+    `${SMOKE_DB_PATH}-wal`,
+    `${SMOKE_DB_PATH}-shm`,
+    SMOKE_DATA_ROOT,
+  ]) {
+    try {
+      rmSync(f, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
 }

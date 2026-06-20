@@ -573,10 +573,25 @@ export function registerDispatchRoutes(app: Express): void {
         }
       }
 
-      // Atomic optimistic reassign (Корень #1). The guard compares against the
-      // driverId the client expected; when the client didn't send one we read
-      // the current value first so single-actor flows still work (no concurrent
-      // writer = no conflict). The storage method audits on success.
+      // Anti double-book (Корень #1): ASSIGNING a driver requires the
+      // optimistic-concurrency token (the driverId the client saw). Without it
+      // we'd have to read the current value and compare it to itself — a no-op
+      // guard that lets two concurrent assigns both win (TOCTOU → same truck
+      // double-booked). So reject an assign that omits expectedDriverId. The UI
+      // always sends it. Unassign (driverId=null) is idempotent, so it stays
+      // optional there.
+      if (body.driverId !== null && body.expectedDriverId === undefined) {
+        return res.status(400).json({
+          message:
+            "expectedDriverId is required when assigning a driver (optimistic concurrency).",
+          code: "expected_driver_id_required",
+        });
+      }
+
+      // The guard compares against the driverId the client expected; for an
+      // unassign with no token we fall back to the current value (single-actor
+      // clear, no concurrent writer = no conflict). The storage method audits
+      // on success.
       const expected =
         body.expectedDriverId !== undefined
           ? body.expectedDriverId

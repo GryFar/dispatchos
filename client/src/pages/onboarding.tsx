@@ -909,7 +909,7 @@ function DoneStep({ onContinue }: { onContinue: () => void }) {
         </Button>
         <Button
           variant="outline"
-          onClick={() => window.open("https://t.me/DispatchOS_Computer_Bot", "_blank")}
+          onClick={() => window.open("https://t.me/DispatchOS_Computer_Bot", "_blank", "noopener,noreferrer")}
           className="border-[rgba(255,255,255,0.14)] bg-transparent text-white hover:bg-[rgba(255,255,255,0.06)]"
         >
           {t("onboarding.done.connectTelegram")}

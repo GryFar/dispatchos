@@ -661,13 +661,15 @@ export function registerAdminRoutes(app: Express): void {
       );
       if (!updated) return res.status(404).json({ message: "User not found" });
 
-      // TODO(phase5): invalidate active sessions on password reset.
-      // For now we record the current behaviour explicitly in the audit
-      // event so it's auditable from the log without code archaeology.
+      // Invalidate the target's existing sessions — a reset must not leave a
+      // hijacked session alive. Bumping session_epoch makes getCurrentUser
+      // reject every session minted before this point.
+      storage.bumpUserSessionEpoch(target.id);
+
       storage.audit("user.password_reset", "user", target.id, {
         targetUserId: target.id,
         resetByAdminId: actor.id,
-        invalidated_sessions: false,
+        invalidated_sessions: true,
         // temporaryPassword intentionally omitted — never log credentials.
       });
 
@@ -718,9 +720,11 @@ export function registerAdminRoutes(app: Express): void {
       if (disable) {
         const updated = storage.updateUser(target.id, { totpSecret: null }, actor.id);
         if (!updated) return res.status(404).json({ message: "User not found" });
+        storage.bumpUserSessionEpoch(target.id); // force re-auth after 2FA change
         storage.audit("user.totp_disabled", "user", target.id, {
           targetUserId: target.id,
           resetByAdminId: actor.id,
+          invalidated_sessions: true,
         });
         return res.json({ userId: target.id, totpDisabled: true });
       }
@@ -728,9 +732,11 @@ export function registerAdminRoutes(app: Express): void {
       const newSecret = generateBase32Secret();
       const updated = storage.updateUser(target.id, { totpSecret: newSecret }, actor.id);
       if (!updated) return res.status(404).json({ message: "User not found" });
+      storage.bumpUserSessionEpoch(target.id); // force re-auth after 2FA change
       storage.audit("user.totp_reset", "user", target.id, {
         targetUserId: target.id,
         resetByAdminId: actor.id,
+        invalidated_sessions: true,
         // secret intentionally omitted.
       });
       return res.json({
@@ -2141,6 +2147,33 @@ export function registerAdminRoutes(app: Express): void {
     // strip id from body — URL param is authoritative
     const { id: _ignored, ...patch } = body;
 
+    // Anti mass-assignment: the profile editor must NOT be able to set billing,
+    // plan, Stripe, lifecycle or seat fields by merging them in via the body.
+    // Those are owned by the Stripe webhook pipeline (billing/plan/stripe/trial)
+    // and the dedicated archive/restore routes (deletedAt). Otherwise an admin
+    // could flip billingStatus='active' to lift the read-only gate with no
+    // payment, or un-archive a carrier by clearing deletedAt. Drop them here so
+    // the merge keeps the existing authoritative values.
+    const PROTECTED_CLIENT_FIELDS = [
+      "billingStatus",
+      "planTier",
+      "trialEndsAt",
+      "stripeCustomerId",
+      "stripeSubscriptionId",
+      "deletedAt",
+      "driverSeatCount",
+      "dispatcherSeatCount",
+      "onboardingCompletedAt",
+      "ownerUserId",
+    ] as const;
+    const droppedFields: string[] = [];
+    for (const f of PROTECTED_CLIENT_FIELDS) {
+      if (f in patch) {
+        delete (patch as Record<string, unknown>)[f];
+        droppedFields.push(f);
+      }
+    }
+
     const merged: Client = { ...existing, ...patch, id: existing.id };
 
     const parsed = clientSchema.safeParse(merged);
@@ -2156,6 +2189,7 @@ export function registerAdminRoutes(app: Express): void {
     // Narrower-grained audit for the profile editor flow specifically.
     storage.audit("client.profile_patched", "client", saved.id, {
       patchedFields: Object.keys(patch),
+      ...(droppedFields.length ? { rejectedProtectedFields: droppedFields } : {}),
     });
 
     return res.json(saved);
@@ -2527,11 +2561,15 @@ function buildDashboardIntegrationsMap(): Record<
       lastCheckedAt: now,
     },
     telegram: {
-      status: has("TELEGRAM_BOT_TOKEN", "DISPATCHOS_PUBLIC_URL") ? "ok" : "missing",
-      lastCheckedAt: now,
-    },
-    gmail: {
-      status: has("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET") ? "ok" : "missing",
+      // Canonical var is TELEGRAM_DRIVER_BOT_TOKEN (see INTEGRATIONS registry),
+      // and the token may be set via the admin UI (DB) rather than env — resolve
+      // it the same way as fmcsa above so the tile doesn't show "missing" when
+      // the bot is actually configured.
+      status:
+        (getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN") ??
+          process.env.TELEGRAM_DRIVER_BOT_TOKEN) && process.env.DISPATCHOS_PUBLIC_URL
+          ? "ok"
+          : "missing",
       lastCheckedAt: now,
     },
     drive: {

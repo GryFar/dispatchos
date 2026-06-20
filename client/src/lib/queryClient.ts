@@ -73,7 +73,28 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const url = queryKey.join("/");
+    // The default queryFn only supports a single absolute API-path key like
+    // ["/api/foo/bar"] (optionally with id segments after it). Structured keys
+    // such as ["me","dashboard"] MUST supply their own queryFn — otherwise this
+    // builds a bogus relative URL ("me/dashboard"), gets the SPA HTML shell
+    // back, and crashes in res.json(). Fail loudly in dev so the mistake is
+    // caught immediately; in prod, still build a best-effort URL.
+    const first = queryKey[0];
+    if (
+      import.meta.env.DEV &&
+      (typeof first !== "string" || !first.startsWith("/api"))
+    ) {
+      throw new Error(
+        `Default queryFn needs a queryKey starting with "/api" (got ${JSON.stringify(
+          queryKey,
+        )}). Provide an explicit queryFn for structured keys.`,
+      );
+    }
+    // Encode id segments so a value containing "/" or "?" can't corrupt the path.
+    const url = [
+      String(first),
+      ...queryKey.slice(1).map((s) => encodeURIComponent(String(s))),
+    ].join("/");
     const res = await fetch(`${API_BASE}${url}`, { credentials: "include" });
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;

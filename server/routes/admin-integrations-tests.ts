@@ -147,23 +147,6 @@ async function testEia(): Promise<TestResult> {
   return mkOk(row ? `latest diesel $${row.value} (${row.period})` : "200 OK (no rows)", ms);
 }
 
-async function testGoogleMaps(): Promise<TestResult> {
-  const key = process.env.GOOGLE_MAPS_API_KEY;
-  if (!key) return mkSkip("GOOGLE_MAPS_API_KEY not set");
-  const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=Atlanta,GA&destinations=Miami,FL&units=imperial&key=${key}`;
-  const { res, ms, err } = await timedFetch(url);
-  if (err || !res) return mkFail(`network: ${err?.message ?? "no response"}`, ms);
-  if (!res.ok) return mkFail(`HTTP ${res.status}`, ms);
-  const body = (await res.json().catch(() => ({}))) as {
-    status?: string;
-    rows?: Array<{ elements: Array<{ status: string; distance?: { text: string } }> }>;
-    error_message?: string;
-  };
-  if (body.status !== "OK") return mkFail(`status=${body.status} ${body.error_message ?? ""}`, ms);
-  const dist = body.rows?.[0]?.elements?.[0]?.distance?.text;
-  return mkOk(dist ? `ATL → MIA: ${dist}` : "200 OK (no distance)", ms);
-}
-
 function testSentry(): TestResult {
   const dsn = getIntegrationValue("sentry", "SENTRY_DSN");
   if (!dsn) return mkSkip("SENTRY_DSN not set");
@@ -224,7 +207,6 @@ const TESTS: Record<string, TestFn> = {
   twilio: testTwilio,
   sentry: testSentry,
   eia_fuel: testEia,
-  google_maps: testGoogleMaps,
 };
 
 // ---------------------------------------------------------------------------

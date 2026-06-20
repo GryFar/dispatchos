@@ -72,6 +72,19 @@ export default {
    */
   async email(message, env, ctx) {
     try {
+      // Recipient allowlist — defense-in-depth on top of the CF routing rule.
+      // Only forward mail addressed to our known ingest address(es), so a
+      // misconfigured catch-all route can't pipe arbitrary mail into ingest.
+      const to = String(message.to || "").toLowerCase();
+      const allowed = String(env.INBOUND_ALLOWED_TO || "loads@dispatchos.co")
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+      if (!allowed.includes(to)) {
+        console.warn(`[inbound-email] rejected: recipient ${message.to} not in allowlist`);
+        return;
+      }
+
       // V2-4(1): size cap BEFORE buffering the body.
       if (typeof message.rawSize === "number" && message.rawSize > MAX_RAW_BYTES) {
         console.warn(

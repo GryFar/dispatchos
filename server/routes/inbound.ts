@@ -11,6 +11,7 @@
 import type { Express, Request, Response } from "express";
 import crypto from "node:crypto";
 import { storage } from "../storage";
+import { getIntegrationValue } from "../lib/integration-config";
 import { parseSylectusEmail, type SylectusParsed } from "../lib/parsers/sylectus";
 
 // Fire-and-forget TG alert when a parsed Sylectus posting lands. No-op
@@ -18,8 +19,15 @@ import { parseSylectusEmail, type SylectusParsed } from "../lib/parsers/sylectus
 // We deliberately don't await this from the request handler — it must not
 // delay our 201 back to the CF Worker.
 async function notifyInboundLoad(id: string, parsed: SylectusParsed): Promise<void> {
-  const token = process.env.TELEGRAM_DRIVER_BOT_TOKEN;
-  const chat = process.env.TELEGRAM_ALERT_CHAT_ID;
+  // Resolve via the integration store (admin-UI value) with env fallback — the
+  // webhook path (telegram-bot.ts) does the same, so a token set only in the UI
+  // works here too instead of this alert silently no-op'ing.
+  const token =
+    getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN") ??
+    process.env.TELEGRAM_DRIVER_BOT_TOKEN;
+  const chat =
+    getIntegrationValue("telegram_driver_bot", "TELEGRAM_ALERT_CHAT_ID") ??
+    process.env.TELEGRAM_ALERT_CHAT_ID;
   if (!token || !chat) return;
   if (!parsed.matched || !parsed.origin || !parsed.destination) return;
 

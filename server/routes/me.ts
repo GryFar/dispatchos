@@ -121,6 +121,19 @@ function driverSafeLoad(load: LoadFull, isOwnerOperator: boolean): LoadFull {
 }
 
 /**
+ * True only when `user` is THE OWNER of an owner-operator carrier — not merely
+ * a hired driver linked to one. Only the owner is entitled to the carrier's
+ * whole load board + commercial/risk fields. We compare against the client's
+ * ownerUserId (stamped at onboarding); legacy clients without it fall back to
+ * the persona check so existing single-owner accounts keep working.
+ */
+function isOwnerOf(client: unknown, user: { id: string }): boolean {
+  const c = client as { persona?: string; ownerUserId?: string } | undefined;
+  if (!c || c.persona !== "owner_operator") return false;
+  return c.ownerUserId ? c.ownerUserId === user.id : true;
+}
+
+/**
  * Build a short "Pickup today" / "Delivery today" panel item. Returns null if
  * the load's pickup (or delivery) is not on the current calendar date in UTC.
  *
@@ -189,7 +202,7 @@ export function registerMeRoutes(app: Express): void {
       let isOwnerOperator = false;
       if (user.linkedClientId) {
         const linkedClient = storage.getClient(user.linkedClientId);
-        if ((linkedClient as any)?.persona === "owner_operator") {
+        if (isOwnerOf(linkedClient, user)) {
           isOwnerOperator = true;
           const clientPage = storage.listLoadsForClientIds([user.linkedClientId], { limit: 20 });
           const clientLoads = clientPage.items.map(toLoadFull);
@@ -326,7 +339,7 @@ export function registerMeRoutes(app: Express): void {
       let isOwnerOperator = false;
       if (user.linkedClientId) {
         const linkedClient = storage.getClient(user.linkedClientId);
-        if ((linkedClient as any)?.persona === "owner_operator") {
+        if (isOwnerOf(linkedClient, user)) {
           isOwnerOperator = true;
           const clientPage = storage.listLoadsForClientIds([user.linkedClientId], { limit: limit ?? 50 });
           const seen = new Set(items.map((l) => l.id));
@@ -374,24 +387,24 @@ export function registerMeRoutes(app: Express): void {
       if (!user) return res.status(401).json({ message: "Authentication required" });
 
       const loadId = String(req.params.id);
-      const driverId = storage.getLoadDriverId(loadId);
-      if (driverId === undefined) return res.status(404).json({ message: "Load not found" });
-      if (driverId !== user.id) {
-        // Tenant leak prevention: same response shape as missing load.
-        return res.status(404).json({ message: "Load not found" });
-      }
       const load = storage.getLoad(loadId);
       if (!load) return res.status(404).json({ message: "Load not found" });
 
-      // V5-003: strip commercial/risk fields unless this driver is an
-      // owner-operator (their own carrier, entitled to the full record).
-      let isOwnerOperator = false;
-      if (user.linkedClientId) {
-        const linkedClient = storage.getClient(user.linkedClientId);
-        if ((linkedClient as any)?.persona === "owner_operator") {
-          isOwnerOperator = true;
-        }
+      // Authorize: a driver may fetch a load assigned to them, OR — if they are
+      // the owner of an owner-operator carrier — any load belonging to their
+      // client (mirrors the dashboard/list merge, which already shows these).
+      const driverId = storage.getLoadDriverId(loadId);
+      const linkedClient = user.linkedClientId ? storage.getClient(user.linkedClientId) : undefined;
+      const isOwnerOperator = isOwnerOf(linkedClient, user);
+      const ownsByAssignment = driverId === user.id;
+      const ownsByCarrier =
+        isOwnerOperator && (load as { clientId?: string }).clientId === user.linkedClientId;
+      if (!ownsByAssignment && !ownsByCarrier) {
+        // Tenant leak prevention: same response shape as missing load.
+        return res.status(404).json({ message: "Load not found" });
       }
+
+      // Strip commercial/risk fields unless this driver is the owner-operator.
       return res.json(driverSafeLoad(toLoadFull(load), isOwnerOperator));
     }),
   );
@@ -807,8 +820,8 @@ export function registerMeRoutes(app: Express): void {
       const user = getCurrentUser(req);
       if (!user) return res.status(401).json({ message: "Authentication required" });
       const since = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
-      const rows = storage.listFuelTransactionsForDriver(user.id, since);
-      return res.json({ items: rows.map((r) => storage.getFuelTransaction(String(r.id))!) });
+      const items = storage.listFuelTransactionsForDriver(user.id, since);
+      return res.json({ items });
     }),
   );
 

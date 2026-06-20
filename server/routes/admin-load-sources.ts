@@ -33,6 +33,18 @@ function redact(row: any) {
   return safe;
 }
 
+// Valid load_source.status values. Admins set active/paused; the system also
+// uses needs_credentials/error. Anything else silently disables polling (the
+// poller only selects status='active') with no feedback, so reject it.
+const VALID_STATUSES = new Set(["active", "paused", "needs_credentials", "error"]);
+
+// Mirror createLoadSource's clamp (storage.ts) so PATCH can't set a 0/negative
+// interval that makes the source due on every poll tick and hammers an
+// external board.
+function clampPollInterval(n: number): number {
+  return Math.max(1, Math.min(1440, Math.floor(n)));
+}
+
 export function registerAdminLoadSourcesRoutes(
   app: Express,
   requireAdmin: (req: Request, res: ExpressResponse, next: () => void) => void,
@@ -67,6 +79,9 @@ export function registerAdminLoadSourcesRoutes(
     // M3: don't create an orphan source pointed at a non-existent client.
     if (!storage.getClient(body.clientId)) {
       return res.status(400).json({ message: `Unknown client: ${body.clientId}` });
+    }
+    if (body.status !== undefined && !VALID_STATUSES.has(body.status)) {
+      return res.status(400).json({ message: `Invalid status: ${body.status}` });
     }
 
     let encEnc: string | null = null;
@@ -111,11 +126,20 @@ export function registerAdminLoadSourcesRoutes(
     if (!existing) return res.status(404).json({ message: "Not found" });
 
     const body = req.body as CreateBody & { rotateCredentials?: boolean };
+    if (body.status !== undefined && !VALID_STATUSES.has(body.status)) {
+      return res.status(400).json({ message: `Invalid status: ${body.status}` });
+    }
+    if (
+      body.pollIntervalMin !== undefined &&
+      (typeof body.pollIntervalMin !== "number" || !Number.isFinite(body.pollIntervalMin))
+    ) {
+      return res.status(400).json({ message: "pollIntervalMin must be a number" });
+    }
     const patch: Record<string, unknown> = {};
     if (body.label !== undefined) patch.label = body.label;
     if (body.status !== undefined) patch.status = body.status;
     if (body.configJson !== undefined) patch.configJson = body.configJson;
-    if (body.pollIntervalMin !== undefined) patch.pollIntervalMin = body.pollIntervalMin;
+    if (body.pollIntervalMin !== undefined) patch.pollIntervalMin = clampPollInterval(body.pollIntervalMin);
 
     if (body.credentials) {
       if (!isPrimaryConfigured()) {

@@ -57,6 +57,17 @@ function rowToSignupLead(row: Record<string, unknown>): SignupLead {
   };
 }
 
+// SQL predicate for an "active" (booked-and-still-in-progress) load. booked_at
+// is the booked marker (and the revenue-window key, so it's never cleared on
+// delivery); delivery/cancellation state lives in the JSON payload. A load is
+// active when it's booked and NOT completed/cancelled/delivered. COALESCE keeps
+// loads with no status field (NULL) counted as active. Used by workload counts
+// (NOT by revenue queries, which intentionally include delivered loads).
+const ACTIVE_LOAD_SQL = `booked_at IS NOT NULL
+  AND COALESCE(json_extract(payload, '$.status'), '') NOT IN ('completed', 'cancelled', 'canceled')
+  AND json_extract(payload, '$.deliveredAt') IS NULL
+  AND json_extract(payload, '$.delivered_at') IS NULL`;
+
 function rowToFuelTransaction(row: Record<string, unknown>): FuelTransaction {
   return {
     id: row.id as string,
@@ -514,6 +525,13 @@ function ensureUserDriverColumns() {
   // NULL = not assigned. Short free-form string (e.g. "Unit 42", "T-07").
   if (!names.has("unit_number")) {
     sqlite.exec("ALTER TABLE users ADD COLUMN unit_number TEXT");
+  }
+  // Session epoch — bumped on admin password/TOTP reset to invalidate all of a
+  // user's existing sessions. getCurrentUser compares req.session.epoch to this;
+  // a mismatch destroys the stale session. Default 0; legacy sessions (no epoch
+  // in the cookie) read as 0 and match, so a deploy doesn't force re-login.
+  if (!names.has("session_epoch")) {
+    sqlite.exec("ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0");
   }
   // fix/totp-onboarding-verify (2026-05-27) — Henry's QA bug.
   // NULL = user has never successfully entered a TOTP code after signup.
@@ -1285,6 +1303,8 @@ interface UserRow {
   phone_verified: number | null;
   phone_verified_at: string | null;
   email_verified_at: string | null;
+  // Session invalidation epoch (bumped on admin password/TOTP reset).
+  session_epoch: number | null;
 }
 
 export interface UserInternal {
@@ -1296,6 +1316,8 @@ export interface UserInternal {
   passwordHash: string;
   totpSecret?: string;
   blocked: boolean;
+  /** Bumped on admin password/TOTP reset to invalidate existing sessions. */
+  sessionEpoch: number;
   linkedClientId?: string;
   createdAt: string;
   updatedAt: string;
@@ -1376,6 +1398,7 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     passwordHash: row.password_hash,
     totpSecret: row.totp_secret ?? undefined,
     blocked: Boolean(row.blocked),
+    sessionEpoch: (row.session_epoch as number | null) ?? 0,
     linkedClientId: row.linked_client_id ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1392,7 +1415,10 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     trackingToken: row.tracking_token ?? undefined,
     lastSeenAt: row.last_seen_at ?? undefined,
     preferredLang:
-      row.preferred_lang === "ru" || row.preferred_lang === "en"
+      row.preferred_lang === "ru" ||
+      row.preferred_lang === "en" ||
+      row.preferred_lang === "es" ||
+      row.preferred_lang === "fr"
         ? row.preferred_lang
         : undefined,
     unitNumber: row.unit_number ?? undefined,
@@ -1976,6 +2002,21 @@ export const storage = {
     return r.changes > 0;
   },
 
+  /**
+   * Bump a user's session epoch — invalidates ALL of their existing sessions.
+   * Called on admin password/TOTP reset: getCurrentUser compares the epoch
+   * stamped into the session at login against this column and destroys any
+   * session whose epoch is stale. Returns the new epoch.
+   */
+  bumpUserSessionEpoch(id: string): number {
+    const r = sqlite
+      .prepare(
+        "UPDATE users SET session_epoch = session_epoch + 1, updated_at = ? WHERE id = ? RETURNING session_epoch",
+      )
+      .get(now(), id) as { session_epoch: number } | undefined;
+    return r?.session_epoch ?? 0;
+  },
+
   /** fix/totp-onboarding-verify — stamp totp_confirmed_at for a user who
    *  just entered a valid 6-digit code for the first time.
    *
@@ -2373,6 +2414,20 @@ export const storage = {
       )
       .run(eventId, eventType, now());
     return r.changes > 0;
+  },
+
+  /**
+   * Release a claimed-but-failed Stripe event so a Stripe retry re-enters the
+   * handler. Called from the webhook catch block: markStripeEventProcessed
+   * claims the id BEFORE handling (to block concurrent duplicates), but if the
+   * handler throws we must un-claim it — otherwise the retried delivery is
+   * skipped as a "duplicate" and the event (a plan/seat/trial transition) is
+   * silently lost forever.
+   */
+  unmarkStripeEventProcessed(eventId: string): void {
+    sqlite
+      .prepare("DELETE FROM stripe_processed_events WHERE event_id = ?")
+      .run(eventId);
   },
 
   /**
@@ -3543,6 +3598,7 @@ export const storage = {
           availableAt: nowIso,
         },
         persona: input.persona,
+        ownerUserId: userId, // the onboarding user IS the account owner
         planTier,
         billingStatus: "trial",
         trialEndsAt: new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString(),
@@ -3816,6 +3872,25 @@ export const storage = {
     const last = pageRows[pageRows.length - 1];
     const nextCursor = hasMore && last ? encodeCursor(last.created_at, last.id) : null;
     return { items, nextCursor, total };
+  },
+
+  /**
+   * All ACTIVE (booked, not delivered/cancelled) loads for a driver. Used by
+   * geofence auto-checkin, which must inspect every in-progress load — NOT just
+   * the 20 most-recent of all loads (booked_at is never cleared, so once a
+   * driver accumulates >20 lifetime loads, an older still-open load fell out of
+   * that window and its arrival check-ins silently never fired). Bounded by the
+   * driver's in-progress count (a handful), so no pagination needed.
+   */
+  listActiveBookedLoadsForDriver(driverId: string): Load[] {
+    const rows = sqlite
+      .prepare(
+        `SELECT id, payload FROM loads
+         WHERE driver_id = ? AND ${ACTIVE_LOAD_SQL}
+         ORDER BY booked_at DESC`,
+      )
+      .all(driverId) as Array<{ payload: string }>;
+    return parsePayloads<Load>(rows);
   },
 
   /**
@@ -4249,10 +4324,15 @@ export const storage = {
    * across rows where booked_at IS NOT NULL AND in range.
    */
   grossBookedInWindow(weekStart: string, weekEnd: string): number {
+    // weekEnd is a date-only string (e.g. '2026-06-19') but booked_at is a full
+    // ISO timestamp, so `booked_at <= weekEnd` excludes everything booked AFTER
+    // midnight on the last day (the timestamp sorts lexically after the bare
+    // date). Use `< date(weekEnd,'+1 day')` to include the whole last day —
+    // same fix as listBookedLoadsForClientWeek.
     const rows = sqlite
       .prepare(
         `SELECT payload FROM loads
-         WHERE booked_at IS NOT NULL AND booked_at >= ? AND booked_at <= ?`,
+         WHERE booked_at IS NOT NULL AND booked_at >= ? AND booked_at < date(?, '+1 day')`,
       )
       .all(weekStart, weekEnd) as Array<{ payload: string }>;
     let sum = 0;
@@ -4509,44 +4589,6 @@ export const storage = {
     }
   },
 
-  recordBrokerEvent(
-    mc: string,
-    event: "offered" | "accepted" | "completed" | "late" | "dispute",
-    extras?: { name?: string; paymentDays?: number },
-  ) {
-    const t = now();
-    // Ensure row exists
-    sqlite.prepare(`
-      INSERT INTO broker_history (mc, name, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(mc) DO UPDATE SET name = COALESCE(excluded.name, broker_history.name), updated_at = excluded.updated_at
-    `).run(mc, extras?.name ?? null, t);
-
-    const column =
-      event === "offered"   ? "loads_offered" :
-      event === "accepted"  ? "loads_accepted" :
-      event === "completed" ? "loads_completed" :
-      event === "late"      ? "loads_late" :
-                              "disputes";
-    sqlite.prepare(`UPDATE broker_history SET ${column} = ${column} + 1, updated_at = ?, last_load_at = ? WHERE mc = ?`)
-      .run(t, t, mc);
-
-    if (extras?.paymentDays !== undefined) {
-      // Running average via incremental formula. We approximate by weighting
-      // toward existing avg with 95/5 split — simple and good enough.
-      const row = sqlite.prepare("SELECT avg_payment_days FROM broker_history WHERE mc = ?").get(mc) as { avg_payment_days: number | null };
-      const prev = row?.avg_payment_days ?? extras.paymentDays;
-      const next = prev * 0.95 + extras.paymentDays * 0.05;
-      sqlite.prepare("UPDATE broker_history SET avg_payment_days = ? WHERE mc = ?").run(next, mc);
-    }
-  },
-
-  getBrokerHistory(mc: string) {
-    return sqlite.prepare("SELECT * FROM broker_history WHERE mc = ?").get(mc) as
-      | { mc: string; name: string | null; loads_offered: number; loads_accepted: number; loads_completed: number; loads_late: number; disputes: number; avg_payment_days: number | null; last_load_at: string | null; updated_at: string }
-      | undefined;
-  },
-
   // -------------------------------------------------------------------------
   // Phase 6.1 broker safety audit snapshots (SCOTUS legal evidence trail).
   // Append-only — there is NO update/delete API on purpose. Each snapshot is
@@ -4764,9 +4806,18 @@ export const storage = {
    *  we create lazily here (only meaningful once at least one user has one). */
   getUserByTrackingToken(token: string): UserInternal | undefined {
     if (!token) return undefined;
-    return sqlite
-      .prepare("SELECT * FROM users WHERE tracking_token = ? AND deleted_at IS NULL")
-      .get(token) as UserInternal | undefined;
+    // Must go through rowToUserInternal (every other user lookup does) so the
+    // result is a real UserInternal — camelCase fields + a boolean `blocked` —
+    // not a raw snake_case row. Also: a blocked (terminated) driver's token
+    // must stop working immediately, and tracking tokens are driver-only, so
+    // gate on blocked=0 AND role='driver'. Without this a blocked ex-driver's
+    // phone keeps writing GPS pings / auto-checkins on the public track path.
+    const row = sqlite
+      .prepare(
+        "SELECT * FROM users WHERE tracking_token = ? AND deleted_at IS NULL AND blocked = 0 AND role = 'driver'",
+      )
+      .get(token) as UserRow | undefined;
+    return rowToUserInternal(row);
   },
 
   /** Generate + persist a fresh tracking token for a driver. Returns the token. */
@@ -5044,12 +5095,15 @@ export const storage = {
   },
 
   /** Recent fuel transactions for a single driver. */
-  listFuelTransactionsForDriver(userId: string, sinceIso: string) {
-    return sqlite.prepare(`
+  listFuelTransactionsForDriver(userId: string, sinceIso: string): FuelTransaction[] {
+    const rows = sqlite.prepare(`
       SELECT * FROM fuel_transactions
       WHERE user_id = ? AND occurred_at >= ?
       ORDER BY occurred_at DESC
     `).all(userId, sinceIso) as Array<Record<string, unknown>>;
+    // Shape here so callers don't re-fetch each row by id (was an N+1 with an
+    // unsafe non-null assertion that 500'd if a row was deleted mid-request).
+    return rows.map(rowToFuelTransaction);
   },
 
   /** Cheapest diesel within `radiusKm` of (lat,lng), observed within `maxAgeH`. */
@@ -6132,11 +6186,16 @@ export const storage = {
     }
     const loadCounts = new Map<string, number>();
     if (clientIds.length > 0) {
+      // "active" = booked-and-still-in-progress. booked_at is never cleared on
+      // delivery (it's the revenue-window key, so it must stay), so a plain
+      // `booked_at IS NOT NULL` count grows forever and overcounts the
+      // dispatcher's current workload. Exclude completed/cancelled/delivered
+      // loads (delivery state lives in the JSON payload, not a column).
       const loadRows = sqlite
         .prepare(
           `SELECT client_id AS cid, COUNT(*) AS c
            FROM loads
-           WHERE client_id IN (${placeholders}) AND booked_at IS NOT NULL
+           WHERE client_id IN (${placeholders}) AND ${ACTIVE_LOAD_SQL}
            GROUP BY client_id`,
         )
         .all(...clientIds) as Array<{ cid: string; c: number }>;

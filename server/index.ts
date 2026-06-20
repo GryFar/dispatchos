@@ -140,7 +140,11 @@ app.use("/api", (req, res, next) => {
 
   // No origin header at all + no session cookie = treat as legit server-side or curl.
   // No origin + session cookie present = suspicious (browser dropped Origin); reject.
-  const hasSessionCookie = req.headers.cookie?.includes("dispatchos.sid");
+  // Match the cookie NAME precisely (anchored) rather than a loose substring —
+  // `.includes("dispatchos.sid")` would also fire on an unrelated cookie whose
+  // name/value merely contains that string. (Session middleware isn't mounted
+  // yet at this point, so we can't consult req.session here.)
+  const hasSessionCookie = /(?:^|;\s*)dispatchos\.sid=/.test(req.headers.cookie || "");
   if (!candidate) {
     if (hasSessionCookie) {
       return res.status(403).json({ message: "Missing Origin header for authenticated request" });
@@ -294,10 +298,21 @@ if (AUTH_RATE_LIMIT_ENABLED) {
   console.log(
     "[auth] brute-force limiter ENABLED (15min: 20/IP+email and 100/IP)",
   );
+} else {
+  console.log(
+    "[auth] brute-force limiter DISABLED (set DISPATCHOS_AUTH_RATE_LIMIT=on to re-enable).",
+  );
+}
 
-  // M1: public GPS ingest (/api/track/*) is token-only auth. A real device pings
-  // every ~30-60s, so 60/min PER TRACKING TOKEN is generous — this caps GPS
-  // spoofing / flooding even when an attacker holds a valid token.
+// M1: public GPS ingest (/api/track/*) is token-only auth. A real device pings
+// every ~30-60s, so 60/min PER TRACKING TOKEN is generous — this caps GPS
+// spoofing / flooding even when an attacker holds a valid token.
+// IMPORTANT: gated on its OWN flag (default on), NOT on AUTH_RATE_LIMIT_ENABLED.
+// Coupling them meant disabling login lockouts silently removed GPS flood
+// protection too — two unrelated controls on one switch.
+const TRACK_RATE_LIMIT_ENABLED =
+  (process.env.DISPATCHOS_TRACK_RATE_LIMIT || "on").toLowerCase() === "on";
+if (TRACK_RATE_LIMIT_ENABLED) {
   const trackLimiter = rateLimit({
     windowMs: 60_000,
     limit: 60,
@@ -307,17 +322,19 @@ if (AUTH_RATE_LIMIT_ENABLED) {
     keyGenerator: (req) => {
       const q = req.query as Record<string, unknown>;
       const hdr = req.headers["x-limit-u"];
-      const tok = String(q?.id ?? q?.token ?? (Array.isArray(hdr) ? hdr[0] : hdr) ?? "").trim();
+      // Must mirror every token form track.ts accepts: ?id, ?u, ?token, and the
+      // X-Limit-U header. Missing ?u meant owntracks clients authing via ?u=
+      // were keyed by shared IP instead of token (false lockouts + no per-token
+      // cap for that variant).
+      const tok = String(
+        q?.id ?? q?.u ?? q?.token ?? (Array.isArray(hdr) ? hdr[0] : hdr) ?? "",
+      ).trim();
       return tok || req.ip || "track-anon";
     },
     message: { message: "Too many tracking pings." },
   });
   app.use("/api/track", trackLimiter);
   console.log("[track] per-token GPS rate limiter ENABLED (60/min)");
-} else {
-  console.log(
-    "[auth] brute-force limiter DISABLED (set DISPATCHOS_AUTH_RATE_LIMIT=on to re-enable).",
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -444,13 +461,21 @@ app.use((req, res, next) => {
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
 
     console.error("Internal Server Error:", err);
 
     if (res.headersSent) {
       return next(err);
     }
+
+    // Only echo err.message for explicit client errors (4xx) — those are
+    // intentional, caller-actionable. For 5xx return a fixed string so internal
+    // details (SQLite constraint text, library/fs paths, stack frames) never
+    // reach the client; the full error is still in the server log above.
+    const message =
+      status >= 400 && status < 500
+        ? err.message || "Request error"
+        : "Internal Server Error";
 
     return res.status(status).json({ message });
   });

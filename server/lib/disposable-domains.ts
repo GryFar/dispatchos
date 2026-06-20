@@ -89,7 +89,3 @@ export function isDisposableEmail(email: string): boolean {
   }
   return false;
 }
-/** Exposed for tests / admin tooling. */
-export function disposableDomainCount(): number {
-  return DISPOSABLE_DOMAINS.size;
-}

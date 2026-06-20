@@ -85,10 +85,13 @@ function resolveCallerClientId(req: Request): string | null {
 
 export function registerBillingRoutes(app: Express): void {
   // ---------------------------------------------------------------------
-  // Webhook MUST be registered BEFORE express.json() runs on this path.
-  // Stripe sends a signed payload — we need the raw bytes for verification.
-  // Our global express.json() is mounted at the app root in server/index.ts;
-  // by using express.raw() on this specific path, we override it.
+  // Stripe sends a signed payload — verification needs the EXACT raw bytes.
+  // NOTE: the global express.json() in server/index.ts is mounted at the app
+  // root and runs first, so it consumes the stream and the express.raw() below
+  // does NOT actually deliver req.body as a Buffer. The raw bytes are instead
+  // captured by json()'s verify hook into req.rawBody, which we pass to
+  // constructWebhookEvent. The express.raw() is kept only as a harmless
+  // belt-and-suspenders for the (non-current) case where json() didn't run.
   // ---------------------------------------------------------------------
   app.post(
     "/api/billing/webhook",
@@ -100,7 +103,14 @@ export function registerBillingRoutes(app: Express): void {
       }
       let event;
       try {
-        event = constructWebhookEvent(req.body, sig);
+        // Verify against the RAW signed bytes. The global express.json() at
+        // server/index.ts already consumes the stream (setting req._body), so
+        // the route-level express.raw() below short-circuits and req.body is a
+        // parsed object — NOT the bytes Stripe signed. The json() verify hook
+        // captures the raw Buffer as req.rawBody; use that. (Fixes signature
+        // verification silently failing for every real Stripe event.)
+        const rawBody = (req.rawBody as Buffer | undefined) ?? req.body;
+        event = constructWebhookEvent(rawBody, sig);
       } catch (err) {
         console.error("[billing/webhook] signature verification failed:", err);
         return res.status(400).json({
@@ -127,6 +137,15 @@ export function registerBillingRoutes(app: Express): void {
         return res.json({ received: true, handled: outcome.handled });
       } catch (err) {
         console.error("[billing/webhook] handler threw:", err);
+        // We claimed this event id BEFORE handling (to block concurrent
+        // duplicates). The handler failed transiently, so un-claim it — Stripe
+        // will retry, and the retry must re-enter the handler instead of being
+        // skipped as a "duplicate" (which would silently drop the event).
+        try {
+          storage.unmarkStripeEventProcessed(event.id);
+        } catch (unmarkErr) {
+          console.error("[billing/webhook] failed to un-claim event:", unmarkErr);
+        }
         // Return 500 so Stripe retries (transient DB error, network blip, etc).
         return res.status(500).json({ message: "Internal error processing event" });
       }

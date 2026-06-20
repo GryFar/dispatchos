@@ -25,6 +25,19 @@ import { DensityProvider } from "@/lib/density";
  * Параллельно подгружаем /api/clients чтобы показать имя клиента, а не ID.
  */
 
+// storageUrl is free-form operator input. Only render it as a link when it is
+// a real http(s) URL — otherwise a stored value like `javascript:...` would
+// execute in the admin's session when the "Открыть" link is clicked (stored XSS).
+function safeHttpUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw, window.location.origin);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
 const TYPE_LABELS: Record<string, string> = {
   rate_confirmation: "Rate Con",
   bol: "BOL",
@@ -221,18 +234,20 @@ function DocumentsTable({
       key: "url",
       header: "",
       align: "right",
-      cell: (d) =>
-        d.storageUrl ? (
+      cell: (d) => {
+        const href = safeHttpUrl(d.storageUrl);
+        return href ? (
           <a
-            href={d.storageUrl}
+            href={href}
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
           >
             <ExternalLink className="h-3 w-3" />
             Открыть
           </a>
-        ) : null,
+        ) : null;
+      },
       width: "100px",
       hideOnMobile: true,
     },
