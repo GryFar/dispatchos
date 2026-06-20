@@ -14,7 +14,12 @@ import { storage } from "../storage";
 import { getAdapter } from "../lib/adapters";
 import { decryptCredentials } from "../lib/crypto/keyring";
 import { scoreLoadForClient } from "../routes";
-import { shouldAlertLoad, notifyMatchedLoad } from "../lib/load-alerts";
+import {
+  shouldAlertLoad,
+  notifyMatchedLoad,
+  notifyPickupReminder,
+  pickupReminderLeadHours,
+} from "../lib/load-alerts";
 
 function timingSafeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
@@ -173,6 +178,39 @@ export function registerCronRoutes(app: Express): void {
       polled: sources.length,
       results: results.map((r) => r.status === "fulfilled" ? r.value : { ok: false, error: String(r.reason) }),
     });
+  });
+
+  // POST /api/cron/pickup-reminders
+  // Ping the assigned driver's Telegram for loads whose pickup window is within
+  // the lead-time (default 3h, DISPATCHOS_PICKUP_REMINDER_LEAD_HOURS). Deduped
+  // per (load, driver) so re-runs don't re-ping. Best-effort; safe to call often.
+  app.post("/api/cron/pickup-reminders", async (req: Request, res: Response) => {
+    if (!requireCronSecret(req, res)) return;
+    try {
+      const nowMs = Date.now();
+      const fromIso = new Date(nowMs).toISOString();
+      const toIso = new Date(nowMs + pickupReminderLeadHours() * 3600_000).toISOString();
+      const due = storage.listLoadsDueForPickupReminder(fromIso, toIso);
+      let sent = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+      for (const { load, driverId, pickupAt } of due) {
+        const driver = storage.getUserById(driverId);
+        const chatId = driver?.telegramChatId;
+        if (!driver || driver.blocked || !chatId) continue;
+        const outcome = await notifyPickupReminder(load, driverId, chatId, pickupAt, nowMs);
+        if (outcome === "sent") sent += 1;
+        else if (outcome === "skipped") skipped += 1;
+        else errors.push(load.id);
+      }
+      return res.json({ ok: true, candidates: due.length, sent, skipped, errors });
+    } catch (err) {
+      console.error("[cron/pickup-reminders] failed:", err);
+      return res.status(500).json({
+        message: "Pickup reminder check failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   // POST /api/cron/check-insurance

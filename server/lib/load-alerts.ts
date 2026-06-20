@@ -23,7 +23,7 @@
 import { fetchWithTimeout } from "./fetch-timeout";
 import { getIntegrationValue } from "./integration-config";
 import { storage } from "../storage";
-import type { Client, ScoredLoad } from "@shared/schema";
+import type { Client, Load, ScoredLoad } from "@shared/schema";
 
 // Minimum dispatchScore (0..135 scale from scoreLoadForClient) to bother
 // pinging. Overridable via env for tuning without a deploy. A 'skip' verdict is
@@ -188,4 +188,81 @@ export async function notifyMatchedLoad(
     }
   }
   return result;
+}
+
+// ===========================================================================
+// Pickup reminders — ping the assigned driver before a load's pickup window.
+// ===========================================================================
+
+/** Hours of lead time before pickup to remind. Env-tunable. */
+export function pickupReminderLeadHours(): number {
+  const raw = Number.parseFloat(process.env.DISPATCHOS_PICKUP_REMINDER_LEAD_HOURS ?? "");
+  if (Number.isFinite(raw) && raw > 0 && raw <= 48) return raw;
+  return 3;
+}
+
+function clean(s: unknown): string {
+  return String(s ?? "").replace(/[\r\n\t]+/g, " ").trim();
+}
+
+/** Compact pickup reminder a driver can act on. Pure — no I/O. */
+export function formatPickupReminderMessage(load: Load, pickupAtIso: string, nowMs: number): string {
+  const pickupMs = new Date(pickupAtIso).getTime();
+  const mins = Number.isFinite(pickupMs) ? Math.round((pickupMs - nowMs) / 60000) : NaN;
+  const when =
+    !Number.isFinite(mins)
+      ? "soon"
+      : mins <= 0
+        ? "now"
+        : mins < 60
+          ? `in ${mins} min`
+          : `in ${Math.round(mins / 60)}h`;
+  const origin = `${clean(load.originCity) || "?"}, ${clean(load.originState) || "?"}`;
+  const dest = `${clean(load.destinationCity) || "?"}, ${clean(load.destinationState) || "?"}`;
+  const brokerName = (load as Load & { brokerName?: string }).brokerName;
+  return [
+    `⏰ Pickup ${when}`,
+    `Load: ${origin} → ${dest}`,
+    `Pickup at: ${clean(pickupAtIso)}`,
+    brokerName ? `Broker: ${clean(brokerName)}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export interface PickupReminderDeps {
+  claim: (loadId: string, driverId: string, pickupAt: string) => boolean;
+  send: (chatId: string, text: string) => Promise<{ ok: boolean; error?: string }>;
+}
+
+function defaultPickupDeps(): PickupReminderDeps {
+  const token = resolveDriverBotToken();
+  return {
+    claim: (loadId, driverId, pickupAt) =>
+      storage.claimPickupReminder({ loadId, driverId, pickupAt }),
+    send: realFetchSend(token),
+  };
+}
+
+/**
+ * Remind one assigned driver about an upcoming pickup. Best-effort, never
+ * throws. Returns 'sent' | 'skipped' (already reminded) | 'error'.
+ */
+export async function notifyPickupReminder(
+  load: Load,
+  driverId: string,
+  chatId: string,
+  pickupAtIso: string,
+  nowMs: number,
+  deps: PickupReminderDeps = defaultPickupDeps(),
+): Promise<"sent" | "skipped" | "error"> {
+  let fresh: boolean;
+  try {
+    fresh = deps.claim(load.id, driverId, pickupAtIso);
+  } catch {
+    return "error";
+  }
+  if (!fresh) return "skipped";
+  const res = await deps.send(chatId, formatPickupReminderMessage(load, pickupAtIso, nowMs));
+  return res.ok ? "sent" : "error";
 }
