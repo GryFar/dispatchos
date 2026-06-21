@@ -6373,6 +6373,19 @@ export const storage = {
       }));
   },
 
+  /**
+   * Cockpit per-driver cards: active drivers linked to a carrier (role=driver,
+   * not blocked/deleted). Name + status so the cockpit can render one card per
+   * driver instead of one per carrier.
+   */
+  listDriversForClient(clientId: string): Array<{ id: string; fullName: string; driverStatus: string | null }> {
+    return sqlite
+      .prepare(
+        "SELECT id, full_name AS fullName, driver_status AS driverStatus FROM users WHERE role = 'driver' AND blocked = 0 AND deleted_at IS NULL AND linked_client_id = ? ORDER BY full_name ASC",
+      )
+      .all(clientId) as Array<{ id: string; fullName: string; driverStatus: string | null }>;
+  },
+
   listLoadsForClientIds(
     clientIds: string[],
     opts: { limit?: number; cursor?: string; status?: "available" | "booked" } = {},

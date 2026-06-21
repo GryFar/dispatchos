@@ -47,6 +47,11 @@ interface CockpitCarrier {
   activeLoadsCount: number;
   activeDriversCount: number;
   alerts: string[];
+  // Per-driver card: the driver this card represents (null = carrier has no
+  // linked driver yet). Carrier fields above are shared across a carrier's cards.
+  driverId: string | null;
+  driverName: string | null;
+  driverStatus: string | null;
 }
 
 interface CockpitSuggestion {
@@ -100,7 +105,7 @@ export function registerCockpitRoutes(app: Express): void {
       const clientIds = assigned.map((c) => c.id);
 
       // Full client records (location, HOS, equipment live in the payload).
-      const carriers: CockpitCarrier[] = assigned.map((summary) => {
+      const carriers: CockpitCarrier[] = assigned.flatMap((summary): CockpitCarrier[] => {
         const client = storage.getClient(summary.id) as Client | undefined;
         const loc = client?.currentLocation;
         const alerts: string[] = [];
@@ -112,7 +117,7 @@ export function registerCockpitRoutes(app: Express): void {
           const ageMin = (Date.now() - new Date(loc.updatedAt).getTime()) / 60000;
           if (ageMin > 60) alerts.push("Локация устарела (>1ч)");
         }
-        return {
+        const carrierFields = {
           id: summary.id,
           name: summary.name,
           mc: client?.mc ?? "",
@@ -126,6 +131,18 @@ export function registerCockpitRoutes(app: Express): void {
           activeDriversCount: summary.activeDriversCount,
           alerts,
         };
+        // Killer #6: one card PER DRIVER. Multiple drivers -> multiple cards;
+        // a carrier with no driver still shows one (driverless) card.
+        const drivers = storage.listDriversForClient(summary.id);
+        if (drivers.length === 0) {
+          return [{ ...carrierFields, driverId: null, driverName: null, driverStatus: null }];
+        }
+        return drivers.map((d) => ({
+          ...carrierFields,
+          driverId: d.id,
+          driverName: d.fullName,
+          driverStatus: d.driverStatus,
+        }));
       });
 
       // Available loads across all carriers.
