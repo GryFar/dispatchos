@@ -202,7 +202,8 @@ CREATE TABLE IF NOT EXISTS users (
   linked_client_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  last_login_at TEXT
+  last_login_at TEXT,
+  subscription_ends_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS users_role_idx ON users(role);
@@ -217,7 +218,8 @@ CREATE TABLE IF NOT EXISTS invites (
   consumed_by_user_id TEXT,
   linked_client_id TEXT,
   created_at TEXT NOT NULL,
-  created_by_user_id TEXT NOT NULL
+  created_by_user_id TEXT NOT NULL,
+  subscription_days INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS invites_email_idx ON invites(email);
@@ -687,6 +689,14 @@ sqlite.exec(`
   );
 `);
 ensureUserDriverColumns();
+
+// Per-user subscription columns (additive migration for existing DBs).
+{
+  const _ucols = new Set((sqlite.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!_ucols.has("subscription_ends_at")) sqlite.exec("ALTER TABLE users ADD COLUMN subscription_ends_at TEXT");
+  const _icols = new Set((sqlite.prepare("PRAGMA table_info(invites)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!_icols.has("subscription_days")) sqlite.exec("ALTER TABLE invites ADD COLUMN subscription_days INTEGER");
+}
 // Compliance documents — add optional client_id scope so admins can attach a
 // doc to the carrier instead of a specific user. NULL = per-driver only.
 function ensureDriverDocumentsColumns() {
@@ -1335,6 +1345,8 @@ interface UserRow {
   phone_verified: number | null;
   phone_verified_at: string | null;
   email_verified_at: string | null;
+  // Per-user subscription end (ISO). NULL = no per-user subscription.
+  subscription_ends_at: string | null;
   // Session invalidation epoch (bumped on admin password/TOTP reset).
   session_epoch: number | null;
 }
@@ -1383,6 +1395,8 @@ export interface UserInternal {
   phoneVerified: boolean;
   phoneVerifiedAt?: string;
   emailVerifiedAt?: string;
+  // Per-user subscription end (ISO). Set at signup = now + invite.subscriptionDays.
+  subscriptionEndsAt?: string;
 }
 
 // Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
@@ -1458,6 +1472,7 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     phoneVerified: row.phone_verified === 1,
     phoneVerifiedAt: row.phone_verified_at ?? undefined,
     emailVerifiedAt: row.email_verified_at ?? undefined,
+    subscriptionEndsAt: row.subscription_ends_at ?? undefined,
   };
 }
 
@@ -1487,6 +1502,7 @@ function toUserPublic(user: UserInternal, extras?: { assignedClientIds?: string[
     // feat/twilio-verify-phone-email
     phoneVerifiedAt: user.phoneVerifiedAt ?? null,
     emailVerifiedAt: user.emailVerifiedAt ?? null,
+    subscriptionEndsAt: user.subscriptionEndsAt ?? null,
   };
 }
 
@@ -1905,6 +1921,14 @@ export const storage = {
     const ALREADY = "__INVITE_ALREADY_CONSUMED__";
     const txn = sqlite.transaction(() => {
       const user = this.createUser(input);
+      // Per-user subscription: clock starts now, lasts the invite's
+      // subscriptionDays (default 30) -- this is what the user's countdown reads.
+      const inviteRow = sqlite
+        .prepare("SELECT subscription_days FROM invites WHERE code = ?")
+        .get(code) as { subscription_days?: number | null } | undefined;
+      const subDays = inviteRow?.subscription_days ?? 30;
+      const subscriptionEndsAt = new Date(Date.now() + subDays * 24 * 3600 * 1000).toISOString();
+      sqlite.prepare("UPDATE users SET subscription_ends_at = ? WHERE id = ?").run(subscriptionEndsAt, user.id);
       const r = sqlite
         .prepare(
           "UPDATE invites SET consumed_at = ?, consumed_by_user_id = ? WHERE code = ? AND consumed_at IS NULL",
@@ -1912,7 +1936,7 @@ export const storage = {
         .run(now(), user.id, code);
       if (r.changes === 0) throw new Error(ALREADY);
       this.audit("invite.consumed", "invite", code, { userId: user.id });
-      return user;
+      return { ...user, subscriptionEndsAt };
     });
     try {
       return txn();
@@ -2688,6 +2712,7 @@ export const storage = {
     email?: string;
     ttlHours?: number;
     linkedClientId?: string;
+    subscriptionDays?: number;
     createdByUserId: string;
   }): Invite {
     const ttlMs = (input.ttlHours ?? 72) * 60 * 60 * 1000;
@@ -2698,8 +2723,8 @@ export const storage = {
         `
         INSERT INTO invites (
           code, role, email, expires_at, consumed_at, consumed_by_user_id,
-          linked_client_id, created_at, created_by_user_id
-        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+          linked_client_id, created_at, created_by_user_id, subscription_days
+        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
       `,
       )
       .run(
@@ -2710,6 +2735,7 @@ export const storage = {
         input.linkedClientId ?? null,
         createdAt,
         input.createdByUserId,
+        input.subscriptionDays ?? 30,
       );
     const invite: Invite = {
       code: input.code,
@@ -2719,6 +2745,7 @@ export const storage = {
       linkedClientId: input.linkedClientId,
       createdAt,
       createdByUserId: input.createdByUserId,
+      subscriptionDays: input.subscriptionDays ?? 30,
     };
     // Audit (do NOT log linkedClientId payload as sensitive — but code is
     // already addressable by admin, so safe to include).

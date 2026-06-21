@@ -392,6 +392,9 @@ export const userPublicSchema = z.object({
   // feat/twilio-verify-phone-email — verification timestamps.
   phoneVerifiedAt: z.string().nullable().optional(),
   emailVerifiedAt: z.string().nullable().optional(),
+  // Per-user subscription end (ISO). Set at signup = now + invite.subscriptionDays.
+  // null = no per-user subscription (legacy users / bootstrapped admin).
+  subscriptionEndsAt: z.string().nullable().optional(),
 });
 
 // Body schema for PATCH /api/me/preferences— currently only carries
@@ -483,6 +486,9 @@ export const inviteSchema = z.object({
   createdByUserId: z.string(),
   // For driver invites: pre-link to a specific client record on consume.
   linkedClientId: z.string().optional(),
+  // Per-user subscription length (days), copied onto the user at signup.
+  // Optional for legacy invites created before this field existed.
+  subscriptionDays: z.number().int().optional(),
 });
 
 export const createInviteSchema = z.object({
@@ -490,6 +496,9 @@ export const createInviteSchema = z.object({
   email: z.string().email().optional(),
   ttlHours: z.number().int().positive().max(24 * 30).optional(), // max 30d
   linkedClientId: z.string().optional(),
+  // Per-user subscription length (days) granted to the account created from
+  // this invite. Default 30. The user sees the countdown; access stops at 0.
+  subscriptionDays: z.coerce.number().int().min(1).max(365).default(30),
 });
 
 // ===========================================================================

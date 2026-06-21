@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeToggle } from "@/components/dispatch/ThemeToggle";
+import { SubscriptionBadge } from "@/components/SubscriptionBadge";
 
 /**
  * DispatchShell — общий layout для всех экранов /dispatch/*.
@@ -205,6 +206,7 @@ function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
         <Menu className="h-5 w-5" />
       </Button>
       <div className="ml-auto flex items-center gap-1">
+        <SubscriptionBadge />
         <LanguageSwitcher variant="inline" />
         <ThemeToggle />
         <DropdownMenu>

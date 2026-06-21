@@ -646,6 +646,7 @@ const inviteFormSchema = z.object({
   role: z.enum(["dispatcher", "driver"]),
   email: z.string().email("Введите корректный email").optional().or(z.literal("")),
   ttlHours: z.coerce.number().int().min(1).max(720),
+  subscriptionDays: z.coerce.number().int().min(1).max(365),
   linkedClientId: z.string().optional().or(z.literal("")),
 });
 type InviteFormValues = z.infer<typeof inviteFormSchema>;
@@ -663,7 +664,7 @@ function CreateInviteDialog({
 
   const form = useForm<InviteFormValues>({
     resolver: zodResolver(inviteFormSchema),
-    defaultValues: { role: "dispatcher", email: "", ttlHours: 72, linkedClientId: "" },
+    defaultValues: { role: "dispatcher", email: "", ttlHours: 72, subscriptionDays: 30, linkedClientId: "" },
   });
 
   const mutation = useMutation({
@@ -672,6 +673,7 @@ function CreateInviteDialog({
         role: values.role,
         email: values.email || undefined,
         ttlHours: values.ttlHours,
+        subscriptionDays: values.subscriptionDays,
         linkedClientId: values.linkedClientId || undefined,
       };
       return apiJson<Invite & { signupUrl?: string }>("POST", "/api/admin/invites", body);
@@ -751,6 +753,20 @@ function CreateInviteDialog({
                 />
                 <p className="text-[11px] text-muted-foreground">
                   По умолчанию 72 (3 дня). Максимум 720 (30 дней).
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="subscriptionDays">Подписка (дней)</Label>
+                <Input
+                  id="subscriptionDays"
+                  type="number"
+                  min={1}
+                  max={365}
+                  {...form.register("subscriptionDays")}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Сколько дней действует подписка у созданного аккаунта. По умолчанию 30.
                 </p>
               </div>
 

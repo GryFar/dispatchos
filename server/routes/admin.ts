@@ -532,6 +532,7 @@ export function registerAdminRoutes(app: Express): void {
         email: body.email,
         ttlHours: body.ttlHours,
         linkedClientId: body.linkedClientId,
+        subscriptionDays: body.subscriptionDays,
         createdByUserId: actor.id,
       });
 
