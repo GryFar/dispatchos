@@ -38,6 +38,7 @@ import {
   verifyTotp,
 } from "./auth";
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
+import { assertSafeOutboundUrl } from "./lib/url-guard";
 import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerAdminIntegrationTestsRoutes } from "./routes/admin-integrations-tests";
@@ -715,6 +716,7 @@ async function checkBrokerRisk(brokerMc: string, brokerName = "Unknown Broker"):
   if (process.env.FMCSA_API_URL && fmcsaWebKey) {
     try {
       const url = `${process.env.FMCSA_API_URL.replace(/\/$/, "")}?webKey=${encodeURIComponent(fmcsaWebKey)}&mc=${encodeURIComponent(normalized.replace(/\D/g, ""))}`;
+      assertSafeOutboundUrl(url);
       const response = await fetch(url);
       const payload: any = await response.json().catch(() => ({}));
       const statusText = JSON.stringify(payload).toLowerCase();
