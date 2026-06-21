@@ -120,7 +120,7 @@ export function computeInvoiceForWeek(
 
   // Sum in cents to avoid float accumulation drift.
   const grossBookedCents = loads.reduce(
-    (sum, load) => sum + dollarsToCents(typeof load.rate === "number" ? load.rate : 0),
+    (sum, load) => sum + Math.max(0, dollarsToCents(typeof load.rate === "number" ? load.rate : 0)),
     0,
   );
 
@@ -132,7 +132,7 @@ export function computeInvoiceForWeek(
   const totalDueCents = flatFeeCents + percentFeeCents;
 
   const breakdownLoads: BreakdownLoad[] = loads.map((load) => {
-    const rateCents = dollarsToCents(load.rate);
+    const rateCents = Math.max(0, dollarsToCents(load.rate));
     return {
       loadId: load.id,
       rate: centsToDollars(rateCents),

@@ -196,6 +196,9 @@ export const loadSchema = z.object({
 
 export const insertLoadSchema = loadSchema.partial({ id: true }).extend({
   id: z.string().optional(),
+  // Freight pay is never negative. INPUT path only - NOT loadSchema (read schema),
+  // so stored/feed rows are never rejected on read (the 470c0e9 trap). Billing floors at 0.
+  rate: z.number().nonnegative(),
 });
 
 export const updateLocationSchema = driverLocationSchema.partial({
