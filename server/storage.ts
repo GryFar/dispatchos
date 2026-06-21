@@ -3371,6 +3371,37 @@ export const storage = {
   },
 
   /**
+   * Audit H3: find a NON-VOID invoice for this client whose billed week
+   * [week_start, week_end] OVERLAPS the requested [weekStart, weekEnd]. The
+   * UNIQUE(client_id, week_start) index only blocks an identical week_start;
+   * mis-aligned / overlapping windows (e.g. Mon-Sun vs Tue-Mon) slip past it
+   * and would bill the shared loads twice. billing/generate uses this to 409.
+   */
+  findOverlappingInvoice(clientId: string, weekStart: string, weekEnd: string): Invoice | undefined {
+    const row = sqlite
+      .prepare(
+        "SELECT * FROM invoices WHERE client_id = ? AND status != 'void' AND week_start <= ? AND week_end >= ? ORDER BY week_start ASC LIMIT 1",
+      )
+      .get(clientId, weekEnd, weekStart) as any;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      clientId: row.client_id,
+      weekStart: row.week_start,
+      weekEnd: row.week_end,
+      flatFee: row.flat_fee,
+      percentFee: row.percent_fee,
+      grossBooked: row.gross_booked,
+      totalDue: row.total_due,
+      status: row.status,
+      generatedAt: row.generated_at,
+      sentAt: row.sent_at ?? undefined,
+      paidAt: row.paid_at ?? undefined,
+      notes: row.notes ?? undefined,
+    };
+  },
+
+  /**
    * Phase 3 P2: lookup an existing invoice for the same client + weekStart
    * combination, used to enforce the "one invoice per client per week" rule
    * (spec §4.2 → 409 Conflict).

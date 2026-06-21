@@ -43,5 +43,15 @@ assert("duplicate (client, week) invoice is rejected (no double-billing)", threw
 const inv2 = storage.createInvoice({ ...base, weekStart: "2026-01-12", weekEnd: "2026-01-18" });
 assert("a different week for the same client is allowed", !!inv2?.id && inv2.id !== inv1.id);
 
+// Audit H3: overlapping (mis-aligned) windows must be detected so billing/generate
+// can 409 instead of double-billing the shared loads. The UNIQUE(client_id,
+// week_start) index above only catches an identical week_start.
+assert("overlapping window is detected",
+  !!storage.findOverlappingInvoice(clientId, "2026-01-08", "2026-01-14"));
+assert("free (non-overlapping) window is allowed",
+  !storage.findOverlappingInvoice(clientId, "2026-02-01", "2026-02-07"));
+assert("overlap check is scoped per client",
+  !storage.findOverlappingInvoice(`other-${rnd()}`, "2026-01-08", "2026-01-14"));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
