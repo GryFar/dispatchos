@@ -1159,6 +1159,23 @@ sqlite.exec(`
     ON broker_trust_signals(broker_mc, reported_at DESC);
   CREATE INDEX IF NOT EXISTS broker_trust_signals_load_idx
     ON broker_trust_signals(load_id);
+  -- Audit M5: automatic per-load lifecycle signals must count ONCE per load
+  -- (a duplicate booked/completed/cancelled inflates the broker trust score).
+  -- Collapse any existing duplicates, then a partial UNIQUE index makes the
+  -- existing INSERT OR IGNORE idempotent. Manual signals are never deduped.
+  DELETE FROM broker_trust_signals
+  WHERE load_id IS NOT NULL
+    AND signal_type IN ('load_booked','load_completed','load_cancelled_by_broker','load_refused_by_carrier')
+    AND rowid NOT IN (
+      SELECT MIN(rowid) FROM broker_trust_signals
+      WHERE load_id IS NOT NULL
+        AND signal_type IN ('load_booked','load_completed','load_cancelled_by_broker','load_refused_by_carrier')
+      GROUP BY load_id, signal_type
+    );
+  CREATE UNIQUE INDEX IF NOT EXISTS broker_trust_signals_auto_dedup
+    ON broker_trust_signals(load_id, signal_type)
+    WHERE load_id IS NOT NULL
+      AND signal_type IN ('load_booked','load_completed','load_cancelled_by_broker','load_refused_by_carrier');
 `);
 
 
