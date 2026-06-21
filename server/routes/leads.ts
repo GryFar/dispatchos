@@ -23,6 +23,7 @@ import {
 } from "@shared/schema";
 import crypto from "node:crypto";
 import { generateInviteCode } from "../lib/invite-code";
+import { canAddDriver } from "../lib/plans";
 
 // Simple in-memory rate-limit: max 5 subscriptions per IP per hour.
 // Replaced by proper rate-limiter once the load is non-trivial.
@@ -192,6 +193,42 @@ export function registerLeadRoutes(app: Express): void {
           message: "Invalid input",
           issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
         });
+      }
+
+      // Security (audit #2): a DISPATCHER must not escalate role or link a driver
+      // into a carrier they are not assigned to via lead approval. Admins keep
+      // full power (this block is skipped for them). Mirrors POST /api/admin/invites.
+      if (reviewer.role === "dispatcher") {
+        // 1. Dispatchers onboard DRIVERS only -- never mint dispatcher accounts.
+        if (parsed.data.role !== "driver") {
+          return res.status(403).json({
+            message: "Dispatchers can approve leads as drivers only.",
+          });
+        }
+        // 2. And only into a carrier they are actually assigned to (no cross-tenant).
+        if (parsed.data.linkedClientId !== undefined) {
+          const assignedIds = new Set(
+            storage.listAssignedClientsForDispatcher(reviewer.id).map((c) => c.id),
+          );
+          if (!assignedIds.has(parsed.data.linkedClientId)) {
+            return res.status(403).json({
+              message: "linkedClientId must be one of your assigned carriers.",
+            });
+          }
+          // 3. Seat-limit, same as the admin invite path.
+          const linkedClient = storage.getClient(parsed.data.linkedClientId);
+          if (!linkedClient) {
+            return res.status(400).json({ message: "linkedClientId references unknown client" });
+          }
+          const seat = canAddDriver({
+            planTier: linkedClient.planTier,
+            persona: linkedClient.persona,
+            driverSeatCount: storage.countDriverSeats(parsed.data.linkedClientId),
+          });
+          if (!seat.allowed) {
+            return res.status(402).json({ message: seat.reason, needsUpgrade: seat.needsUpgrade });
+          }
+        }
       }
 
       // Generate invite via existing Phase 3 mechanism
