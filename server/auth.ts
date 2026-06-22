@@ -301,9 +301,13 @@ export function requireActiveBilling(
       req.body && typeof req.body === "object" && typeof (req.body as { clientId?: unknown }).clientId === "string"
         ? (req.body as { clientId: string }).clientId
         : null;
-    clientId = q ?? bodyClientId;
+    // H2: fall back to the caller's OWN linked carrier when no explicit clientId
+    // is supplied. Without this, a carrier-admin whose request omits clientId
+    // (e.g. the load-create form, which never sends it) bypassed the billing gate
+    // entirely. linkedClientId comes from the trusted session, not request input.
+    clientId = q ?? bodyClientId ?? (user.linkedClientId ?? null);
   }
-  if (!clientId) return next(); // No carrier context — let through (bootstrap/onboarding)
+  if (!clientId) return next(); // No carrier context at all — let through (bootstrap/onboarding)
 
   const client = storage.getClient(clientId) as
 | (Record<string, unknown> & {
@@ -316,11 +320,14 @@ export function requireActiveBilling(
   if (!client) return next();
 
   const status = client.billingStatus;
-  if (status === "expired") {
+  // H2: 'canceled' must be read-only too. The webhook stamps billingStatus='canceled'
+  // on customer.subscription.deleted, but nothing reconciled it to 'expired', so a
+  // churned carrier kept full write access forever. Gate it like 'expired'.
+  if (status === "expired" || status === "canceled") {
     return res.status(402).json({
       message:
         "Аккаунт в режиме только для чтения (пробный период истёк или подписка отменена). Продлите на /admin/billing.",
-      billingStatus: "expired",
+      billingStatus: status,
     });
   }
   if (status === "past_due") {
