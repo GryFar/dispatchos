@@ -30,38 +30,52 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # H1: capture the HTTP status. The old `curl -sS | head` swallowed every
+      # non-200 (a wrong host, a 401 from a drifted CRON_SECRET, a 500) and exited
+      # 0, so the workflow stayed GREEN while billing/compliance/purge silently
+      # never ran. Each endpoint is still hit independently (one failure does not
+      # skip the others); we record failures and fail the whole job red at the end.
       - name: Check insurance expiries
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -sS -X POST "$BASE_URL/api/cron/check-insurance" \
-            -H "X-Cron-Secret: $CRON_SECRET" \
-            --max-time 60 | head -c 800
-          echo ""
+          code=$(curl -s -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/check-insurance" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 60)
+          echo "check-insurance -> HTTP $code"; head -c 800 /tmp/resp; echo ""
+          [ "$code" = "200" ] || echo "check-insurance HTTP $code" >> /tmp/cron-failures
 
       - name: Check UCR/IRP renewals
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -sS -X POST "$BASE_URL/api/cron/check-renewals" \
-            -H "X-Cron-Secret: $CRON_SECRET" \
-            --max-time 60 | head -c 800
-          echo ""
+          code=$(curl -s -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/check-renewals" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 60)
+          echo "check-renewals -> HTTP $code"; head -c 800 /tmp/resp; echo ""
+          [ "$code" = "200" ] || echo "check-renewals HTTP $code" >> /tmp/cron-failures
 
       - name: Check trial expiry
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -sS -X POST "$BASE_URL/api/cron/check-trial-expiry" \
-            -H "X-Cron-Secret: $CRON_SECRET" \
-            --max-time 60 | head -c 800
-          echo ""
+          code=$(curl -s -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/check-trial-expiry" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 60)
+          echo "check-trial-expiry -> HTTP $code"; head -c 800 /tmp/resp; echo ""
+          [ "$code" = "200" ] || echo "check-trial-expiry HTTP $code" >> /tmp/cron-failures
 
       - name: Purge old data (audit, fuel, email, pings)
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -sS -X POST "$BASE_URL/api/cron/purge-old-data" \
-            -H "X-Cron-Secret: $CRON_SECRET" \
-            --max-time 60 | head -c 800
-          echo ""
+          code=$(curl -s -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/purge-old-data" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 60)
+          echo "purge-old-data -> HTTP $code"; head -c 800 /tmp/resp; echo ""
+          [ "$code" = "200" ] || echo "purge-old-data HTTP $code" >> /tmp/cron-failures
+
+      - name: Fail if any cron endpoint did not return 200
+        if: always()
+        run: |
+          if [ -s /tmp/cron-failures ]; then
+            echo "::error::Daily cron had failures:"; cat /tmp/cron-failures
+            exit 1
+          fi
+          echo "All daily cron endpoints returned 200."
