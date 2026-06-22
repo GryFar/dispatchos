@@ -402,8 +402,17 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
+      // H9: redact secret path segments before logging. The driver-bot webhook is
+      // mounted as /api/telegram/webhook/<token> where <token> IS the bot master
+      // token (the only authenticator); req.path would otherwise print it verbatim
+      // to stdout on every Telegram update.
+      const safePath = path.replace(/(\/api\/telegram\/webhook\/)[^/?]+/, "$1[token]");
+      let logLine = `${req.method} ${safePath} ${res.statusCode} in ${duration}ms`;
+      // H10: never dump full response BODIES in prod-like envs. Bodies carry nested
+      // PII (driver phone/email, GPS lat/lng + full tracks, broker contacts) that the
+      // top-level-key redaction below does not reach. Keep the body only as a local
+      // dev aid; in prod the metadata line above is enough.
+      if (capturedJsonResponse && !isProdLike) {
         // Redact tokens/passwords/secrets from request-log line to avoid
         // leaking them into stdout / journald. Several endpoints legitimately
         // return one-time secrets in their body (TOTP setup → {secret}, admin
