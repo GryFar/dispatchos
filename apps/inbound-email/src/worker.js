@@ -103,8 +103,11 @@ export default {
       }
 
       // V2-4(3): per-sender rate-limit (best-effort; KV optional).
-      const allowed = await checkRateLimit(env.INBOUND_RL, message.from);
-      if (!allowed) {
+      // NB: must NOT shadow the `allowed` recipient-allowlist binding above —
+      // a duplicate `const allowed` is a parse-time SyntaxError that bricks the
+      // whole Worker (every inbound load email silently dropped).
+      const rateOk = await checkRateLimit(env.INBOUND_RL, message.from);
+      if (!rateOk) {
         console.warn(`[inbound-email] rejected: rate-limit hit from=${message.from}`);
         return;
       }
