@@ -3635,6 +3635,26 @@ export const storage = {
   },
 
   /**
+   * H23: resolve carrier names for a specific set of ids via an indexed
+   * `WHERE id IN (...)` lookup, instead of scanning + parsing the entire clients
+   * table. The dispatcher board's name-enrichment called listClients() on every
+   * page render, which defeated the paginated load query as carriers grew.
+   * Includes archived clients on purpose so a load still shows its carrier name.
+   */
+  getClientNamesByIds(ids: string[]): Map<string, string> {
+    const names = new Map<string, string>();
+    if (ids.length === 0) return names;
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = sqlite
+      .prepare(`SELECT payload FROM clients WHERE id IN (${placeholders})`)
+      .all(...ids) as Array<{ payload: string }>;
+    for (const c of parsePayloads<Client>(rows)) {
+      if (c.name) names.set(c.id, c.name);
+    }
+    return names;
+  },
+
+  /**
    * Soft-delete a client: stamp deletedAt in the payload. The row is kept for
    * FK integrity (loads.clientId, assignments, driver.linkedClientId) and
    * billing history — mirrors softDeleteUser. Idempotent: archiving an already

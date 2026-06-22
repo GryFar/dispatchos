@@ -101,12 +101,8 @@ function buildNameMaps(loads: Array<{ clientId?: string; driverId?: string | nul
   const driverIds = Array.from(
     new Set(loads.map((l) => l.driverId).filter((id): id is string => Boolean(id))),
   );
-  const clientNames = new Map<string, string>(
-    storage
-      .listClients()
-      .filter((c) => clientIds.includes(c.id))
-      .map((c) => [c.id, c.name]),
-  );
+  // H23: indexed id-IN lookup instead of a full clients-table scan per render.
+  const clientNames = storage.getClientNamesByIds(clientIds);
   const driverNames = new Map<string, string>();
   for (const driverId of driverIds) {
     const u = storage.getUserById(driverId);
