@@ -762,6 +762,30 @@ export function registerMeRoutes(app: Express): void {
   // normal POST /api/me/expenses. Degrades to { ocr: null } when
   // ANTHROPIC_API_KEY is unset (parseReceipt returns null) — the form still
   // works with manual entry.
+  // H19: per-driver rate-limit for the receipt-OCR vision call — the platform's
+  // most expensive AI surface (Claude vision, cost ∝ image area). Without a gate
+  // an authenticated driver could loop max-size uploads and run up unbounded spend
+  // (the cheap text advisor is already capped at 20/hr). Bounded map: sweep expired
+  // windows + hard-cap keys so the limiter itself can't leak memory (cf. H24).
+  const RECEIPT_SCAN_MAX_PER_HOUR = 15;
+  const RECEIPT_SCAN_WINDOW_MS = 60 * 60 * 1000;
+  const RECEIPT_SCAN_MAX_KEYS = 20_000;
+  const receiptScanBudget = new Map<string, { count: number; resetAt: number }>();
+  function receiptScanAllowed(userId: string): boolean {
+    const now = Date.now();
+    const b = receiptScanBudget.get(userId);
+    if (!b || now > b.resetAt) {
+      if (receiptScanBudget.size >= RECEIPT_SCAN_MAX_KEYS) {
+        receiptScanBudget.forEach((v, k) => { if (now > v.resetAt) receiptScanBudget.delete(k); });
+      }
+      receiptScanBudget.set(userId, { count: 1, resetAt: now + RECEIPT_SCAN_WINDOW_MS });
+      return true;
+    }
+    if (b.count >= RECEIPT_SCAN_MAX_PER_HOUR) return false;
+    b.count++;
+    return true;
+  }
+
   app.post(
     "/api/me/expenses/scan-receipt",
     driver,
@@ -769,6 +793,11 @@ export function registerMeRoutes(app: Express): void {
     ah(async (req, res) => {
       const user = getCurrentUser(req);
       if (!user) return res.status(401).json({ message: "Authentication required" });
+      if (!receiptScanAllowed(user.id)) {
+        return res
+          .status(429)
+          .json({ message: "Слишком много сканов чека за час. Попробуйте позже или введите вручную." });
+      }
       const file = req.file;
       if (!file) {
         return res.status(400).json({ message: "photo is required (multipart field 'photo')" });
