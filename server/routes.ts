@@ -2017,7 +2017,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/clients", requireRole("admin"), requireActiveBilling, (req, res) => {
     try {
-      const client = storage.upsertClient(insertClientSchema.parse(req.body));
+      const parsed = insertClientSchema.parse(req.body);
+      // Billing / Stripe / seat / owner / soft-delete fields are NOT settable via
+      // this create endpoint -- they are owned by Stripe webhooks + onboarding
+      // provisioning. Override any client-supplied values; and if an id collision
+      // turns upsertClient into an UPDATE, carry the STORED values forward so a
+      // POST can never wipe billing or grant paid status for free. Mirrors the
+      // PATCH /api/admin/clients/:id hardening (admin.ts PROTECTED_CLIENT_FIELDS).
+      const existing: Client | undefined = parsed.id ? storage.getClient(parsed.id) : undefined;
+      const input = {
+        ...parsed,
+        billingStatus: existing?.billingStatus,
+        planTier: existing?.planTier,
+        trialEndsAt: existing?.trialEndsAt,
+        stripeCustomerId: existing?.stripeCustomerId,
+        stripeSubscriptionId: existing?.stripeSubscriptionId,
+        deletedAt: existing?.deletedAt,
+        driverSeatCount: existing?.driverSeatCount,
+        dispatcherSeatCount: existing?.dispatcherSeatCount,
+        onboardingCompletedAt: existing?.onboardingCompletedAt,
+        ownerUserId: existing?.ownerUserId,
+      };
+      const client = storage.upsertClient(input);
       res.status(201).json(client);
     } catch (error) {
       handleZodError(error, res);
