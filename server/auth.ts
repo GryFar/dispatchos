@@ -319,7 +319,7 @@ export function requireActiveBilling(
   if (status === "expired") {
     return res.status(402).json({
       message:
-        "Account is in read-only mode (trial expired or subscription canceled). Upgrade at /admin/billing.",
+        "Аккаунт в режиме только для чтения (пробный период истёк или подписка отменена). Продлите на /admin/billing.",
       billingStatus: "expired",
     });
   }
@@ -338,7 +338,7 @@ export function requireActiveBilling(
     if (past > PAST_DUE_GRACE_DAYS) {
       return res.status(402).json({
         message:
-          "Payment past due > 7 days. Account is read-only. Update card at /admin/billing.",
+          "Оплата просрочена более 7 дней. Аккаунт только для чтения. Обновите карту на /admin/billing.",
         billingStatus: "past_due",
       });
     }

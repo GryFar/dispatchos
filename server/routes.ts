@@ -2003,8 +2003,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Audit V3-13 — dispatch board is operational data (loads, drivers,
-  // statuses). Restrict to admin + dispatcher; drivers/anonymous should
-  // not see fleet-wide load assignments.
+  // statuses). Admin-only: dispatchers get fleet/load data via the cockpit and
+  // /api/dispatch/* endpoints, not this admin board. Drivers/anonymous blocked.
   app.get("/api/dispatch-board", requireRole("admin"), (req, res) => {
     res.json(buildDispatchBoard(String(req.query.clientId ?? "")));
   });
