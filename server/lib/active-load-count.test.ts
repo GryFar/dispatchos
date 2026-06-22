@@ -84,12 +84,14 @@ assert(
   `got ${row?.activeLoadsCount} (expected 1)`,
 );
 
-// --- revenue is UNAFFECTED: all booked loads count, delivered included ---
+// --- revenue: delivered/completed stay billable, but CANCELLED is excluded ---
+// (H13) booked_at is never cleared on cancel, so a cancelled load must be filtered
+// out of gross or the carrier is charged the 3% fee on revenue it never earned.
 const gross = storage.grossBookedInWindow("2026-03-15", "2026-03-15");
 assert(
-  "grossBookedInWindow includes delivered/completed/cancelled booked loads",
-  gross === 10000,
-  `got ${gross} (expected 1000+2000+3000+4000=10000)`,
+  "grossBookedInWindow includes delivered/completed but EXCLUDES cancelled booked loads",
+  gross === 6000,
+  `got ${gross} (expected 1000+2000+3000=6000; cancelled 4000 excluded)`,
 );
 
 console.log(`\n${pass} passed, ${fail} failed`);

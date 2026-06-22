@@ -3934,8 +3934,13 @@ export const storage = {
     // upper bound against the start of the NEXT day instead.
     const rows = sqlite
       .prepare(
+        // H13: exclude cancelled loads from the billable set. booked_at is never
+        // cleared on cancellation (it's the revenue-window key), so without this a
+        // booked-then-cancelled load is charged the 3% success fee on revenue the
+        // carrier never earned. Delivered/completed loads stay billable by design.
         `SELECT payload FROM loads
          WHERE client_id = ? AND booked_at IS NOT NULL
+           AND COALESCE(json_extract(payload, '$.status'), '') NOT IN ('cancelled', 'canceled')
            AND booked_at >= ? AND booked_at < date(?, '+1 day')
          ORDER BY booked_at ASC`,
       )
@@ -4461,8 +4466,12 @@ export const storage = {
     // same fix as listBookedLoadsForClientWeek.
     const rows = sqlite
       .prepare(
+        // H13: exclude cancelled loads (see listBookedLoadsForClientWeek). gross
+        // must reflect real bookings, not cancellations that retained booked_at.
         `SELECT payload FROM loads
-         WHERE booked_at IS NOT NULL AND booked_at >= ? AND booked_at < date(?, '+1 day')`,
+         WHERE booked_at IS NOT NULL
+           AND COALESCE(json_extract(payload, '$.status'), '') NOT IN ('cancelled', 'canceled')
+           AND booked_at >= ? AND booked_at < date(?, '+1 day')`,
       )
       .all(weekStart, weekEnd) as Array<{ payload: string }>;
     let sum = 0;
