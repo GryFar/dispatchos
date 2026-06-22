@@ -1881,6 +1881,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // -------------------------------------------------------------------------
+  // Per-user subscription read-only gate. CRITICAL: registered BEFORE all the
+  // portal route modules below (registerMeRoutes / Dispatch / cockpit / fleet /
+  // predictive). In Express an app.use middleware only runs for routes added
+  // AFTER it; while this sat below the modules it never ran for them, so an
+  // expired driver/dispatcher kept full write access to their portal.
+  // Blocks MUTATING requests with 402 once subscriptionEndsAt is past; reads
+  // stay open (badge, logout, language switch, billing). Admins, NULL-sub
+  // accounts, and public/token routes (getCurrentUser == null) pass through.
+  // -------------------------------------------------------------------------
+  app.use("/api", (req, res, next) => {
+    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
+    if (
+      req.path.startsWith("/auth/") ||
+      req.path.startsWith("/billing") ||
+      req.path === "/me/preferences" ||
+      req.path === "/logout"
+    ) {
+      return next();
+    }
+    const subUser = getCurrentUser(req);
+    if (!subUser || subUser.role === "admin") return next();
+    const subEndsAt = subUser.subscriptionEndsAt;
+    if (!subEndsAt || new Date(subEndsAt).getTime() > Date.now()) return next();
+    return res.status(402).json({
+      message: "Подписка истекла. Обратитесь к администратору для продления.",
+      code: "subscription_expired",
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Phase 3 admin routes. Registered BEFORE the shared `app.use("/api", ...)`
   // gate below so each handler manages its own `requireRole('admin')` instead
   // of double-gating through `requireRole.any()`. See server/routes/admin.ts.
@@ -1970,31 +2000,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return next();
     }
     return requireRole.any()(req, res, next);
-  });
-
-  // Per-user subscription enforcement -- read-only mode on expiry.
-  // Expired driver/dispatcher: block MUTATING requests (402), keep reads working
-  // so the user still sees the app + the "subscription expired" badge, can log
-  // out, switch language, and reach billing to renew. Admins and accounts with
-  // no per-user subscription (subscriptionEndsAt = NULL) are never gated.
-  app.use("/api", (req, res, next) => {
-    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
-    if (
-      req.path.startsWith("/auth/") ||
-      req.path.startsWith("/billing") ||
-      req.path === "/me/preferences" ||
-      req.path === "/logout"
-    ) {
-      return next();
-    }
-    const subUser = getCurrentUser(req);
-    if (!subUser || subUser.role === "admin") return next();
-    const subEndsAt = subUser.subscriptionEndsAt;
-    if (!subEndsAt || new Date(subEndsAt).getTime() > Date.now()) return next();
-    return res.status(402).json({
-      message: "Подписка истекла. Обратитесь к администратору для продления.",
-      code: "subscription_expired",
-    });
   });
 
   // Audit V3-13 — dispatch board is operational data (loads, drivers,
