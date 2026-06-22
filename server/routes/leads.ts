@@ -26,15 +26,31 @@ import { generateInviteCode } from "../lib/invite-code";
 import { canAddDriver } from "../lib/plans";
 
 // Simple in-memory rate-limit: max 5 subscriptions per IP per hour.
-// Replaced by proper rate-limiter once the load is non-trivial.
+// H24: bound the map. Keyed on a (previously spoofable) client IP, entries were
+// inserted on first hit and NEVER swept, so an attacker varying the key grew the
+// heap without bound → OOM. Sweep expired entries when the map gets large and
+// hard-cap total keys (fail-closed under a flood rather than exhaust memory).
 const subscribeAttempts = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const RATE_LIMIT_MAX_KEYS = 50_000;
+
+function sweepExpired(now: number): void {
+  subscribeAttempts.forEach((v, k) => {
+    if (now > v.resetAt) subscribeAttempts.delete(k);
+  });
+}
 
 function rateLimitOk(ip: string): boolean {
   const now = Date.now();
   const entry = subscribeAttempts.get(ip);
   if (!entry || now > entry.resetAt) {
+    if (subscribeAttempts.size >= RATE_LIMIT_MAX_KEYS) {
+      sweepExpired(now);
+      // Still full after sweeping live windows → refuse new keys (the public
+      // subscribe endpoint is non-critical; failing closed beats OOM).
+      if (subscribeAttempts.size >= RATE_LIMIT_MAX_KEYS) return false;
+    }
     subscribeAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
     return true;
   }
@@ -44,9 +60,10 @@ function rateLimitOk(ip: string): boolean {
 }
 
 function clientIp(req: Request): string {
-  const fwd = req.headers["x-forwarded-for"];
-  if (typeof fwd === "string") return fwd.split(",")[0]!.trim();
-  return req.socket.remoteAddress ?? "unknown";
+  // H24: use req.ip (honours Express `trust proxy`) instead of the raw leftmost
+  // X-Forwarded-For entry, which is fully attacker-controlled and let a flood
+  // mint a fresh rate-limit bucket per request.
+  return req.ip ?? req.socket.remoteAddress ?? "unknown";
 }
 
 // Audit V3-3 — hardened against Host-header injection. We never trust

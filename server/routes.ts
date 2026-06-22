@@ -2393,11 +2393,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   interface VerifyBucket { lastSentAt: number; count24h: number; windowStart: number }
   const verifyBuckets = new Map<string, VerifyBucket>();
+  const VERIFY_MAX_KEYS = 50_000;
 
   function verifyRateCheck(key: string): { allowed: boolean; cooldownSec: number } {
     const now = Date.now();
     let b = verifyBuckets.get(key);
     if (!b) {
+      // H24: bound the map. Keyed on attacker-supplied phone/email and never
+      // swept, a flood of distinct keys grew the heap without bound → OOM. Sweep
+      // stale 24h windows, then hard-cap (fail-closed) before inserting a new key.
+      if (verifyBuckets.size >= VERIFY_MAX_KEYS) {
+        verifyBuckets.forEach((v, k) => {
+          if (now - v.windowStart > VERIFY_WINDOW_24H_MS) verifyBuckets.delete(k);
+        });
+        if (verifyBuckets.size >= VERIFY_MAX_KEYS) {
+          return { allowed: false, cooldownSec: 3600 };
+        }
+      }
       verifyBuckets.set(key, { lastSentAt: now, count24h: 1, windowStart: now });
       return { allowed: true, cooldownSec: 0 };
     }
