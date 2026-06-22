@@ -39,6 +39,7 @@ import {
 } from "./auth";
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
 import { assertSafeOutboundUrl } from "./lib/url-guard";
+import { sanitizePathSegment, isWithinDir } from "./lib/safe-path";
 import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerAdminIntegrationTestsRoutes } from "./routes/admin-integrations-tests";
@@ -861,7 +862,12 @@ function createLocalDriveFolders(clientId?: string) {
   const plan = buildDrivePlan(clientId);
   const created: string[] = [];
   for (const folder of plan.folders) {
-    const root = path.join(localDriveRoot, folder.path.replace(/^DispatchOS\/Clients\//, ""));
+    // Anti-traversal: client.name / client.mc are operator-controlled; a name
+    // like "../../etc" must never escape localDriveRoot (buildDrivePlan only
+    // stripped whitespace).
+    const rel = sanitizePathSegment(folder.path.replace(/^DispatchOS\/Clients\//, ""));
+    const root = path.join(localDriveRoot, rel);
+    if (!isWithinDir(localDriveRoot, root)) continue;
     fs.mkdirSync(root, { recursive: true });
     created.push(root);
     for (const subfolder of folder.subfolders) {

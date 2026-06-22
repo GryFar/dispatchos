@@ -243,9 +243,25 @@ export const documentSchema = z.object({
   createdAt: z.string(),
 });
 
+// storageUrl is free-form operator input (a link to the doc). Reject dangerous
+// URL schemes (javascript:, data:, file:, ...) on write so a stored value can
+// never become an XSS sink if a consumer renders it without the client guard.
+// Allow http(s) + scheme-less/relative (the upload path stores a local path
+// server-side, bypassing this schema). READ schema stays loose -> no read trap.
+function isSafeStorageUrl(v: string): boolean {
+  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(v.trim());
+  if (!m) return true;
+  const scheme = m[1].toLowerCase();
+  return scheme === "http" || scheme === "https";
+}
+
 export const insertDocumentSchema = documentSchema.partial({ id: true, createdAt: true }).extend({
   id: z.string().optional(),
   createdAt: z.string().optional(),
+  storageUrl: z
+    .string()
+    .refine(isSafeStorageUrl, { message: "storageUrl must be an http(s) URL or a relative path" })
+    .optional(),
 });
 
 // ===========================================================================
