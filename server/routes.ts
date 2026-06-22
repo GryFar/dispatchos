@@ -1379,6 +1379,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         inviteCode: invite.code,
         role: created.role,
       });
+      // Invited users (driver/dispatcher) are not carrier owners -- the
+      // persona/MC/plan onboarding wizard does not apply. Mark it complete so
+      // they never land in it. Empty data => the GET /api/me/onboarding
+      // self-heal never provisions a carrier (it requires a persona).
+      storage.upsertOnboardingProgress(created.id, { step: 4, data: {}, completed: true });
     } else {
       // ---------------- Self-serve carrier signup (no invite) ----------------
       // Anti-fraud is carried by the MC + FMCSA gate in onboarding (one MC =
@@ -1425,6 +1430,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       totpSecret,
       otpauthUrl: buildOtpAuthUrl(created.email, totpSecret),
       redirect,
+      needsOnboarding: !body.inviteCode,
       pendingConfirmationToken,
     });
   });

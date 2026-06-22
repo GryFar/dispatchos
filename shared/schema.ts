@@ -784,6 +784,9 @@ export const signupResponseSchema = z.object({
   totpSecret: z.string().optional(),
   otpauthUrl: z.string().optional(),
   redirect: z.string(),
+  // Invited users (driver/dispatcher from an invite) skip the carrier
+  // onboarding wizard (persona/MC/plan) -> false. Self-serve carrier signup -> true.
+  needsOnboarding: z.boolean().optional(),
   // fix/totp-onboarding-verify: short-lived token (10 min) for the confirm-signup
   // step. Required for new users; absent for legacy bootstrapped users.
   pendingConfirmationToken: z.string().optional(),
