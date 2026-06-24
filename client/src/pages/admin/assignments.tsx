@@ -14,6 +14,7 @@ import {
 import { Briefcase, Headset, Link2, Network, Trash2, X } from "lucide-react";
 import type { Assignment, Client, UserPublic } from "@shared/schema";
 import { apiJson } from "@/lib/queryClient";
+import { useT } from "@/lib/i18n";
 import { useToast } from "@/hooks/use-toast";
 import { EndpointPending, isEndpointMissing } from "@/components/dispatch/EndpointPending";
 import { EmptyState } from "@/components/dispatch/EmptyState";
@@ -50,6 +51,7 @@ type UserListResponse = {
  * показываем заглушку для колонки.
  */
 export default function AssignmentsPage() {
+  const { t } = useT();
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -80,10 +82,10 @@ export default function AssignmentsPage() {
       apiJson<Assignment>("POST", "/api/admin/assignments", body),
     onSuccess: () => {
       qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/admin/assignments") });
-      toast({ title: "Назначение создано" });
+      toast({ title: t("admin.assignments.createdToast") });
     },
     onError: (err: Error) => {
-      toast({ variant: "destructive", title: "Ошибка", description: err.message });
+      toast({ variant: "destructive", title: t("common.error"), description: err.message });
     },
   });
 
@@ -91,10 +93,10 @@ export default function AssignmentsPage() {
     mutationFn: (id: string) => apiJson("DELETE", `/api/admin/assignments/${id}`),
     onSuccess: () => {
       qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/admin/assignments") });
-      toast({ title: "Назначение удалено" });
+      toast({ title: t("admin.assignments.removedToast") });
     },
     onError: (err: Error) => {
-      toast({ variant: "destructive", title: "Ошибка", description: err.message });
+      toast({ variant: "destructive", title: t("common.error"), description: err.message });
     },
   });
 
@@ -123,7 +125,7 @@ export default function AssignmentsPage() {
       (a) => a.clientId === clientId && a.dispatcherUserId === dispatcherUserId && !a.removedAt,
     );
     if (exists) {
-      toast({ title: "Уже назначено", description: "Эта пара уже активна." });
+      toast({ title: t("admin.assignments.alreadyAssignedTitle"), description: t("admin.assignments.alreadyAssignedDesc") });
       return;
     }
     createMutation.mutate({ clientId, dispatcherUserId });
@@ -138,7 +140,7 @@ export default function AssignmentsPage() {
         <Header />
         <EndpointPending
           endpoint="GET /api/admin/assignments + GET /api/admin/users"
-          description="Drag-n-drop board ждёт реализации управления пользователями и назначениями (Phase 3, P0/P1)."
+          description={t("admin.assignments.endpointPendingDesc")}
         />
       </div>
     );
@@ -157,8 +159,7 @@ export default function AssignmentsPage() {
       <Alert>
         <Link2 className="h-4 w-4" />
         <AlertDescription className="text-xs">
-          Перетащите клиента из левой колонки на карточку диспетчера справа. Один клиент может
-          быть назначен на нескольких диспетчеров — это нормально для 24/7 ротации.
+          {t("admin.assignments.helpHint")}
         </AlertDescription>
       </Alert>
 
@@ -170,7 +171,7 @@ export default function AssignmentsPage() {
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="flex items-center gap-2 text-sm font-semibold">
                   <Briefcase className="h-4 w-4 text-primary" />
-                  Клиенты
+                  {t("admin.assignments.clientsColumn")}
                 </h3>
                 <span className="text-xs text-muted-foreground">{clients.length}</span>
               </div>
@@ -181,7 +182,7 @@ export default function AssignmentsPage() {
                   ))}
                 </div>
               ) : clients.length === 0 ? (
-                <EmptyState icon={<Briefcase />} title="Нет клиентов" />
+                <EmptyState icon={<Briefcase />} title={t("admin.assignments.noClients")} />
               ) : (
                 <div className="space-y-1.5">
                   {clients.map((c) => (
@@ -198,14 +199,14 @@ export default function AssignmentsPage() {
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="flex items-center gap-2 text-sm font-semibold">
                   <Headset className="h-4 w-4 text-primary" />
-                  Диспетчеры
+                  {t("admin.assignments.dispatchersColumn")}
                 </h3>
                 <span className="text-xs text-muted-foreground">{dispatchers.length}</span>
               </div>
               {usersMissing ? (
                 <Alert>
                   <AlertDescription className="text-xs">
-                    Список диспетчеров появится после Phase 3 (P0).
+                    {t("admin.assignments.dispatchersPending")}
                   </AlertDescription>
                 </Alert>
               ) : dispatchersQuery.isLoading ? (
@@ -215,7 +216,7 @@ export default function AssignmentsPage() {
                   ))}
                 </div>
               ) : dispatchers.length === 0 ? (
-                <EmptyState icon={<Headset />} title="Нет диспетчеров" description="Создайте через invite." />
+                <EmptyState icon={<Headset />} title={t("admin.assignments.noDispatchers")} description={t("admin.assignments.noDispatchersDesc")} />
               ) : (
                 <div className="space-y-2">
                   {dispatchers.map((d) => {
@@ -239,14 +240,14 @@ export default function AssignmentsPage() {
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="flex items-center gap-2 text-sm font-semibold">
                   <Network className="h-4 w-4 text-primary" />
-                  Активные назначения
+                  {t("admin.assignments.activeColumn")}
                 </h3>
                 <span className="text-xs text-muted-foreground">{assignments.length}</span>
               </div>
               {asgMissing ? (
                 <Alert>
                   <AlertDescription className="text-xs">
-                    Назначения появятся после Phase 3 (P1).
+                    {t("admin.assignments.assignmentsPending")}
                   </AlertDescription>
                 </Alert>
               ) : assignmentsQuery.isLoading ? (
@@ -258,8 +259,8 @@ export default function AssignmentsPage() {
               ) : assignments.length === 0 ? (
                 <EmptyState
                   icon={<Network />}
-                  title="Нет назначений"
-                  description="Перетащите клиента на диспетчера, чтобы создать связь."
+                  title={t("admin.assignments.noAssignments")}
+                  description={t("admin.assignments.noAssignmentsDesc")}
                 />
               ) : (
                 <div className="space-y-1.5">
@@ -311,14 +312,15 @@ export default function AssignmentsPage() {
 }
 
 function Header() {
+  const { t } = useT();
   return (
     <header className="border-b border-border pb-5">
       <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-        Admin / Назначения
+        {t("admin.assignments.headerEyebrow")}
       </p>
-      <h1 className="mt-1 text-2xl font-semibold tracking-tight">Назначения</h1>
+      <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("admin.assignments.headerTitle")}</h1>
       <p className="mt-1.5 text-sm text-muted-foreground">
-        Связи клиент ↔ диспетчер. Drag-n-drop. Many-to-many для 24/7 ротации.
+        {t("admin.assignments.headerSubtitle")}
       </p>
     </header>
   );

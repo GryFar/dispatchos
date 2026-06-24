@@ -28,6 +28,7 @@ import {
   Check,
 } from "lucide-react";
 import { apiJson } from "@/lib/queryClient";
+import { useT } from "@/lib/i18n";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -73,21 +74,24 @@ type TokenResponse = {
   owntracksUserId: string;
 };
 
-function freshnessTier(capturedAt: string | undefined): {
+function freshnessTier(
+  capturedAt: string | undefined,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): {
   tier: "live" | "stale" | "offline";
   minutesAgo: number;
   label: string;
   className: string;
 } {
   if (!capturedAt) {
-    return { tier: "offline", minutesAgo: Infinity, label: "Нет данных", className: "border-muted text-muted-foreground" };
+    return { tier: "offline", minutesAgo: Infinity, label: t("tracking.DriverLocationCard.noData"), className: "border-muted text-muted-foreground" };
   }
   const minutesAgo = (Date.now() - new Date(capturedAt).getTime()) / 60000;
   if (minutesAgo < 5) {
     return {
       tier: "live",
       minutesAgo,
-      label: `🟢 онлайн · ${Math.round(minutesAgo)} мин назад`,
+      label: t("tracking.DriverLocationCard.onlineMinutesAgo", { minutes: Math.round(minutesAgo) }),
       className: "border-success/40 text-success",
     };
   }
@@ -95,7 +99,7 @@ function freshnessTier(capturedAt: string | undefined): {
     return {
       tier: "stale",
       minutesAgo,
-      label: `🟡 ${Math.round(minutesAgo)} мин назад`,
+      label: t("tracking.DriverLocationCard.minutesAgo", { minutes: Math.round(minutesAgo) }),
       className: "border-warning/40 text-warning",
     };
   }
@@ -103,19 +107,20 @@ function freshnessTier(capturedAt: string | undefined): {
     return {
       tier: "offline",
       minutesAgo,
-      label: `🔴 ${Math.round(minutesAgo / 60)} ч назад`,
+      label: t("tracking.DriverLocationCard.hoursAgo", { hours: Math.round(minutesAgo / 60) }),
       className: "border-destructive/40 text-destructive",
     };
   }
   return {
     tier: "offline",
     minutesAgo,
-    label: `🔴 ${Math.round(minutesAgo / 60 / 24)} д назад`,
+    label: t("tracking.DriverLocationCard.daysAgo", { days: Math.round(minutesAgo / 60 / 24) }),
     className: "border-destructive/40 text-destructive",
   };
 }
 
 export function DriverLocationCard({ userId, userName }: { userId: string; userName: string }) {
+  const { t } = useT();
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupResult, setSetupResult] = useState<TokenResponse | null>(null);
   const qc = useQueryClient();
@@ -141,14 +146,14 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
       qc.invalidateQueries({ queryKey: ["/api/admin/users", userId, "track"] });
     },
     onError: (err: Error) => {
-      toast({ variant: "destructive", title: "Ошибка", description: err.message });
+      toast({ variant: "destructive", title: t("common.error"), description: err.message });
     },
   });
 
   const revokeTokenMutation = useMutation({
     mutationFn: () => apiJson("POST", `/api/admin/users/${userId}/tracking-token`, { revoke: true }),
     onSuccess: () => {
-      toast({ description: "Трекинг отключён. Старая ссылка больше не работает." });
+      toast({ description: t("tracking.DriverLocationCard.trackingDisabled") });
       qc.invalidateQueries({ queryKey: ["/api/admin/users", userId, "track"] });
     },
   });
@@ -165,7 +170,7 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
   if (!trackQ.data) return null;
 
   const { current, pings, hasTrackingToken } = trackQ.data;
-  const freshness = freshnessTier(current?.capturedAt);
+  const freshness = freshnessTier(current?.capturedAt, t);
   const mapsKey = mapsKeyQ.data?.key;
 
   // No token issued yet → render the setup CTA card.
@@ -175,15 +180,15 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
-              <span>Геолокация</span>
+              <span>{t("tracking.DriverLocationCard.geolocation")}</span>
               <Badge variant="outline" className="border-muted text-muted-foreground">
-                Не настроено
+                {t("tracking.DriverLocationCard.notConfigured")}
               </Badge>
             </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              Водитель ещё не подключён к трекингу. Сгенерируйте токен и пришлите ему инструкцию — приложение работает в фоне 24/7 на iOS и Android.
+              {t("tracking.DriverLocationCard.notConnectedDescription")}
             </p>
             <Button
               className="mt-3"
@@ -194,7 +199,7 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
               disabled={issueTokenMutation.isPending}
             >
               {issueTokenMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              <Smartphone className="h-4 w-4" /> Включить трекинг
+              <Smartphone className="h-4 w-4" /> {t("tracking.DriverLocationCard.enableTracking")}
             </Button>
           </CardContent>
         </Card>
@@ -219,7 +224,7 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
             <span className="inline-flex items-center gap-2">
-              <Radio className="h-4 w-4 text-primary" /> Геолокация
+              <Radio className="h-4 w-4 text-primary" /> {t("tracking.DriverLocationCard.geolocation")}
             </span>
             <Badge variant="outline" className={freshness.className}>
               {freshness.label}
@@ -244,11 +249,11 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
                 rel="noopener noreferrer"
                 className="text-xs text-primary underline-offset-4 hover:underline"
               >
-                Открыть в Google Maps
+                {t("tracking.DriverLocationCard.openInGoogleMaps")}
               </a>
             </div>
           ) : (
-            <Alert variant="warning" />
+            <Alert variant="warning" t={t} />
           )}
 
           {mapsKey && current ? (
@@ -262,22 +267,22 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
           ) : !current ? (
             <div className="rounded-md border border-dashed border-border bg-muted/30 p-6 text-center text-sm text-muted-foreground">
               <WifiOff className="mx-auto mb-2 h-6 w-6" />
-              Водитель ещё не отправил ни одного пинга. Убедитесь что приложение запущено и геолокация разрешена.
+              {t("tracking.DriverLocationCard.noPingsYet")}
             </div>
           ) : (
             <div className="rounded-md border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              Карта недоступна — не настроен GOOGLE_MAPS_API_KEY.
+              {t("tracking.DriverLocationCard.mapUnavailable", { key: "GOOGLE_MAPS_API_KEY" })}
             </div>
           )}
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-muted-foreground">
-            <span>За последние 24ч — {pings.length} точек</span>
+            <span>{t("tracking.DriverLocationCard.pointsLast24h", { count: pings.length })}</span>
             <div className="flex gap-2">
               <Button size="sm" variant="ghost" onClick={() => {
                 setSetupOpen(true);
                 issueTokenMutation.mutate();
               }}>
-                Новый токен
+                {t("tracking.DriverLocationCard.newToken")}
               </Button>
               <Button
                 size="sm"
@@ -286,7 +291,7 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
                 onClick={() => revokeTokenMutation.mutate()}
                 disabled={revokeTokenMutation.isPending}
               >
-                Отключить
+                {t("tracking.DriverLocationCard.disable")}
               </Button>
             </div>
           </div>
@@ -306,11 +311,11 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
   );
 }
 
-function Alert({ variant }: { variant: "warning" }) {
+function Alert({ variant, t }: { variant: "warning"; t: (key: string, vars?: Record<string, string | number>) => string }) {
   return (
     <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/5 p-3 text-sm">
       <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
-      <p>Токен сгенерирован, но пингов пока нет. Дождитесь первого пинга от приложения.</p>
+      <p>{t("tracking.DriverLocationCard.tokenIssuedNoPings")}</p>
     </div>
   );
 }
@@ -324,6 +329,7 @@ function TrackingSetupDialog({
   userName: string;
   onClose: () => void;
 }) {
+  const { t } = useT();
   const [copied, setCopied] = useState<string | null>(null);
   const { toast } = useToast();
 
@@ -331,10 +337,10 @@ function TrackingSetupDialog({
     try {
       await navigator.clipboard.writeText(text);
       setCopied(what);
-      toast({ description: `${what} скопирован` });
+      toast({ description: t("tracking.DriverLocationCard.copied", { what }) });
       setTimeout(() => setCopied(null), 1500);
     } catch {
-      toast({ variant: "destructive", description: "Не удалось скопировать" });
+      toast({ variant: "destructive", description: t("tracking.DriverLocationCard.copyFailed") });
     }
   }
 
@@ -342,9 +348,9 @@ function TrackingSetupDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Подключение трекинга — {userName}</DialogTitle>
+          <DialogTitle>{t("tracking.DriverLocationCard.dialogTitle", { name: userName })}</DialogTitle>
           <DialogDescription>
-            Перешлите эту инструкцию водителю. Приложение работает в фоне 24/7, батарея ~3-5% в сутки.
+            {t("tracking.DriverLocationCard.dialogDescription")}
           </DialogDescription>
         </DialogHeader>
 
@@ -357,7 +363,7 @@ function TrackingSetupDialog({
           <TabsContent value="android" className="space-y-3 pt-3">
             <ol className="list-decimal space-y-2 pl-5 text-sm">
               <li>
-                Установи приложение{" "}
+                {t("tracking.DriverLocationCard.installAppPrefix")}{" "}
                 <a
                   href="https://play.google.com/store/apps/details?id=org.traccar.client"
                   target="_blank"
@@ -366,21 +372,21 @@ function TrackingSetupDialog({
                 >
                   Traccar Client
                 </a>{" "}
-                из Play Store (бесплатно).
+                {t("tracking.DriverLocationCard.fromPlayStore")}
               </li>
-              <li>Открой настройки приложения и заполни:</li>
+              <li>{t("tracking.DriverLocationCard.openSettingsAndFill")}</li>
             </ol>
             <CopyRow label="Server URL" value={data.osmandUrl.replace(/\?id=.*/, "")} onCopy={copy} copied={copied === "Server URL"} />
             <CopyRow label="Device identifier" value={data.token} onCopy={copy} copied={copied === "Device identifier"} />
             <p className="text-xs text-muted-foreground">
-              Frequency = 60 секунд, Distance = 100 m, Accuracy = High. Разреши приложению фон, отключи battery optimization.
+              {t("tracking.DriverLocationCard.androidHint")}
             </p>
           </TabsContent>
 
           <TabsContent value="ios" className="space-y-3 pt-3">
             <ol className="list-decimal space-y-2 pl-5 text-sm">
               <li>
-                Установи приложение{" "}
+                {t("tracking.DriverLocationCard.installAppPrefix")}{" "}
                 <a
                   href="https://apps.apple.com/app/owntracks/id692424691"
                   target="_blank"
@@ -389,20 +395,20 @@ function TrackingSetupDialog({
                 >
                   OwnTracks
                 </a>{" "}
-                из App Store (бесплатно).
+                {t("tracking.DriverLocationCard.fromAppStore")}
               </li>
-              <li>Settings → Mode = HTTP. Заполни:</li>
+              <li>{t("tracking.DriverLocationCard.iosModeHttp")}</li>
             </ol>
             <CopyRow label="URL" value={data.owntracksUrl} onCopy={copy} copied={copied === "URL"} />
             <CopyRow label="User ID" value={data.owntracksUserId} onCopy={copy} copied={copied === "User ID"} />
             <p className="text-xs text-muted-foreground">
-              TrackerID = любые 2 символа (например, инициалы). Locator = Move (значимые перемещения). Разреши Location → Always.
+              {t("tracking.DriverLocationCard.iosHint")}
             </p>
           </TabsContent>
         </Tabs>
 
         <DialogFooter>
-          <Button onClick={onClose}>Готово</Button>
+          <Button onClick={onClose}>{t("common.success")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

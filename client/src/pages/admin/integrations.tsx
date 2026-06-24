@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/dialog";
 import { apiJson, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useT } from "@/lib/i18n";
 
 type IntegrationKind =
   | "feeder"
@@ -79,25 +80,25 @@ interface IntegrationsResponse {
   integrations: Integration[];
 }
 
-type KindMeta = { label: string; icon: typeof Plug };
+type KindMeta = { labelKey: string; icon: typeof Plug };
 const KIND_META: Record<IntegrationKind, KindMeta> = {
-  feeder: { label: "Источник грузов", icon: Inbox },
-  enrichment: { label: "Обогащение данных", icon: Sparkles },
-  messaging: { label: "Коммуникации", icon: MessageSquare },
-  observability: { label: "Мониторинг", icon: Activity },
-  infra: { label: "Инфраструктура", icon: Database },
+  feeder: { labelKey: "admin.integrations.kindFeeder", icon: Inbox },
+  enrichment: { labelKey: "admin.integrations.kindEnrichment", icon: Sparkles },
+  messaging: { labelKey: "admin.integrations.kindMessaging", icon: MessageSquare },
+  observability: { labelKey: "admin.integrations.kindObservability", icon: Activity },
+  infra: { labelKey: "admin.integrations.kindInfra", icon: Database },
 };
 
 type ToneKey = "active" | "ok" | "warn" | "muted" | "danger";
-type StatusMeta = { label: string; tone: ToneKey };
+type StatusMeta = { labelKey: string; tone: ToneKey };
 const STATUS_META: Record<IntegrationStatus, StatusMeta> = {
-  active: { label: "Активен", tone: "active" },
-  ready: { label: "Готов", tone: "ok" },
-  needs_config: { label: "Не настроен", tone: "warn" },
-  local_endpoint_ready: { label: "Локально", tone: "muted" },
-  local_folder_mode: { label: "Локально", tone: "muted" },
-  sandbox: { label: "Sandbox", tone: "muted" },
-  error: { label: "Ошибка", tone: "danger" },
+  active: { labelKey: "admin.integrations.statusActive", tone: "active" },
+  ready: { labelKey: "admin.integrations.statusReady", tone: "ok" },
+  needs_config: { labelKey: "admin.integrations.statusNeedsConfig", tone: "warn" },
+  local_endpoint_ready: { labelKey: "admin.integrations.statusLocal", tone: "muted" },
+  local_folder_mode: { labelKey: "admin.integrations.statusLocal", tone: "muted" },
+  sandbox: { labelKey: "admin.integrations.statusSandbox", tone: "muted" },
+  error: { labelKey: "admin.integrations.statusError", tone: "danger" },
 };
 
 const TONE_CLASS: Record<ToneKey, string> = {
@@ -108,21 +109,25 @@ const TONE_CLASS: Record<ToneKey, string> = {
   danger: "bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30",
 };
 
-function formatRelative(iso: string | null): string {
+function formatRelative(
+  iso: string | null,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): string {
   if (!iso) return "—";
   const date = new Date(iso);
   const diffMs = Date.now() - date.getTime();
   const seconds = Math.round(diffMs / 1000);
-  if (seconds < 60) return `${seconds}с назад`;
+  if (seconds < 60) return t("admin.integrations.secondsAgo", { seconds });
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}м назад`;
+  if (minutes < 60) return t("admin.integrations.minutesAgo", { minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}ч назад`;
+  if (hours < 24) return t("admin.integrations.hoursAgo", { hours });
   const days = Math.round(hours / 24);
-  return `${days}д назад`;
+  return t("admin.integrations.daysAgo", { days });
 }
 
 export default function IntegrationsPage() {
+  const { t } = useT();
   const { data, isLoading, isError } = useQuery<IntegrationsResponse>({
     queryKey: ["/api/admin/integrations"],
     queryFn: () => apiJson("GET", "/api/admin/integrations"),
@@ -133,12 +138,11 @@ export default function IntegrationsPage() {
     <div className="space-y-6">
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-wider text-muted-foreground">
-          Admin / Платформа
+          {t("admin.integrations.breadcrumb")}
         </p>
-        <h1 className="text-2xl font-semibold">Интеграции</h1>
+        <h1 className="text-2xl font-semibold">{t("admin.integrations.title")}</h1>
         <p className="text-sm text-muted-foreground">
-          Статус всех внешних сервисов и счётчики активности за последние 24 часа.
-          Чтобы добавить новый коннектор — отредактируй{" "}
+          {t("admin.integrations.subtitlePrefix")}{" "}
           <code className="rounded bg-muted px-1 py-0.5 text-xs">
             server/lib/integrations.ts
           </code>
@@ -161,7 +165,7 @@ export default function IntegrationsPage() {
         <Card>
           <CardContent className="flex items-center gap-2 py-6 text-sm text-rose-500">
             <AlertTriangle className="h-4 w-4" />
-            Не удалось загрузить статус интеграций.
+            {t("admin.integrations.loadError")}
           </CardContent>
         </Card>
       )}
@@ -176,7 +180,9 @@ export default function IntegrationsPage() {
 
       {data && (
         <p className="text-xs text-muted-foreground">
-          Обновлено: {new Date(data.generatedAt).toLocaleString("ru-RU")}
+          {t("admin.integrations.updatedAt", {
+            time: new Date(data.generatedAt).toLocaleString("ru-RU"),
+          })}
         </p>
       )}
     </div>
@@ -184,6 +190,7 @@ export default function IntegrationsPage() {
 }
 
 function IntegrationCard({ item }: { item: Integration }) {
+  const { t } = useT();
   const kindMeta = KIND_META[item.kind];
   const statusMeta = STATUS_META[item.status];
   const KindIcon = kindMeta.icon;
@@ -202,7 +209,7 @@ function IntegrationCard({ item }: { item: Integration }) {
                 {item.label}
               </CardTitle>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {kindMeta.label}
+                {t(kindMeta.labelKey)}
               </p>
             </div>
           </div>
@@ -210,7 +217,7 @@ function IntegrationCard({ item }: { item: Integration }) {
             variant="outline"
             className={TONE_CLASS[statusMeta.tone]}
           >
-            {statusMeta.label}
+            {t(statusMeta.labelKey)}
           </Badge>
         </div>
       </CardHeader>
@@ -219,11 +226,11 @@ function IntegrationCard({ item }: { item: Integration }) {
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1">
             <Activity className="h-3 w-3" />
-            {item.stats24h.eventCount} событий / 24ч
+            {t("admin.integrations.events24h", { count: item.stats24h.eventCount })}
           </span>
           <span className="inline-flex items-center gap-1">
             <Clock className="h-3 w-3" />
-            {formatRelative(item.stats24h.lastEventAt)}
+            {formatRelative(item.stats24h.lastEventAt, t)}
           </span>
         </div>
 
@@ -231,7 +238,7 @@ function IntegrationCard({ item }: { item: Integration }) {
           <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs">
             <p className="mb-1 inline-flex items-center gap-1 font-medium text-amber-700 dark:text-amber-300">
               <Wrench className="h-3 w-3" />
-              Не сконфигурировано
+              {t("admin.integrations.notConfigured")}
             </p>
             <p className="font-mono text-[11px] text-muted-foreground">
               {item.missing.join(", ")}
@@ -242,7 +249,7 @@ function IntegrationCard({ item }: { item: Integration }) {
         {item.status === "active" && item.missing.length === 0 && (
           <div className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
             <CheckCircle2 className="h-3 w-3" />
-            Работает
+            {t("admin.integrations.working")}
           </div>
         )}
 
@@ -254,7 +261,7 @@ function IntegrationCard({ item }: { item: Integration }) {
           <div className="mt-1 flex items-center gap-2">
             <Button size="sm" variant="outline" onClick={() => setSetupOpen(true)}>
               <Settings className="h-3.5 w-3.5" />
-              Настроить
+              {t("admin.integrations.configure")}
             </Button>
             {item.docsUrl && (
               <a
@@ -264,7 +271,7 @@ function IntegrationCard({ item }: { item: Integration }) {
                 className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
               >
                 <ExternalLink className="h-3 w-3" />
-                Инструкция
+                {t("admin.integrations.docs")}
               </a>
             )}
           </div>
@@ -288,6 +295,7 @@ function IntegrationSetupDialog({
   item: Integration;
   onClose: () => void;
 }) {
+  const { t } = useT();
   const { toast } = useToast();
   const qc = useQueryClient();
   // For each env var: empty string = no change. Empty after edit + explicit Очистить = clear.
@@ -299,12 +307,12 @@ function IntegrationSetupDialog({
     mutationFn: () =>
       apiJson("POST", `/api/admin/integrations/${item.key}/config`, { values }),
     onSuccess: () => {
-      toast({ description: `Настройки «${item.label}» сохранены` });
+      toast({ description: t("admin.integrations.savedToast", { label: item.label }) });
       qc.invalidateQueries({ queryKey: ["/api/admin/integrations"] });
       onClose();
     },
     onError: (err: Error) => {
-      const msg = err instanceof ApiError ? err.message : "Ошибка сохранения";
+      const msg = err instanceof ApiError ? err.message : t("admin.integrations.saveError");
       toast({ variant: "destructive", description: msg });
     },
   });
@@ -313,12 +321,12 @@ function IntegrationSetupDialog({
     mutationFn: () =>
       apiJson("DELETE", `/api/admin/integrations/${item.key}/config`),
     onSuccess: () => {
-      toast({ description: `Настройки «${item.label}» очищены. Приложение переключится на Fly secrets если они есть.` });
+      toast({ description: t("admin.integrations.clearedToast", { label: item.label }) });
       qc.invalidateQueries({ queryKey: ["/api/admin/integrations"] });
       onClose();
     },
     onError: (err: Error) => {
-      const msg = err instanceof ApiError ? err.message : "Ошибка очистки";
+      const msg = err instanceof ApiError ? err.message : t("admin.integrations.clearError");
       toast({ variant: "destructive", description: msg });
     },
   });
@@ -331,9 +339,9 @@ function IntegrationSetupDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Настройка — {item.label}</DialogTitle>
+          <DialogTitle>{t("admin.integrations.setupTitle", { label: item.label })}</DialogTitle>
           <DialogDescription>
-            Секреты шифруются (AES-256-GCM) перед записью в базу. Значения из базы имеют приоритет над Fly secrets. Пустое поле при сохранении — «не менять».
+            {t("admin.integrations.setupDescription")}
           </DialogDescription>
         </DialogHeader>
 
@@ -341,7 +349,11 @@ function IntegrationSetupDialog({
           {item.envVarMeta.map((meta) => {
             const src = item.envVarSources.find((s) => s.envVar === meta.envVar);
             const sourceLabel =
-              src?.source === "db" ? "из базы" : src?.source === "env" ? "Fly secret" : "не задано";
+              src?.source === "db"
+                ? t("admin.integrations.sourceDb")
+                : src?.source === "env"
+                  ? t("admin.integrations.sourceEnv")
+                  : t("admin.integrations.sourceMissing");
             const sourceTone =
               src?.source === "db"
                 ? "text-emerald-600 dark:text-emerald-400"
@@ -362,7 +374,7 @@ function IntegrationSetupDialog({
                 <Input
                   id={meta.envVar}
                   type={meta.type === "secret" ? "password" : meta.type === "url" ? "url" : "text"}
-                  placeholder={meta.placeholder ?? (src?.source !== "missing" ? "•••••• (оставьте пустым чтобы не менять)" : "")}
+                  placeholder={meta.placeholder ?? (src?.source !== "missing" ? t("admin.integrations.keepBlankPlaceholder") : "")}
                   value={values[meta.envVar]}
                   onChange={(e) =>
                     setValues((prev) => ({ ...prev, [meta.envVar]: e.target.value }))
@@ -387,19 +399,19 @@ function IntegrationSetupDialog({
               disabled={clearMutation.isPending}
             >
               <Trash2 className="h-3.5 w-3.5" />
-              Очистить всё
+              {t("admin.integrations.clearAll")}
             </Button>
           )}
           <div className="flex gap-2 sm:ml-auto">
             <Button variant="ghost" onClick={onClose}>
-              Отмена
+              {t("common.cancel")}
             </Button>
             <Button
               onClick={() => setMutation.mutate()}
               disabled={!hasChanges || setMutation.isPending}
             >
               {setMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Сохранить
+              {t("common.save")}
             </Button>
           </div>
         </DialogFooter>

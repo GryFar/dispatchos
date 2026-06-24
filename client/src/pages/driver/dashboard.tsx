@@ -70,7 +70,7 @@ export default function DriverDashboardPage() {
   if (error || !data) {
     return (
       <Card className="border-destructive/40 bg-destructive/5 p-4 text-sm">
-        <p className="font-medium">{t("driver.dashboard.header_sub")}</p>
+        <p className="font-medium">{t("driver.dashboard.load_error")}</p>
         <p className="mt-1 text-xs text-muted-foreground">
           {(error as Error | null)?.message ?? t("common.error")}
         </p>
@@ -146,14 +146,14 @@ function PendingDocsCard({
   } else if (urgent.length > 0) {
     title = t("driver.dashboard.pending_docs.title");
     detail = urgent
-      .map((d) => `${docLabel(String(d.type))} — ${d.daysUntilExpiry} days`)
+      .map((d) => `${docLabel(String(d.type))} — ${d.daysUntilExpiry} ${t("driver.dashboard.days_abbr")}`)
       .join(" · ");
   } else {
     title = t("driver.dashboard.pending_docs.title");
     detail = flagged
       .map((d) =>
         typeof d.daysUntilExpiry === "number"
-          ? `${docLabel(String(d.type))} (${d.daysUntilExpiry} days)`
+          ? `${docLabel(String(d.type))} (${d.daysUntilExpiry} ${t("driver.dashboard.days_abbr")})`
           : docLabel(String(d.type)),
       )
       .join(", ");
@@ -205,19 +205,19 @@ function StatusCard({
     available: {
       label: t("driver.dashboard.status.available"),
       tone: "bg-warning/15 text-warning border-warning/30",
-      description: "Waiting for dispatcher assignment",
+      description: t("driver.dashboard.statusAvailableDesc"),
       selectLabel: t("driver.dashboard.status.available"),
     },
     on_route: {
       label: t("driver.dashboard.status.on_route"),
       tone: "bg-success/15 text-success border-success/30",
-      description: "Hauling an active load",
+      description: t("driver.dashboard.statusOnRouteDesc"),
       selectLabel: t("driver.dashboard.status.on_route"),
     },
     off_duty: {
       label: t("driver.dashboard.status.off_duty"),
       tone: "bg-muted text-muted-foreground border-border",
-      description: "HOS reset / off shift",
+      description: t("driver.dashboard.statusOffDutyDesc"),
       selectLabel: t("driver.dashboard.status.off_duty"),
     },
   };
@@ -245,7 +245,7 @@ function StatusCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide opacity-80">
-            {t("driver.dashboard.status.available").split(" ")[0]}
+            {t("driver.dashboard.status_label")}
           </p>
           <p className="mt-1 text-2xl font-semibold tracking-tight">
             {meta.label}
@@ -308,7 +308,11 @@ function TodayPanel({
 }) {
   const { t } = useT();
   const stop = todayPickup ?? todayDelivery;
-  const stopKind = todayPickup ? "Pickup" : todayDelivery ? "Delivery" : null;
+  const stopKind = todayPickup
+    ? t("driver.dashboard.todayPickup")
+    : todayDelivery
+      ? t("driver.dashboard.todayDelivery")
+      : null;
 
   if (!stop || !stopKind) {
     return (
@@ -319,7 +323,7 @@ function TodayPanel({
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
           {currentLoad
-            ? "No pickup/delivery today — next activity is tomorrow or later."
+            ? t("driver.dashboard.todayNoStop")
             : t("driver.dashboard.today.no_active")}
         </p>
       </Card>
@@ -370,7 +374,7 @@ function QuickActions({
     }
     toast({
       title: t("driver.dashboard.today.no_active"),
-      description: `${action} is tied to a specific load. Open a load from the list.`,
+      description: t("driver.dashboard.actionHint", { action }),
     });
   };
 
@@ -380,28 +384,28 @@ function QuickActions({
         variant="outline"
         size="lg"
         className="h-auto flex-col gap-1.5 py-4"
-        onClick={() => routeOrHint("POD/BOL")}
+        onClick={() => routeOrHint(t("driver.dashboard.actionPod"))}
       >
         <Camera className="h-5 w-5" />
-        <span className="text-xs font-medium">POD/BOL</span>
+        <span className="text-xs font-medium">{t("driver.dashboard.actionPod")}</span>
       </Button>
       <Button
         variant="outline"
         size="lg"
         className="h-auto flex-col gap-1.5 py-4"
-        onClick={() => routeOrHint("Receipt")}
+        onClick={() => routeOrHint(t("driver.dashboard.actionReceipt"))}
       >
         <DollarSign className="h-5 w-5" />
-        <span className="text-xs font-medium">Receipt</span>
+        <span className="text-xs font-medium">{t("driver.dashboard.actionReceipt")}</span>
       </Button>
       <Button
         variant="outline"
         size="lg"
         className="h-auto flex-col gap-1.5 py-4"
-        onClick={() => routeOrHint("Issue")}
+        onClick={() => routeOrHint(t("driver.dashboard.action_issue"))}
       >
         <AlertTriangle className="h-5 w-5" />
-        <span className="text-xs font-medium">Issue</span>
+        <span className="text-xs font-medium">{t("driver.dashboard.action_issue")}</span>
       </Button>
       {/* Call button. Uses native tel: link when we have a dispatcher number.
        *  Phase 4 P0: dispatcher phone не передаётся в /api/me/dashboard
@@ -411,7 +415,7 @@ function QuickActions({
         <Button asChild variant="default" size="lg" className="h-auto flex-col gap-1.5 py-4">
           <a href={`tel:${phone.replace(/[^+\d]/g, "")}`}>
             <Phone className="h-5 w-5" />
-            <span className="text-xs font-medium">Call</span>
+            <span className="text-xs font-medium">{t("driver.dashboard.action_call")}</span>
           </a>
         </Button>
       ) : (
@@ -421,13 +425,13 @@ function QuickActions({
           className="h-auto flex-col gap-1.5 py-4"
           onClick={() =>
             toast({
-              title: t("driver.dashboard.today.no_active"),
-              description: "No dispatcher number saved. Contact your manager via Telegram.",
+              title: t("driver.dashboard.no_dispatcher_phone"),
+              description: t("driver.dashboard.noDispatcherPhoneToast"),
             })
           }
         >
           <Phone className="h-5 w-5" />
-          <span className="text-xs font-medium">Call</span>
+          <span className="text-xs font-medium">{t("driver.dashboard.action_call")}</span>
         </Button>
       )}
     </div>
@@ -453,7 +457,7 @@ function RecentLoadsPanel({ loads }: { loads: LoadFull[] }) {
           href="/loads"
           className="text-xs font-medium text-primary hover:underline"
         >
-          All
+          {t("driver.dashboard.all")}
         </Link>
       </div>
       {items.length === 0 ? (

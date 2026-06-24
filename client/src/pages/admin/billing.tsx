@@ -12,6 +12,7 @@ import type {
   InvoiceStatus,
 } from "@shared/schema";
 import { apiJson } from "@/lib/queryClient";
+import { useT, tr } from "@/lib/i18n";
 import { useToast } from "@/hooks/use-toast";
 import { formatDateOnly, formatMoney, formatMoneyCents } from "@/lib/format";
 import { DataTable, type DataTableColumn } from "@/components/dispatch/DataTable";
@@ -61,6 +62,7 @@ const STATUS_LABEL: Record<InvoiceStatus, string> = {
 };
 
 export default function BillingPage() {
+  const { t } = useT();
   const [createOpen, setCreateOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<"all" | InvoiceStatus>("all");
 
@@ -83,7 +85,7 @@ export default function BillingPage() {
         <Header onCreate={() => setCreateOpen(true)} />
         <EndpointPending
           endpoint="GET /api/admin/billing/invoices"
-          description="Биллинг и инвойсы будут доступны после Phase 3 (priority P2). После реализации появится список, фильтры и preview перед генерацией."
+          description={t("admin.billing.endpointPending")}
         />
       </div>
     );
@@ -99,7 +101,7 @@ export default function BillingPage() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">Все статусы</SelectItem>
+            <SelectItem value="all">{t("admin.billing.allStatuses")}</SelectItem>
             <SelectItem value="draft">Draft</SelectItem>
             <SelectItem value="sent">Sent</SelectItem>
             <SelectItem value="paid">Paid</SelectItem>
@@ -110,7 +112,7 @@ export default function BillingPage() {
 
       {error ? (
         <Alert variant="destructive">
-          <AlertDescription>Не удалось загрузить инвойсы: {(error as Error).message}</AlertDescription>
+          <AlertDescription>{t("admin.billing.loadFailed", { message: (error as Error).message })}</AlertDescription>
         </Alert>
       ) : (
         <InvoicesTable rows={data?.items ?? []} loading={isLoading} />
@@ -122,35 +124,37 @@ export default function BillingPage() {
 }
 
 function Header({ onCreate }: { onCreate: () => void }) {
+  const { t } = useT();
   return (
     <header className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
       <div>
         <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Admin / Биллинг
+          {t("admin.billing.breadcrumb")}
         </p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Биллинг</h1>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("admin.billing.title")}</h1>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          Еженедельные инвойсы клиентам: $150 flat + 3% от gross booked.
+          {t("admin.billing.subtitle")}
         </p>
       </div>
       <Button onClick={onCreate}>
         <Plus className="h-4 w-4" />
-        Сгенерировать инвойс
+        {t("admin.billing.generateInvoice")}
       </Button>
     </header>
   );
 }
 
 function InvoicesTable({ rows, loading }: { rows: Invoice[]; loading: boolean }) {
+  const { t } = useT();
   const columns: DataTableColumn<Invoice>[] = [
     {
       key: "client",
-      header: "Клиент",
+      header: t("admin.billing.colClient"),
       cell: (inv) => <span className="text-sm font-medium">{inv.clientId}</span>,
     },
     {
       key: "week",
-      header: "Неделя",
+      header: t("admin.billing.colWeek"),
       cell: (inv) => (
         <span className="text-xs text-muted-foreground">
           {formatDateOnly(inv.weekStart)} – {formatDateOnly(inv.weekEnd)}
@@ -160,7 +164,7 @@ function InvoicesTable({ rows, loading }: { rows: Invoice[]; loading: boolean })
     },
     {
       key: "gross",
-      header: "Gross booked",
+      header: t("admin.billing.colGrossBooked"),
       align: "right",
       mono: true,
       cell: (inv) => <MoneyCell value={inv.grossBooked} />,
@@ -169,7 +173,7 @@ function InvoicesTable({ rows, loading }: { rows: Invoice[]; loading: boolean })
     },
     {
       key: "fees",
-      header: "Flat + %",
+      header: t("admin.billing.colFlatPercent"),
       align: "right",
       mono: true,
       cell: (inv) => (
@@ -183,7 +187,7 @@ function InvoicesTable({ rows, loading }: { rows: Invoice[]; loading: boolean })
     },
     {
       key: "total",
-      header: "Итого",
+      header: t("admin.billing.colTotal"),
       align: "right",
       mono: true,
       cell: (inv) => <MoneyCell value={inv.totalDue} cents />,
@@ -191,7 +195,7 @@ function InvoicesTable({ rows, loading }: { rows: Invoice[]; loading: boolean })
     },
     {
       key: "status",
-      header: "Статус",
+      header: t("admin.billing.colStatus"),
       cell: (inv) => (
         <StatusBadge variant={STATUS_VARIANT[inv.status]} dot>
           {STATUS_LABEL[inv.status]}
@@ -209,8 +213,8 @@ function InvoicesTable({ rows, loading }: { rows: Invoice[]; loading: boolean })
       empty={
         <EmptyState
           icon={<CreditCard />}
-          title="Нет инвойсов"
-          description="Сгенерируйте первый инвойс через кнопку выше."
+          title={t("admin.billing.emptyTitle")}
+          description={t("admin.billing.emptyDescription")}
         />
       }
     />
@@ -222,9 +226,9 @@ function InvoicesTable({ rows, loading }: { rows: Invoice[]; loading: boolean })
 // ===========================================================================
 
 const generateSchema = z.object({
-  clientId: z.string().min(1, "Выберите клиента"),
-  weekStart: z.string().min(1, "Начало недели"),
-  weekEnd: z.string().min(1, "Конец недели"),
+  clientId: z.string().min(1, tr("admin.billing.selectClient")),
+  weekStart: z.string().min(1, tr("admin.billing.weekStartRequired")),
+  weekEnd: z.string().min(1, tr("admin.billing.weekEndRequired")),
 });
 type GenerateForm = z.infer<typeof generateSchema>;
 
@@ -235,6 +239,7 @@ function GenerateInvoiceDialog({
   open: boolean;
   onOpenChange: (b: boolean) => void;
 }) {
+  const { t } = useT();
   const qc = useQueryClient();
   const { toast } = useToast();
   const [step, setStep] = useState<"form" | "preview">("form");
@@ -260,7 +265,7 @@ function GenerateInvoiceDialog({
       setStep("preview");
     },
     onError: (err: Error) => {
-      toast({ variant: "destructive", title: "Ошибка preview", description: err.message });
+      toast({ variant: "destructive", title: t("admin.billing.previewError"), description: err.message });
     },
   });
 
@@ -274,11 +279,11 @@ function GenerateInvoiceDialog({
     },
     onSuccess: () => {
       qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/admin/billing") });
-      toast({ title: "Инвойс создан" });
+      toast({ title: t("admin.billing.invoiceCreated") });
       handleClose();
     },
     onError: (err: Error) => {
-      toast({ variant: "destructive", title: "Ошибка генерации", description: err.message });
+      toast({ variant: "destructive", title: t("admin.billing.generateError"), description: err.message });
     },
   });
 
@@ -297,22 +302,21 @@ function GenerateInvoiceDialog({
         {step === "form" ? (
           <form onSubmit={form.handleSubmit((v) => previewMutation.mutate(v))}>
             <DialogHeader>
-              <DialogTitle>Сгенерировать инвойс</DialogTitle>
+              <DialogTitle>{t("admin.billing.generateInvoice")}</DialogTitle>
               <DialogDescription>
-                Сначала превью — посмотрите breakdown по грузам. Запись в БД только после
-                подтверждения.
+                {t("admin.billing.dialogDescription")}
               </DialogDescription>
             </DialogHeader>
 
             <div className="space-y-4 py-4">
               <div className="space-y-1.5">
-                <Label htmlFor="clientId">Клиент</Label>
+                <Label htmlFor="clientId">{t("admin.billing.colClient")}</Label>
                 <Select
                   value={form.watch("clientId")}
                   onValueChange={(v) => form.setValue("clientId", v)}
                 >
                   <SelectTrigger id="clientId">
-                    <SelectValue placeholder="Выберите клиента" />
+                    <SelectValue placeholder={t("admin.billing.selectClient")} />
                   </SelectTrigger>
                   <SelectContent>
                     {(clientsQuery.data ?? []).map((c) => (
@@ -323,17 +327,17 @@ function GenerateInvoiceDialog({
                   </SelectContent>
                 </Select>
                 {form.formState.errors.clientId && (
-                  <p className="text-xs text-destructive">{form.formState.errors.clientId.message}</p>
+                  <p className="text-xs text-destructive">{t("admin.billing.selectClient")}</p>
                 )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <Label htmlFor="weekStart">Начало недели</Label>
+                  <Label htmlFor="weekStart">{t("admin.billing.weekStart")}</Label>
                   <Input id="weekStart" type="date" {...form.register("weekStart")} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="weekEnd">Конец недели</Label>
+                  <Label htmlFor="weekEnd">{t("admin.billing.weekEnd")}</Label>
                   <Input id="weekEnd" type="date" {...form.register("weekEnd")} />
                 </div>
               </div>
@@ -341,10 +345,10 @@ function GenerateInvoiceDialog({
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={handleClose}>
-                Отмена
+                {t("common.cancel")}
               </Button>
               <Button type="submit" disabled={previewMutation.isPending}>
-                {previewMutation.isPending ? "Расчёт..." : "Посмотреть превью"}
+                {previewMutation.isPending ? t("admin.billing.calculating") : t("admin.billing.viewPreview")}
               </Button>
             </DialogFooter>
           </form>
@@ -375,39 +379,40 @@ function PreviewView({
   onSaveAndSend: () => void;
   saving: boolean;
 }) {
+  const { t } = useT();
   return (
     <>
       <DialogHeader>
         <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
           <FilePlus2 className="h-6 w-6" />
         </div>
-        <DialogTitle className="text-center">Превью инвойса</DialogTitle>
+        <DialogTitle className="text-center">{t("admin.billing.previewTitle")}</DialogTitle>
         <DialogDescription className="text-center">
-          {formatDateOnly(preview.weekStart)} – {formatDateOnly(preview.weekEnd)} · {preview.breakdown.loadCount} грузов
+          {formatDateOnly(preview.weekStart)} – {formatDateOnly(preview.weekEnd)} · {t("admin.billing.loadsCount", { count: preview.breakdown.loadCount })}
         </DialogDescription>
       </DialogHeader>
 
       <div className="space-y-4 py-4">
         <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
-          <Row label="Gross booked" value={formatMoney(preview.grossBooked)} />
-          <Row label="Flat fee" value={formatMoney(preview.flatFee)} />
-          <Row label="Percent fee (3%)" value={formatMoneyCents(preview.percentFee)} />
+          <Row label={t("admin.billing.rowGrossBooked")} value={formatMoney(preview.grossBooked)} />
+          <Row label={t("admin.billing.rowFlatFee")} value={formatMoney(preview.flatFee)} />
+          <Row label={t("admin.billing.rowPercentFee")} value={formatMoneyCents(preview.percentFee)} />
           <div className="my-2 border-t border-border" />
           <Row
-            label={<span className="font-semibold">Итого</span>}
+            label={<span className="font-semibold">{t("admin.billing.colTotal")}</span>}
             value={<span className="font-mono font-semibold">{formatMoneyCents(preview.totalDue)}</span>}
           />
         </div>
 
         {preview.breakdown.loads.length > 0 ? (
           <div>
-            <p className="mb-2 text-xs uppercase tracking-wider text-muted-foreground">Грузы недели</p>
+            <p className="mb-2 text-xs uppercase tracking-wider text-muted-foreground">{t("admin.billing.loadsOfWeek")}</p>
             <div className="max-h-48 overflow-y-auto rounded-md border border-border">
               <table className="w-full text-xs">
                 <thead className="bg-muted/40">
                   <tr>
-                    <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">Lane</th>
-                    <th className="px-2 py-1.5 text-right font-medium text-muted-foreground">Rate</th>
+                    <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">{t("admin.billing.colLane")}</th>
+                    <th className="px-2 py-1.5 text-right font-medium text-muted-foreground">{t("admin.billing.colRate")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -424,7 +429,7 @@ function PreviewView({
         ) : (
           <Alert>
             <AlertDescription className="text-xs">
-              За этот период грузов нет. Инвойс будет содержать только flat fee.
+              {t("admin.billing.noLoadsPeriod")}
             </AlertDescription>
           </Alert>
         )}
@@ -432,13 +437,13 @@ function PreviewView({
 
       <DialogFooter className="gap-2 sm:gap-2">
         <Button type="button" variant="outline" onClick={onBack} disabled={saving}>
-          Назад
+          {t("admin.billing.back")}
         </Button>
         <Button type="button" variant="outline" onClick={onSaveDraft} disabled={saving}>
-          Draft
+          {t("admin.billing.saveDraft")}
         </Button>
         <Button type="button" onClick={onSaveAndSend} disabled={saving}>
-          {saving ? "Сохранение..." : "Сохранить и отправить"}
+          {saving ? t("admin.billing.saving") : t("admin.billing.saveAndSend")}
         </Button>
       </DialogFooter>
     </>

@@ -8,6 +8,7 @@ import { Archive, ArchiveRestore, Briefcase, Plus, Search } from "lucide-react";
 import type { Client } from "@shared/schema";
 import { formatClientDisplay } from "@shared/format-client";
 import { apiJson } from "@/lib/queryClient";
+import { useT, tr } from "@/lib/i18n";
 import { useToast } from "@/hooks/use-toast";
 import { formatMc, formatPpm } from "@/lib/format";
 import { DataTable, type DataTableColumn } from "@/components/dispatch/DataTable";
@@ -44,6 +45,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
  * profile добавим в Phase 3 (или пользоваться легаси-дашбордом). Пока — read + create only.
  */
 export default function ClientsPage() {
+  const { t } = useT();
   const [createOpen, setCreateOpen] = useState(false);
   const [q, setQ] = useState("");
   const [equipFilter, setEquipFilter] = useState<"all" | string>("all");
@@ -60,16 +62,16 @@ export default function ClientsPage() {
     mutationFn: (id: string) => apiJson("DELETE", `/api/clients/${id}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({ title: "Клиент архивирован" });
+      toast({ title: t("admin.clients.archivedToast") });
     },
     onError: () => {
-      toast({ title: "Не удалось архивировать клиента", variant: "destructive" });
+      toast({ title: t("admin.clients.archiveErrorToast"), variant: "destructive" });
     },
   });
 
   function handleArchive(client: Client) {
     const ok = window.confirm(
-      `Архивировать клиента «${client.name}»? Он скроется из списка, но данные и история сохранятся — клиента можно будет восстановить.`,
+      t("admin.clients.archiveConfirm", { name: client.name }),
     );
     if (ok) archiveMutation.mutate(client.id);
   }
@@ -78,10 +80,10 @@ export default function ClientsPage() {
     mutationFn: (id: string) => apiJson("POST", `/api/clients/${id}/restore`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({ title: "Клиент восстановлен" });
+      toast({ title: t("admin.clients.restoredToast") });
     },
     onError: () => {
-      toast({ title: "Не удалось восстановить клиента", variant: "destructive" });
+      toast({ title: t("admin.clients.restoreErrorToast"), variant: "destructive" });
     },
   });
 
@@ -111,16 +113,16 @@ export default function ClientsPage() {
       <header className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            Admin / Клиенты
+            {t("admin.clients.breadcrumb")}
           </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Клиенты</h1>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("admin.clients.title")}</h1>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            Реестр клиентов: профиль, equipment, target PPM, текущая локация.
+            {t("admin.clients.subtitle")}
           </p>
         </div>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" />
-          Добавить клиента
+          {t("admin.clients.addClient")}
         </Button>
       </header>
 
@@ -130,7 +132,7 @@ export default function ClientsPage() {
           <Input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Поиск по имени или MC"
+            placeholder={t("admin.clients.searchPlaceholder")}
             className="pl-9"
           />
         </div>
@@ -139,7 +141,7 @@ export default function ClientsPage() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">Все типы</SelectItem>
+            <SelectItem value="all">{t("admin.clients.allTypes")}</SelectItem>
             <SelectItem value="enclosed_car_hauler">Enclosed Car Hauler</SelectItem>
             <SelectItem value="open_car_hauler">Open Car Hauler</SelectItem>
             <SelectItem value="hotshot_flatbed">Hotshot Flatbed</SelectItem>
@@ -151,13 +153,13 @@ export default function ClientsPage() {
           size="sm"
           onClick={() => setShowArchived((v) => !v)}
         >
-          {showArchived ? "Скрыть архив" : "Показать архив"}
+          {showArchived ? t("admin.clients.hideArchive") : t("admin.clients.showArchive")}
         </Button>
       </div>
 
       {error ? (
         <Alert variant="destructive">
-          <AlertDescription>Не удалось загрузить список: {(error as Error).message}</AlertDescription>
+          <AlertDescription>{t("admin.clients.loadError", { message: (error as Error).message })}</AlertDescription>
         </Alert>
       ) : (
         <ClientsTable
@@ -172,8 +174,8 @@ export default function ClientsPage() {
 
       {data && (
         <p className="text-xs text-muted-foreground">
-          Всего: {data.length}
-          {(q || equipFilter !== "all") && ` · отфильтровано: ${rows.length}`}
+          {t("admin.clients.total", { count: data.length })}
+          {(q || equipFilter !== "all") && ` ${t("admin.clients.filtered", { count: rows.length })}`}
         </p>
       )}
 
@@ -197,10 +199,11 @@ function ClientsTable({
   onRestore: (client: Client) => void;
   restoring: boolean;
 }) {
+  const { t } = useT();
   const columns: DataTableColumn<Client>[] = [
     {
       key: "name",
-      header: "Клиент",
+      header: t("admin.clients.colClient"),
       cell: (c) => (
         <Link
           href={`/clients/${c.id}`}
@@ -253,7 +256,7 @@ function ClientsTable({
     },
     {
       key: "location",
-      header: "Текущая локация",
+      header: t("admin.clients.colLocation"),
       cell: (c) =>
         c.currentLocation ? (
           <span className="text-xs">
@@ -276,7 +279,7 @@ function ClientsTable({
             size="sm"
             onClick={() => onRestore(c)}
             disabled={restoring}
-            title="Восстановить клиента"
+            title={t("admin.clients.restoreTitle")}
           >
             <ArchiveRestore className="h-4 w-4 text-muted-foreground" />
           </Button>
@@ -286,7 +289,7 @@ function ClientsTable({
             size="sm"
             onClick={() => onArchive(c)}
             disabled={archiving}
-            title="Архивировать клиента"
+            title={t("admin.clients.archiveTitle")}
           >
             <Archive className="h-4 w-4 text-muted-foreground" />
           </Button>
@@ -304,8 +307,8 @@ function ClientsTable({
       empty={
         <EmptyState
           icon={<Briefcase />}
-          title="Нет клиентов"
-          description="Добавьте первого клиента через кнопку выше или импортируйте через legacy-дашборд."
+          title={t("admin.clients.emptyTitle")}
+          description={t("admin.clients.emptyDescription")}
         />
       }
     />
@@ -317,11 +320,11 @@ function ClientsTable({
 // ===========================================================================
 
 const createClientSchema = z.object({
-  name: z.string().min(1, "Введите имя"),
-  mc: z.string().min(1, "Введите MC"),
+  name: z.string().min(1, tr("admin.clients.nameRequired")),
+  mc: z.string().min(1, tr("admin.clients.mcRequired")),
   equipment: z.enum(["enclosed_car_hauler", "open_car_hauler", "hotshot_flatbed", "sprinter_van"]),
-  targetPpm: z.coerce.number().min(0.5, "Минимум $0.50/mi"),
-  minimumPpm: z.coerce.number().min(0.5, "Минимум $0.50/mi"),
+  targetPpm: z.coerce.number().min(0.5, tr("admin.clients.minPpm")),
+  minimumPpm: z.coerce.number().min(0.5, tr("admin.clients.minPpm")),
   mpg: z.coerce.number().min(1, "MPG > 1"),
   fuelPrice: z.coerce.number().min(0.5, "$0.50+"),
   fixedCostPerMile: z.coerce.number().min(0),
@@ -329,6 +332,7 @@ const createClientSchema = z.object({
 type CreateClientForm = z.infer<typeof createClientSchema>;
 
 function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (b: boolean) => void }) {
+  const { t } = useT();
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -364,12 +368,12 @@ function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChang
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({ title: "Клиент создан" });
+      toast({ title: t("admin.clients.createdToast") });
       onOpenChange(false);
       form.reset();
     },
     onError: (err: Error) => {
-      toast({ variant: "destructive", title: "Ошибка", description: err.message });
+      toast({ variant: "destructive", title: t("common.error"), description: err.message });
     },
   });
 
@@ -378,15 +382,15 @@ function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChang
       <DialogContent className="sm:max-w-lg">
         <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))}>
           <DialogHeader>
-            <DialogTitle>Новый клиент</DialogTitle>
+            <DialogTitle>{t("admin.clients.newClient")}</DialogTitle>
             <DialogDescription>
-              Базовые параметры. Локацию и preferred lanes отредактируйте позже в legacy-дашборде.
+              {t("admin.clients.newClientDescription")}
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid grid-cols-2 gap-3 py-4">
             <div className="col-span-2 space-y-1.5">
-              <Label htmlFor="name">Имя клиента</Label>
+              <Label htmlFor="name">{t("admin.clients.clientName")}</Label>
               <Input id="name" {...form.register("name")} placeholder="Ivan Petrov LLC" />
               {form.formState.errors.name && (
                 <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
@@ -447,17 +451,17 @@ function CreateClientDialog({ open, onOpenChange }: { open: boolean; onOpenChang
               <Label htmlFor="fixedCostPerMile">Fixed cost ($/mi)</Label>
               <Input id="fixedCostPerMile" type="number" step="0.01" {...form.register("fixedCostPerMile")} />
               <p className="text-[11px] text-muted-foreground">
-                Insurance + truck payment + maintenance, разделённые на средний пробег.
+                {t("admin.clients.fixedCostHint")}
               </p>
             </div>
           </div>
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Отмена
+              {t("common.cancel")}
             </Button>
             <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? "Создание..." : "Создать"}
+              {mutation.isPending ? t("admin.clients.creating") : t("admin.clients.create")}
             </Button>
           </DialogFooter>
         </form>

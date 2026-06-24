@@ -45,6 +45,7 @@ export function DriverShell({ children }: { children: ReactNode }) {
 // ---------------------------------------------------------------------------
 
 function DriverTopBar() {
+  const { t } = useT();
   return (
     <header className="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <div className="mx-auto flex h-14 max-w-[720px] items-center justify-between px-4">
@@ -61,7 +62,7 @@ function DriverTopBar() {
           <LanguageSwitcher variant="inline" />
           <ThemeToggle />
           <span className="rounded-full bg-primary/15 px-2.5 py-0.5 text-xs font-medium text-primary">
-            Driver
+            {t("driver._shell.roleTag")}
           </span>
         </div>
       </div>

@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
 import { useToast } from "@/hooks/use-toast";
+import { useT } from "@/lib/i18n";
 
 /**
  * /admin/loads/:id — full admin load detail.
@@ -81,13 +82,13 @@ interface AdminLoadResponse {
   detention?: DetentionSummary;
 }
 
-const CHECKIN_LABELS: Record<CheckinKind, string> = {
-  pickup_arrived: "Прибыл на pickup",
-  loaded: "Загружен",
-  in_transit: "В пути",
-  delivery_arrived: "Прибыл на delivery",
-  delivered: "Доставлен",
-  note: "Заметка",
+const CHECKIN_LABEL_KEYS: Record<CheckinKind, string> = {
+  pickup_arrived: "admin.loadDetail.checkinPickupArrived",
+  loaded: "admin.loadDetail.checkinLoaded",
+  in_transit: "admin.loadDetail.checkinInTransit",
+  delivery_arrived: "admin.loadDetail.checkinDeliveryArrived",
+  delivered: "admin.loadDetail.checkinDelivered",
+  note: "admin.loadDetail.checkinNote",
 };
 
 // Map a verdict string to a StatusBadge variant.
@@ -99,6 +100,7 @@ function verdictVariant(v: string): "book" | "negotiate" | "skip" | "info" {
 }
 
 export default function AdminLoadDetailPage() {
+  const { t } = useT();
   const [match, params] = useRoute("/loads/:id");
   const [, setLocation] = useLocation();
   const loadId = match ? params?.id : null;
@@ -126,7 +128,7 @@ export default function AdminLoadDetailPage() {
       <div className="space-y-4">
         <BackBar onClick={() => setLocation("/loads")} />
         <Card className="border-destructive/40 bg-destructive/5 p-4 text-sm">
-          <p className="font-medium">{is404 ? "Рейс не найден." : "Не удалось загрузить рейс."}</p>
+          <p className="font-medium">{is404 ? t("admin.loadDetail.loadNotFound") : t("admin.loadDetail.loadLoadError")}</p>
         </Card>
       </div>
     );
@@ -144,7 +146,7 @@ export default function AdminLoadDetailPage() {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Маршрут
+              {t("admin.loadDetail.route")}
             </p>
             <p className="mt-1 text-lg font-semibold tracking-tight">
               {load.originCity}, {load.originState}
@@ -160,7 +162,7 @@ export default function AdminLoadDetailPage() {
             <p className="font-mono text-xl font-semibold">{formatMoney(load.rate)}</p>
             <div className="mt-2">
               <StatusBadge variant={isBooked ? "active" : "info"}>
-                {isBooked ? "В работе" : "Доступен"}
+                {isBooked ? t("admin.loadDetail.statusInWork") : t("admin.loadDetail.statusAvailable")}
               </StatusBadge>
             </div>
           </div>
@@ -184,7 +186,7 @@ export default function AdminLoadDetailPage() {
       <div className="grid gap-4 sm:grid-cols-2">
         <Card className="p-4">
           <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            <Truck className="h-3.5 w-3.5" /> Клиент
+            <Truck className="h-3.5 w-3.5" /> {t("admin.loadDetail.client")}
           </p>
           <p className="mt-2 text-sm font-medium">{load.clientName ?? "—"}</p>
           {load.clientId && (
@@ -194,7 +196,7 @@ export default function AdminLoadDetailPage() {
 
         <Card className="p-4">
           <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            <Building2 className="h-3.5 w-3.5" /> Брокер
+            <Building2 className="h-3.5 w-3.5" /> {t("admin.loadDetail.broker")}
           </p>
           <p className="mt-2 text-sm font-medium">{load.brokerName}</p>
           <p className="mt-0.5 font-mono text-xs text-muted-foreground">{formatMc(load.brokerMc)}</p>
@@ -215,7 +217,7 @@ export default function AdminLoadDetailPage() {
 
       {load.notes && (
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Заметки</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("admin.loadDetail.notes")}</p>
           <p className="mt-2 rounded-md border border-border bg-muted/30 p-3 text-xs">{load.notes}</p>
         </Card>
       )}
@@ -224,7 +226,7 @@ export default function AdminLoadDetailPage() {
       {scores.length > 0 && (
         <Card className="p-4">
           <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            <Gauge className="h-3.5 w-3.5" /> Скоринг по клиентам
+            <Gauge className="h-3.5 w-3.5" /> {t("admin.loadDetail.scoringByClients")}
           </p>
           <ul className="mt-3 space-y-2">
             {scores.map((s) => (
@@ -255,14 +257,17 @@ export default function AdminLoadDetailPage() {
         <Card className="p-4 border-amber-300/40 bg-amber-50/30 dark:bg-amber-950/10">
           <div className="flex items-center justify-between">
             <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
-              <Clock className="h-3.5 w-3.5" /> Detention — можно выставить счёт
+              <Clock className="h-3.5 w-3.5" /> {t("admin.loadDetail.detentionBillable")}
             </p>
             <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">
               ${(detention.totalCents / 100).toFixed(2)}
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Free window: {detention.freeHours}h — ${(detention.ratePerHourCents / 100).toFixed(2)}/h. Настройки на carrier profile.
+            {t("admin.loadDetail.detentionFreeWindow", {
+              freeHours: detention.freeHours,
+              rate: (detention.ratePerHourCents / 100).toFixed(2),
+            })}
           </p>
           <ul className="mt-3 space-y-2 text-sm">
             {detention.events.map((ev, idx) => (
@@ -274,12 +279,16 @@ export default function AdminLoadDetailPage() {
                     </span>
                     {ev.source === "estimated" && (
                       <span className="rounded bg-amber-200/40 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
-                        НА СТОПЕ СЕЙЧАС
+                        {t("admin.loadDetail.onStopNow")}
                       </span>
                     )}
                   </div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
-                    {ev.totalHours.toFixed(2)}h на сайте, биллим за {ev.billableHours}h после {ev.freeHours}h free
+                    {t("admin.loadDetail.detentionEventBreakdown", {
+                      totalHours: ev.totalHours.toFixed(2),
+                      billableHours: ev.billableHours,
+                      freeHours: ev.freeHours,
+                    })}
                   </div>
                   <div className="mt-0.5 text-[11px] text-muted-foreground">
                     {new Date(ev.arrivedAt).toLocaleString()} → {new Date(ev.completedAt).toLocaleString()}
@@ -301,14 +310,14 @@ export default function AdminLoadDetailPage() {
       {checkins.length > 0 && (
         <Card className="p-4">
           <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            <Clock className="h-3.5 w-3.5" /> Хронология чекинов
+            <Clock className="h-3.5 w-3.5" /> {t("admin.loadDetail.checkinTimeline")}
           </p>
           <ul className="mt-3 space-y-2">
             {checkins.map((c) => (
               <li key={c.id} className="flex items-start gap-2 text-xs">
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
                 <div className="flex-1">
-                  <p className="font-medium">{CHECKIN_LABELS[c.kind]}</p>
+                  <p className="font-medium">{t(CHECKIN_LABEL_KEYS[c.kind])}</p>
                   <p className="text-muted-foreground">
                     {formatDateFull(c.createdAt)}
                     {typeof c.lat === "number" && typeof c.lng === "number" && (
@@ -326,10 +335,10 @@ export default function AdminLoadDetailPage() {
       {/* Audit events timeline (admin-only) */}
       <Card className="p-4">
         <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          <History className="h-3.5 w-3.5" /> Журнал событий
+          <History className="h-3.5 w-3.5" /> {t("admin.loadDetail.eventLog")}
         </p>
         {events.length === 0 ? (
-          <p className="mt-3 text-xs text-muted-foreground">Событий пока нет.</p>
+          <p className="mt-3 text-xs text-muted-foreground">{t("admin.loadDetail.noEventsYet")}</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {events.map((e) => (
@@ -353,12 +362,13 @@ export default function AdminLoadDetailPage() {
 }
 
 function BackBar({ onClick }: { onClick: () => void }) {
+  const { t } = useT();
   return (
     <button
       onClick={onClick}
       className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
     >
-      <ArrowLeft className="h-4 w-4" /> Назад к грузам
+      <ArrowLeft className="h-4 w-4" /> {t("admin.loadDetail.backToLoads")}
     </button>
   );
 }
@@ -390,6 +400,7 @@ function DriverAssignmentCard({
   driverName: string | null;
   bookedAt: string | null;
 }) {
+  const { t } = useT();
   const qc = useQueryClient();
   const { toast } = useToast();
   const [editing, setEditing] = useState(false);
@@ -413,7 +424,7 @@ function DriverAssignmentCard({
         driverId: newDriverId,
       }),
     onSuccess: () => {
-      toast({ title: "Водитель обновлён" });
+      toast({ title: t("admin.loadDetail.driverUpdated") });
       setEditing(false);
       qc.invalidateQueries({ queryKey: ["/api/admin/loads", loadId] });
       qc.invalidateQueries({ queryKey: ["/api/admin/loads"] });
@@ -422,8 +433,8 @@ function DriverAssignmentCard({
       qc.invalidateQueries({ queryKey: ["/api/loads"] });
     },
     onError: (err: unknown) => {
-      const message = err instanceof ApiError ? err.message : "Не удалось обновить водителя";
-      toast({ title: "Ошибка", description: message, variant: "destructive" });
+      const message = err instanceof ApiError ? err.message : t("admin.loadDetail.driverUpdateError");
+      toast({ title: t("common.error"), description: message, variant: "destructive" });
     },
   });
 
@@ -433,7 +444,7 @@ function DriverAssignmentCard({
     <Card className="p-4">
       <div className="flex items-start justify-between gap-3">
         <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          <UserCircle2 className="h-3.5 w-3.5" /> Назначение
+          <UserCircle2 className="h-3.5 w-3.5" /> {t("admin.loadDetail.assignment")}
         </p>
         {!editing && canEdit && (
           <Button
@@ -445,7 +456,7 @@ function DriverAssignmentCard({
             data-testid="button-reassign-driver"
           >
             <Pencil className="h-3 w-3" />
-            {driverId ? "Переназначить" : "Назначить"}
+            {driverId ? t("admin.loadDetail.reassign") : t("admin.loadDetail.assign")}
           </Button>
         )}
       </div>
@@ -453,24 +464,24 @@ function DriverAssignmentCard({
       {!editing ? (
         driverId ? (
           <>
-            <p className="mt-2 text-sm font-medium">{driverName ?? "Водитель"}</p>
+            <p className="mt-2 text-sm font-medium">{driverName ?? t("admin.loadDetail.driver")}</p>
             <p className="mt-0.5 font-mono text-xs text-muted-foreground">{driverId}</p>
             {bookedAt && (
-              <p className="mt-1 text-xs text-muted-foreground">Booked: {bookedAt}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t("admin.loadDetail.bookedAt", { date: bookedAt })}</p>
             )}
           </>
         ) : (
-          <p className="mt-2 text-sm text-muted-foreground">Водитель не назначен</p>
+          <p className="mt-2 text-sm text-muted-foreground">{t("admin.loadDetail.driverNotAssigned")}</p>
         )
       ) : (
         <div className="mt-3 space-y-2">
           {driversQuery.isLoading && (
             <p className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" /> Загружаем водителей...
+              <Loader2 className="h-3 w-3 animate-spin" /> {t("admin.loadDetail.loadingDrivers")}
             </p>
           )}
           {driversQuery.error && (
-            <p className="text-xs text-destructive">Не удалось загрузить список водителей.</p>
+            <p className="text-xs text-destructive">{t("admin.loadDetail.driversLoadError")}</p>
           )}
           {driversQuery.data && (
             <>
@@ -481,17 +492,17 @@ function DriverAssignmentCard({
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
                 data-testid="select-driver"
               >
-                <option value="">— Снять назначение —</option>
+                <option value="">{t("admin.loadDetail.unassignOption")}</option>
                 {driversQuery.data.drivers.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.fullName} · {d.driverStatus}
-                    {d.id === driverId ? " (текущий)" : ""}
+                    {d.id === driverId ? ` ${t("admin.loadDetail.currentSuffix")}` : ""}
                   </option>
                 ))}
               </select>
               {driversQuery.data.drivers.length === 0 && (
                 <p className="text-xs text-muted-foreground">
-                  У этого клиента нет водителей — добавьте в «Пользователи».
+                  {t("admin.loadDetail.noDriversForClient")}
                 </p>
               )}
               <div className="flex items-center justify-end gap-2 pt-1">
@@ -503,7 +514,7 @@ function DriverAssignmentCard({
                   onClick={() => setEditing(false)}
                   disabled={reassign.isPending}
                 >
-                  <X className="h-3 w-3" /> Отмена
+                  <X className="h-3 w-3" /> {t("common.cancel")}
                 </Button>
                 <Button
                   type="button"
@@ -518,7 +529,7 @@ function DriverAssignmentCard({
                   ) : (
                     <Check className="h-3 w-3" />
                   )}
-                  Сохранить
+                  {t("common.save")}
                 </Button>
               </div>
             </>

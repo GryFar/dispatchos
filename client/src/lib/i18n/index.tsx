@@ -30,6 +30,16 @@ import { translate, type Lang, LANGS } from "./translations";
 const STORAGE_KEY = "dispatchos.lang";
 const DEFAULT_LANG: Lang = "en";
 
+// Module-level mirror of the active language so NON-React utilities (e.g.
+// lib/format.ts) can translate without a hook. Kept in sync by I18nProvider
+// on init and on every language change.
+let currentLang: Lang = DEFAULT_LANG;
+
+/** Non-hook translator for use outside React render (formatters, utilities). */
+export function tr(key: string, vars?: Record<string, string | number>) {
+  return translate(currentLang, key, vars);
+}
+
 function isValidLang(v: unknown): v is Lang {
   return v === "ru" || v === "en" || v === "es" || v === "fr";
 }
@@ -62,7 +72,11 @@ type I18nContextValue = {
 const I18nContext = createContext<I18nContextValue | null>(null);
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [lang, setLangState] = useState<Lang>(detectInitialLang);
+  const [lang, setLangState] = useState<Lang>(() => {
+    const initial = detectInitialLang();
+    currentLang = initial;
+    return initial;
+  });
 
   // Keep <html lang="..."> in sync so screen readers + SEO crawlers pick
   // up the active language (Audit V2-26 partial fix).
@@ -74,6 +88,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const setLang = useCallback((next: Lang) => {
     if (!isValidLang(next)) return;
+    currentLang = next;
     setLangState(next);
     try {
       window.localStorage.setItem(STORAGE_KEY, next);

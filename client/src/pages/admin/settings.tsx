@@ -12,6 +12,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { apiJson, ApiError } from "@/lib/queryClient";
+import { useT } from "@/lib/i18n";
 import { useAuth } from "@/lib/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { formatDateFull, formatRelativeAgo } from "@/lib/format";
@@ -43,27 +44,28 @@ import { cn } from "@/lib/utils";
  * Пока показываем read-only.
  */
 export default function SettingsPage() {
+  const { t } = useT();
   const [tab, setTab] = useState<"integrations" | "security">("integrations");
 
   return (
     <div className="space-y-6">
       <header className="border-b border-border pb-5">
         <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Admin / Настройки
+          {t("admin.settings.breadcrumb")}
         </p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Настройки</h1>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("admin.settings.title")}</h1>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          Интеграции, безопасность, профиль текущего пользователя.
+          {t("admin.settings.subtitle")}
         </p>
       </header>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
         <TabsList>
           <TabsTrigger value="integrations">
-            <Plug className="mr-2 h-3.5 w-3.5" /> Интеграции
+            <Plug className="mr-2 h-3.5 w-3.5" /> {t("admin.settings.tabIntegrations")}
           </TabsTrigger>
           <TabsTrigger value="security">
-            <Lock className="mr-2 h-3.5 w-3.5" /> Безопасность
+            <Lock className="mr-2 h-3.5 w-3.5" /> {t("admin.settings.tabSecurity")}
           </TabsTrigger>
         </TabsList>
       </Tabs>
@@ -90,15 +92,16 @@ type IntegrationsResponse = {
     | undefined;
 };
 
-const INTEGRATION_LABELS: Record<string, { label: string; help: string }> = {
-  fmcsa: { label: "FMCSA Safer", help: "Проверка authority и риск-скора брокеров" },
-  telegram: { label: "Telegram", help: "Бот для команд водителей (/loc, /yes, /no)" },
-  gmail: { label: "Gmail", help: "Ingest rate confirmations из email" },
-  drive: { label: "Google Drive", help: "Архив документов клиентов" },
-  google_drive: { label: "Google Drive", help: "Архив документов клиентов" },
+const INTEGRATION_LABELS: Record<string, { label: string; helpKey: string }> = {
+  fmcsa: { label: "FMCSA Safer", helpKey: "admin.settings.integrationFmcsaHelp" },
+  telegram: { label: "Telegram", helpKey: "admin.settings.integrationTelegramHelp" },
+  gmail: { label: "Gmail", helpKey: "admin.settings.integrationGmailHelp" },
+  drive: { label: "Google Drive", helpKey: "admin.settings.integrationDriveHelp" },
+  google_drive: { label: "Google Drive", helpKey: "admin.settings.integrationDriveHelp" },
 };
 
 function IntegrationsTab() {
+  const { t } = useT();
   const { data, isLoading, error } = useQuery<IntegrationsResponse>({
     queryKey: ["/api/integrations/status"],
     queryFn: () => apiJson<IntegrationsResponse>("GET", "/api/integrations/status"),
@@ -119,7 +122,7 @@ function IntegrationsTab() {
     return (
       <Alert variant="destructive">
         <AlertDescription>
-          Не удалось загрузить интеграции: {(error as Error).message}
+          {t("admin.settings.integrationsLoadError", { message: (error as Error).message })}
         </AlertDescription>
       </Alert>
     );
@@ -131,11 +134,12 @@ function IntegrationsTab() {
     <div className="space-y-3">
       {entries.length === 0 ? (
         <Alert>
-          <AlertDescription>Интеграции не настроены.</AlertDescription>
+          <AlertDescription>{t("admin.settings.integrationsEmpty")}</AlertDescription>
         </Alert>
       ) : (
         entries.map(([key, h]) => {
-          const meta = INTEGRATION_LABELS[key] ?? { label: key, help: "" };
+          const meta = INTEGRATION_LABELS[key] ?? { label: key, helpKey: "" };
+          const help = meta.helpKey ? t(meta.helpKey) : "";
           const status = (h?.status ?? (h?.configured ? "ok" : "missing")) as IntegrationStatus;
           return (
             <Card key={key} className="card-hover shadow-card">
@@ -145,7 +149,7 @@ function IntegrationsTab() {
                   <div className="min-w-0">
                     <p className="text-sm font-medium">{meta.label}</p>
                     <p className="truncate text-xs text-muted-foreground">
-                      {h?.message ?? meta.help}
+                      {h?.message ?? help}
                     </p>
                   </div>
                 </div>
@@ -169,8 +173,8 @@ function IntegrationsTab() {
                   >
                     {status === "ok" ? "OK"
                       : status === "warn" ? "Warn"
-                      : status === "missing" ? "Не настроено"
-                      : status === "error" ? "Ошибка"
+                      : status === "missing" ? t("admin.settings.statusMissing")
+                      : status === "error" ? t("common.error")
                       : status}
                   </span>
                 </div>
@@ -180,8 +184,8 @@ function IntegrationsTab() {
         })
       )}
       <p className="text-[11px] text-muted-foreground">
-        Изменение настроек интеграций — через переменные окружения <span className="font-mono">.env</span>{" "}
-        и рестарт сервера.
+        {t("admin.settings.integrationsEnvNotePre")} <span className="font-mono">.env</span>{" "}
+        {t("admin.settings.integrationsEnvNotePost")}
       </p>
     </div>
   );
@@ -199,12 +203,13 @@ function IntegrationIcon({ status }: { status: IntegrationStatus }) {
 // ===========================================================================
 
 function SecurityTab() {
+  const { t } = useT();
   const { user } = useAuth();
 
   if (!user) {
     return (
       <Alert>
-        <AlertDescription>Загрузка профиля...</AlertDescription>
+        <AlertDescription>{t("admin.settings.profileLoading")}</AlertDescription>
       </Alert>
     );
   }
@@ -215,22 +220,22 @@ function SecurityTab() {
         <CardContent className="p-5">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <ShieldCheck className="h-4 w-4 text-primary" />
-            Профиль
+            {t("admin.settings.profile")}
           </h3>
           <dl className="space-y-3">
-            <Row label="ФИО" value={user.fullName} />
-            <Row label="Email" value={user.email} />
-            <Row label="Роль" value={<RoleBadge role={user.role} />} />
+            <Row label={t("admin.settings.fullName")} value={user.fullName} />
+            <Row label={t("common.email")} value={user.email} />
+            <Row label={t("admin.settings.role")} value={<RoleBadge role={user.role} />} />
             <Row
-              label="Статус"
+              label={t("admin.settings.status")}
               value={
                 <span className={user.blocked ? "text-destructive" : "text-success"}>
-                  {user.blocked ? "Заблокирован" : "Активен"}
+                  {user.blocked ? t("admin.settings.statusBlocked") : t("admin.settings.statusActive")}
                 </span>
               }
             />
             <Row
-              label="Создан"
+              label={t("admin.settings.createdAt")}
               value={
                 <span title={formatDateFull(user.createdAt)}>
                   {formatRelativeAgo(user.createdAt)}
@@ -239,7 +244,7 @@ function SecurityTab() {
             />
             {user.lastLoginAt && (
               <Row
-                label="Последний вход"
+                label={t("admin.settings.lastLogin")}
                 value={
                   <span title={formatDateFull(user.lastLoginAt)}>
                     {formatRelativeAgo(user.lastLoginAt)}
@@ -255,23 +260,22 @@ function SecurityTab() {
         <CardContent className="p-5">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <Lock className="h-4 w-4 text-primary" />
-            Аутентификация
+            {t("admin.settings.authentication")}
           </h3>
           <div className="space-y-4">
             <div>
               <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                Пароль
+                {t("admin.settings.password")}
               </p>
-              <p className="mt-1 text-sm">Хранится в виде PBKDF2-хеша.</p>
+              <p className="mt-1 text-sm">{t("admin.settings.passwordStored")}</p>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                Смена пароля self-service появится в Phase 3 (endpoint /api/me/password).
-                Сейчас — попросите другого admin'а сбросить через раздел Пользователи.
+                {t("admin.settings.passwordSelfServiceNote")}
               </p>
             </div>
             <TwoFactorSection enabled={user.twoFactorEnabled} />
             <div>
               <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                Сессия
+                {t("admin.settings.session")}
               </p>
               <p className="mt-1 text-sm">
                 <span className="font-mono">dispatchos.sid</span> · cookie · same-origin · httpOnly
@@ -306,6 +310,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 //   POST /api/me/totp/setup   → { secret, otpauthUrl }   (stages secret in session)
 //   POST /api/me/totp/confirm { token } → { enabled: true } (commits to users.totp_secret)
 function TwoFactorSection({ enabled }: { enabled: boolean }) {
+  const { t } = useT();
   const [dialogOpen, setDialogOpen] = useState(false);
   return (
     <div>
@@ -316,20 +321,20 @@ function TwoFactorSection({ enabled }: { enabled: boolean }) {
         <p className="text-sm">
           {enabled ? (
             <span className="inline-flex items-center gap-1.5 text-success">
-              <CheckCircle2 className="h-4 w-4" /> Включено
+              <CheckCircle2 className="h-4 w-4" /> {t("admin.settings.twoFactorOn")}
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 text-warning">
-              <AlertCircle className="h-4 w-4" /> Не включено
+              <AlertCircle className="h-4 w-4" /> {t("admin.settings.twoFactorOff")}
             </span>
           )}
         </p>
         <Button size="sm" variant={enabled ? "outline" : "default"} onClick={() => setDialogOpen(true)}>
-          {enabled ? "Перевыпустить QR" : "Настроить"}
+          {enabled ? t("admin.settings.twoFactorRotate") : t("admin.settings.twoFactorSetup")}
         </Button>
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">
-        Нужно для ролей admin / dispatcher. При перевыпуске старый QR перестаёт работать только после ввода кода из нового.
+        {t("admin.settings.twoFactorHint")}
       </p>
       {dialogOpen && (
         <TotpSetupDialog
@@ -342,6 +347,7 @@ function TwoFactorSection({ enabled }: { enabled: boolean }) {
 }
 
 function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () => void }) {
+  const { t } = useT();
   const { toast } = useToast();
   const qc = useQueryClient();
   // Re-enrolling an already-enabled 2FA (H3) requires the current password first;
@@ -370,12 +376,12 @@ function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () =
     onError: (err) => {
       // On the password step, keep the dialog open and surface the error inline.
       if (enabled && stage === "password") {
-        setPwError(err instanceof ApiError ? err.message : "Неверный пароль.");
+        setPwError(err instanceof ApiError ? err.message : t("admin.settings.totpWrongPassword"));
         return;
       }
       toast({
         variant: "destructive",
-        description: err instanceof ApiError ? err.message : "Не удалось запустить настройку.",
+        description: err instanceof ApiError ? err.message : t("admin.settings.totpSetupFailed"),
       });
       onClose();
     },
@@ -390,7 +396,7 @@ function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () =
   function handleStartReenroll() {
     setPwError(null);
     if (!password) {
-      setPwError("Введите текущий пароль");
+      setPwError(t("admin.settings.totpEnterPassword"));
       return;
     }
     setupMutation.mutate(password);
@@ -402,10 +408,10 @@ function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () =
     onSuccess: () => {
       setStage("done");
       qc.invalidateQueries({ queryKey: ["/api/me"] });
-      toast({ description: "2FA включена. При следующем входе потребуется код." });
+      toast({ description: t("admin.settings.totpEnabledToast") });
     },
     onError: (err) => {
-      setConfirmError(err instanceof ApiError ? err.message : "Неверный код");
+      setConfirmError(err instanceof ApiError ? err.message : t("admin.settings.totpWrongCode"));
     },
   });
 
@@ -413,7 +419,7 @@ function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () =
     setConfirmError(null);
     const clean = token.replace(/\D+/g, "");
     if (clean.length !== 6) {
-      setConfirmError("Код должен быть из 6 цифр");
+      setConfirmError(t("admin.settings.totpCodeLength"));
       return;
     }
     confirmMutation.mutate(clean);
@@ -425,15 +431,15 @@ function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () =
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Настройка 2FA</DialogTitle>
+          <DialogTitle>{t("admin.settings.totpDialogTitle")}</DialogTitle>
           <DialogDescription>
-            Отсканируйте QR в Google Authenticator, 1Password или Authy, затем введите 6-значный код для подтверждения.
+            {t("admin.settings.totpDialogDescription")}
           </DialogDescription>
         </DialogHeader>
 
         {stage === "password" && (
           <div className="space-y-2">
-            <Label htmlFor="totp-current-pw">Текущий пароль</Label>
+            <Label htmlFor="totp-current-pw">{t("admin.settings.currentPassword")}</Label>
             <Input
               id="totp-current-pw"
               type="password"
@@ -445,7 +451,7 @@ function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () =
               onKeyDown={(e) => { if (e.key === "Enter") handleStartReenroll(); }}
             />
             <p className="text-[11px] text-muted-foreground">
-              2FA уже включена. Для перевыпуска подтвердите текущий пароль.
+              {t("admin.settings.totpReenrollHint")}
             </p>
             {pwError && <p className="text-xs text-destructive">{pwError}</p>}
           </div>
@@ -460,18 +466,18 @@ function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () =
         {stage === "scan" && setupData && (
           <div className="space-y-4">
             <div className="flex justify-center rounded-md bg-white p-3">
-              <QRCodeSVG value={setupData.otpauthUrl} size={192} level="M" aria-label="TOTP QR" />
+              <QRCodeSVG value={setupData.otpauthUrl} size={192} level="M" aria-label={t("admin.settings.totpQrAriaLabel")} />
             </div>
             <div>
               <Label className="text-xs uppercase tracking-wider text-muted-foreground">
-                Не сканируется? Введите secret вручную:
+                {t("admin.settings.totpManualSecret")}
               </Label>
               <div className="mt-1 break-all rounded-md bg-muted px-3 py-2 font-mono text-xs">
                 {setupData.secret}
               </div>
             </div>
             <div>
-              <Label htmlFor="totp-confirm">Код из приложения</Label>
+              <Label htmlFor="totp-confirm">{t("admin.settings.totpCodeFromApp")}</Label>
               <Input
                 id="totp-confirm"
                 type="text"
@@ -493,7 +499,7 @@ function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () =
         {stage === "done" && (
           <Alert>
             <CheckCircle2 className="h-4 w-4" />
-            <AlertDescription>2FA включена и будет запрошена при следующем входе.</AlertDescription>
+            <AlertDescription>{t("admin.settings.totpDoneAlert")}</AlertDescription>
           </Alert>
         )}
 
@@ -501,27 +507,27 @@ function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () =
           {stage === "password" && (
             <>
               <Button variant="ghost" onClick={onClose} disabled={setupMutation.isPending}>
-                Отмена
+                {t("common.cancel")}
               </Button>
               <Button onClick={handleStartReenroll} disabled={setupMutation.isPending || !password}>
                 {setupMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Продолжить
+                {t("admin.settings.continue")}
               </Button>
             </>
           )}
           {stage === "scan" && (
             <>
               <Button variant="ghost" onClick={onClose} disabled={confirmMutation.isPending}>
-                Отмена
+                {t("common.cancel")}
               </Button>
               <Button onClick={handleConfirm} disabled={confirmMutation.isPending || token.length < 6}>
                 {confirmMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Подтвердить
+                {t("admin.settings.confirm")}
               </Button>
             </>
           )}
           {stage === "done" && (
-            <Button onClick={onClose}>Готово</Button>
+            <Button onClick={onClose}>{t("common.success")}</Button>
           )}
         </DialogFooter>
       </DialogContent>

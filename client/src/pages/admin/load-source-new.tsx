@@ -32,6 +32,7 @@ import {
   CommandItem,
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import type { AdapterMeta } from "./load-sources";
 
 /**
@@ -57,7 +58,7 @@ const US_STATES = [
 // What config + credential fields each adapter needs. Mirrors the backend
 // adapter contract (server/lib/adapters/*). Stub adapters are listed so the
 // form is ready the moment they're implemented.
-type FieldDef = { key: string; label: string; placeholder?: string; type?: "text" | "number" | "state" };
+type FieldDef = { key: string; label: string; labelKey?: string; placeholder?: string; placeholderKey?: string; type?: "text" | "number" | "state" };
 interface AdapterShape {
   config: FieldDef[];
   credentials: FieldDef[];
@@ -65,22 +66,22 @@ interface AdapterShape {
 const ADAPTER_SHAPES: Record<string, AdapterShape> = {
   mock: {
     config: [
-      { key: "originState", label: "Откуда (штат)", type: "state" },
-      { key: "destinationState", label: "Куда (штат)", type: "state" },
-      { key: "count", label: "Сколько грузов генерировать", type: "number", placeholder: "5" },
+      { key: "originState", label: "Откуда (штат)", labelKey: "admin.loadSourceNew.fieldOriginState", type: "state" },
+      { key: "destinationState", label: "Куда (штат)", labelKey: "admin.loadSourceNew.fieldDestinationState", type: "state" },
+      { key: "count", label: "Сколько грузов генерировать", labelKey: "admin.loadSourceNew.fieldCount", type: "number", placeholder: "5" },
     ],
     credentials: [],
   },
   sylectus_email: {
     config: [
-      { key: "inboundAddress", label: "Inbound адрес", placeholder: "loads+ivan@dispatchos.co" },
+      { key: "inboundAddress", label: "Inbound адрес", labelKey: "admin.loadSourceNew.fieldInboundAddress", placeholder: "loads+ivan@dispatchos.co" },
     ],
     credentials: [],
   },
   super_dispatch: {
     config: [
-      { key: "savedSearchId", label: "Saved Search ID", placeholder: "(опц.)" },
-      { key: "equipmentFilter", label: "Equipment filter", placeholder: "(опц.)" },
+      { key: "savedSearchId", label: "Saved Search ID", placeholder: "(опц.)", placeholderKey: "admin.loadSourceNew.placeholderOptional" },
+      { key: "equipmentFilter", label: "Equipment filter", placeholder: "(опц.)", placeholderKey: "admin.loadSourceNew.placeholderOptional" },
     ],
     credentials: [
       { key: "username", label: "Username" },
@@ -98,11 +99,11 @@ const ADAPTER_SHAPES: Record<string, AdapterShape> = {
       { key: "password", label: "Password" },
     ],
   },
-  rxo_email: { config: [{ key: "fromDomain", label: "From-домен", placeholder: "rxo.com" }], credentials: [] },
-  tql_email: { config: [{ key: "fromDomain", label: "From-домен", placeholder: "tql.com" }], credentials: [] },
-  coyote_email: { config: [{ key: "fromDomain", label: "From-домен", placeholder: "coyote.com" }], credentials: [] },
-  echo_email: { config: [{ key: "fromDomain", label: "From-домен", placeholder: "echo.com" }], credentials: [] },
-  landstar_email: { config: [{ key: "fromDomain", label: "From-домен", placeholder: "landstar.com" }], credentials: [] },
+  rxo_email: { config: [{ key: "fromDomain", label: "From-домен", labelKey: "admin.loadSourceNew.fieldFromDomain", placeholder: "rxo.com" }], credentials: [] },
+  tql_email: { config: [{ key: "fromDomain", label: "From-домен", labelKey: "admin.loadSourceNew.fieldFromDomain", placeholder: "tql.com" }], credentials: [] },
+  coyote_email: { config: [{ key: "fromDomain", label: "From-домен", labelKey: "admin.loadSourceNew.fieldFromDomain", placeholder: "coyote.com" }], credentials: [] },
+  echo_email: { config: [{ key: "fromDomain", label: "From-домен", labelKey: "admin.loadSourceNew.fieldFromDomain", placeholder: "echo.com" }], credentials: [] },
+  landstar_email: { config: [{ key: "fromDomain", label: "From-домен", labelKey: "admin.loadSourceNew.fieldFromDomain", placeholder: "landstar.com" }], credentials: [] },
   chr_navisphere: {
     config: [{ key: "customerCode", label: "Customer Code" }],
     credentials: [
@@ -117,6 +118,7 @@ function shapeFor(adapterKey: string): AdapterShape {
 }
 
 export default function LoadSourceNewPage() {
+  const { t } = useT();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -147,10 +149,10 @@ export default function LoadSourceNewPage() {
   // Steps present depend on whether credentials are needed.
   const steps = needsCreds ? [1, 2, 3, 4] : [1, 2, 4];
   const stepLabels: Record<number, string> = {
-    1: "Адаптер и клиент",
-    2: "Настройки",
-    3: "Доступы",
-    4: "Опрос",
+    1: t("admin.loadSourceNew.step1"),
+    2: t("admin.loadSourceNew.step2"),
+    3: t("admin.loadSourceNew.step3"),
+    4: t("admin.loadSourceNew.step4"),
   };
 
   const createMutation = useMutation({
@@ -182,16 +184,16 @@ export default function LoadSourceNewPage() {
       return apiJson("POST", "/api/admin/load-sources", body);
     },
     onSuccess: () => {
-      toast({ title: "Источник создан" });
+      toast({ title: t("admin.loadSourceNew.sourceCreated") });
       qc.invalidateQueries({ queryKey: ["/api/admin/load-sources"], exact: false });
       setLocation("/load-sources");
     },
     onError: (err: Error) => {
       const msg =
         err instanceof ApiError && err.status === 503
-          ? "Ключ шифрования не настроен на сервере (DISPATCHOS_KEYRING_PRIMARY)."
+          ? t("admin.loadSourceNew.keyringNotConfigured")
           : err.message;
-      toast({ title: "Не удалось создать", description: msg, variant: "destructive" });
+      toast({ title: t("admin.loadSourceNew.createFailed"), description: msg, variant: "destructive" });
     },
   });
 
@@ -216,15 +218,15 @@ export default function LoadSourceNewPage() {
         onClick={() => setLocation("/load-sources")}
         className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
       >
-        <ArrowLeft className="h-4 w-4" /> К источникам
+        <ArrowLeft className="h-4 w-4" /> {t("admin.loadSourceNew.backToSources")}
       </button>
 
       <div>
         <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Admin / Источники грузов / Новый
+          {t("admin.loadSourceNew.breadcrumb")}
         </p>
         <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <Radio className="h-6 w-6 text-primary" /> Новый источник
+          <Radio className="h-6 w-6 text-primary" /> {t("admin.loadSourceNew.title")}
         </h1>
       </div>
 
@@ -258,16 +260,16 @@ export default function LoadSourceNewPage() {
           {step === 1 && (
             <>
               <div className="space-y-1.5">
-                <Label>Адаптер</Label>
+                <Label>{t("admin.loadSourceNew.adapter")}</Label>
                 <Select value={adapterKey} onValueChange={setAdapterKey}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Выберите источник" />
+                    <SelectValue placeholder={t("admin.loadSourceNew.selectSource")} />
                   </SelectTrigger>
                   <SelectContent>
                     {adapters.map((a) => (
                       <SelectItem key={a.key} value={a.key} disabled={!a.implemented}>
                         {a.label}
-                        {!a.implemented && " — скоро"}
+                        {!a.implemented && ` — ${t("admin.loadSourceNew.comingSoon")}`}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -275,12 +277,12 @@ export default function LoadSourceNewPage() {
               </div>
 
               <div className="space-y-1.5">
-                <Label>Клиент</Label>
+                <Label>{t("admin.loadSourceNew.client")}</Label>
                 <ClientCombobox value={clientId} onChange={setClientId} />
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="label">Название</Label>
+                <Label htmlFor="label">{t("admin.loadSourceNew.name")}</Label>
                 <Input
                   id="label"
                   value={label}
@@ -296,19 +298,19 @@ export default function LoadSourceNewPage() {
             <>
               {shape.config.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  У этого адаптера нет дополнительных настроек.
+                  {t("admin.loadSourceNew.noExtraSettings")}
                 </p>
               ) : (
                 shape.config.map((f) => (
                   <div key={f.key} className="space-y-1.5">
-                    <Label>{f.label}</Label>
+                    <Label>{f.labelKey ? t(f.labelKey) : f.label}</Label>
                     {f.type === "state" ? (
                       <Select
                         value={config[f.key] ?? ""}
                         onValueChange={(v) => setConfig((c) => ({ ...c, [f.key]: v }))}
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder="Штат" />
+                          <SelectValue placeholder={t("admin.loadSourceNew.statePlaceholder")} />
                         </SelectTrigger>
                         <SelectContent className="max-h-64">
                           {US_STATES.map((st) => (
@@ -322,7 +324,7 @@ export default function LoadSourceNewPage() {
                       <Input
                         type={f.type === "number" ? "number" : "text"}
                         value={config[f.key] ?? ""}
-                        placeholder={f.placeholder}
+                        placeholder={f.placeholderKey ? t(f.placeholderKey) : f.placeholder}
                         onChange={(e) => setConfig((c) => ({ ...c, [f.key]: e.target.value }))}
                       />
                     )}
@@ -336,12 +338,11 @@ export default function LoadSourceNewPage() {
           {step === 3 && needsCreds && (
             <>
               <p className="text-xs text-muted-foreground">
-                Доступы шифруются на сервере (AES-256-GCM) и никогда не
-                показываются в интерфейсе.
+                {t("admin.loadSourceNew.credentialsNotice")}
               </p>
               {shape.credentials.map((f) => (
                 <div key={f.key} className="space-y-1.5">
-                  <Label>{f.label}</Label>
+                  <Label>{f.labelKey ? t(f.labelKey) : f.label}</Label>
                   <Input
                     type="password"
                     autoComplete="new-password"
@@ -357,7 +358,7 @@ export default function LoadSourceNewPage() {
           {step === 4 && (
             <>
               <div className="space-y-1.5">
-                <Label htmlFor="poll">Интервал опроса (минуты)</Label>
+                <Label htmlFor="poll">{t("admin.loadSourceNew.pollInterval")}</Label>
                 <Input
                   id="poll"
                   type="number"
@@ -367,18 +368,18 @@ export default function LoadSourceNewPage() {
                   onChange={(e) => setPollIntervalMin(e.target.value)}
                 />
                 <p className="text-[11px] text-muted-foreground">
-                  Cron опрашивает источник каждые N минут (1–1440).
+                  {t("admin.loadSourceNew.pollHint")}
                 </p>
               </div>
               <div className="space-y-1.5">
-                <Label>Статус при создании</Label>
+                <Label>{t("admin.loadSourceNew.statusOnCreate")}</Label>
                 <Select value={status} onValueChange={(v) => setStatus(v as "active" | "paused")}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="paused">На паузе (не опрашивать пока)</SelectItem>
-                    <SelectItem value="active">Активен (начать опрос)</SelectItem>
+                    <SelectItem value="paused">{t("admin.loadSourceNew.statusPaused")}</SelectItem>
+                    <SelectItem value="active">{t("admin.loadSourceNew.statusActive")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -390,7 +391,7 @@ export default function LoadSourceNewPage() {
       {/* Nav buttons */}
       <div className="flex items-center justify-between">
         <Button variant="outline" onClick={goBack}>
-          <ArrowLeft className="h-4 w-4" /> Назад
+          <ArrowLeft className="h-4 w-4" /> {t("admin.loadSourceNew.back")}
         </Button>
         {isLastStep ? (
           <Button
@@ -402,14 +403,14 @@ export default function LoadSourceNewPage() {
             ) : (
               <Check className="h-4 w-4" />
             )}
-            Создать источник
+            {t("admin.loadSourceNew.createSource")}
           </Button>
         ) : (
           <Button
             onClick={goNext}
             disabled={(step === 1 && !step1Valid) || (step === 3 && !step3Valid)}
           >
-            Далее <ArrowRight className="h-4 w-4" />
+            {t("admin.loadSourceNew.next")} <ArrowRight className="h-4 w-4" />
           </Button>
         )}
       </div>
@@ -418,6 +419,7 @@ export default function LoadSourceNewPage() {
 }
 
 function ClientCombobox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { t } = useT();
   const [open, setOpen] = useState(false);
   const { data: clients = [], isLoading } = useQuery<Client[]>({
     queryKey: ["/api/clients"],
@@ -445,7 +447,7 @@ function ClientCombobox({ value, onChange }: { value: string; onChange: (v: stri
             </span>
           ) : (
             <span className="text-muted-foreground">
-              {isLoading ? "Загрузка..." : "Выберите клиента"}
+              {isLoading ? t("common.loading") : t("admin.loadSourceNew.selectClient")}
             </span>
           )}
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
@@ -453,8 +455,8 @@ function ClientCombobox({ value, onChange }: { value: string; onChange: (v: stri
       </PopoverTrigger>
       <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
         <Command>
-          <CommandInput placeholder="Поиск по имени, MC или ID..." />
-          <CommandEmpty>Клиенты не найдены.</CommandEmpty>
+          <CommandInput placeholder={t("admin.loadSourceNew.clientSearchPlaceholder")} />
+          <CommandEmpty>{t("admin.loadSourceNew.noClientsFound")}</CommandEmpty>
           <CommandGroup className="max-h-64 overflow-auto">
             {clients.map((c) => (
               <CommandItem

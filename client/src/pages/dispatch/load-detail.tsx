@@ -170,13 +170,13 @@ export default function DispatchLoadDetailPage() {
       <Card className="p-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <StopBlock
-            label="Pickup"
+            label={t("dispatch.load_detail.pickup")}
             city={data.originCity}
             state={data.originState}
             iso={data.pickupAt}
           />
           <StopBlock
-            label="Delivery"
+            label={t("dispatch.load_detail.delivery")}
             city={data.destinationCity}
             state={data.destinationState}
             iso={data.deliveryAt}
@@ -449,7 +449,7 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
                 </p>
                 {load.bookedAt && (
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Booked: {formatDateFull(load.bookedAt)}
+                    {t("dispatch.load_detail.booked_at", { date: formatDateFull(load.bookedAt) })}
                   </p>
                 )}
               </>

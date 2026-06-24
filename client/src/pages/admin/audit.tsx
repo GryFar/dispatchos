@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { DensityProvider } from "@/lib/density";
+import { useT } from "@/lib/i18n";
 
 /**
  * Audit log viewer.
@@ -47,6 +48,7 @@ type AuditListResponse =
   | { items: LegacyAuditEvent[]; nextCursor: string | null; hasMore: boolean; total: number | null };
 
 export default function AuditPage() {
+  const { t } = useT();
   const [q, setQ] = useState("");
   const [entityFilter, setEntityFilter] = useState<"all" | string>("all");
 
@@ -107,11 +109,11 @@ export default function AuditPage() {
         <header className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              Admin / Audit log
+              {t("admin.audit.breadcrumb")}
             </p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">Audit log</h1>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("admin.audit.title")}</h1>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              Все события системы: создание, обновление, ошибки, login'ы.
+              {t("admin.audit.subtitle")}
             </p>
           </div>
         </header>
@@ -122,7 +124,7 @@ export default function AuditPage() {
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Поиск: event, entityId, actor"
+              placeholder={t("admin.audit.searchPlaceholder")}
               className="pl-9"
             />
           </div>
@@ -131,7 +133,7 @@ export default function AuditPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Все сущности</SelectItem>
+              <SelectItem value="all">{t("admin.audit.allEntities")}</SelectItem>
               {entityTypes.map((t) => (
                 <SelectItem key={t} value={t}>{t}</SelectItem>
               ))}
@@ -141,7 +143,7 @@ export default function AuditPage() {
 
         {error ? (
           <Alert variant="destructive">
-            <AlertDescription>Не удалось загрузить audit: {(error as Error).message}</AlertDescription>
+            <AlertDescription>{t("admin.audit.loadError", { message: (error as Error).message })}</AlertDescription>
           </Alert>
         ) : (
           <AuditTable rows={rows} loading={isLoading} userById={userById} />
@@ -149,9 +151,9 @@ export default function AuditPage() {
 
         {events.length > 0 && (
           <p className="text-xs text-muted-foreground">
-            Всего: {events.length}
-            {(q || entityFilter !== "all") && ` · отфильтровано: ${rows.length}`}
-            {Array.isArray(data) && events.length >= 100 && " · показаны последние"}
+            {t("admin.audit.total", { count: events.length })}
+            {(q || entityFilter !== "all") && ` · ${t("admin.audit.filtered", { count: rows.length })}`}
+            {Array.isArray(data) && events.length >= 100 && ` · ${t("admin.audit.showingLast")}`}
           </p>
         )}
       </div>
@@ -168,10 +170,11 @@ function AuditTable({
   loading: boolean;
   userById: Map<string, string>;
 }) {
+  const { t } = useT();
   const columns: DataTableColumn<LegacyAuditEvent & { createdAt: string }>[] = [
     {
       key: "when",
-      header: "Когда",
+      header: t("admin.audit.colWhen"),
       cell: (e) => (
         <span className="text-[10px] text-muted-foreground" title={e.createdAt ? formatDateFull(e.createdAt) : ""}>
           {e.createdAt ? formatRelativeAgo(e.createdAt) : "—"}
@@ -181,7 +184,7 @@ function AuditTable({
     },
     {
       key: "event",
-      header: "Событие",
+      header: t("admin.audit.colEvent"),
       cell: (e) => (
         <span className="font-mono text-[11px]">{e.eventType}</span>
       ),
@@ -189,7 +192,7 @@ function AuditTable({
     },
     {
       key: "entity",
-      header: "Сущность",
+      header: t("admin.audit.colEntity"),
       cell: (e) =>
         e.entityType ? (
           <div className="flex items-center gap-2">
@@ -208,7 +211,7 @@ function AuditTable({
     },
     {
       key: "actor",
-      header: "Actor",
+      header: t("admin.audit.colActor"),
       cell: (e) => {
         // Prefer email; else resolve the id to a name; else show raw id; else system.
         const resolved = e.actorUserId ? userById.get(e.actorUserId) : undefined;
@@ -216,14 +219,14 @@ function AuditTable({
         if (resolved) return <span className="text-[11px]">{resolved}</span>;
         if (e.actorUserId)
           return <span className="font-mono text-[10px] text-muted-foreground">{e.actorUserId}</span>;
-        return <span className="text-[10px] text-muted-foreground">система</span>;
+        return <span className="text-[10px] text-muted-foreground">{t("admin.audit.system")}</span>;
       },
       width: "180px",
       hideOnMobile: true,
     },
     {
       key: "payload",
-      header: "Payload",
+      header: t("admin.audit.colPayload"),
       cell: (e) =>
         e.payload ? (
           <code className="block max-w-md truncate rounded bg-muted/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
@@ -244,8 +247,8 @@ function AuditTable({
       empty={
         <EmptyState
           icon={<History />}
-          title="Нет событий"
-          description="Audit пуст. Любое действие admin'а пишет событие сюда."
+          title={t("admin.audit.emptyTitle")}
+          description={t("admin.audit.emptyDescription")}
         />
       }
     />

@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { DensityProvider } from "@/lib/density";
+import { useT } from "@/lib/i18n";
 
 /**
  * Loads page — все грузы в системе. Compact density (много колонок).
@@ -27,6 +28,7 @@ import { DensityProvider } from "@/lib/density";
  * Filtering is client-side (acceptable до пары тысяч строк).
  */
 export default function LoadsPage() {
+  const { t } = useT();
   const [q, setQ] = useState("");
   const [equipFilter, setEquipFilter] = useState<"all" | string>("all");
   const [ppmRange, setPpmRange] = useState<"all" | "low" | "mid" | "high">("all");
@@ -70,11 +72,11 @@ export default function LoadsPage() {
         <header className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              Admin / Грузы
+              {t("admin.loads.eyebrow")}
             </p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">Грузы</h1>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("admin.loads.title")}</h1>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              История всех грузов: ставки, расстояние, broker, market quality.
+              {t("admin.loads.subtitle")}
             </p>
           </div>
         </header>
@@ -85,7 +87,7 @@ export default function LoadsPage() {
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Поиск: broker, MC, origin/destination, ID"
+              placeholder={t("admin.loads.searchPlaceholder")}
               className="pl-9"
             />
           </div>
@@ -94,7 +96,7 @@ export default function LoadsPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Все equipment</SelectItem>
+              <SelectItem value="all">{t("admin.loads.allEquipment")}</SelectItem>
               <SelectItem value="enclosed_car_hauler">Enclosed Car Hauler</SelectItem>
               <SelectItem value="open_car_hauler">Open Car Hauler</SelectItem>
               <SelectItem value="hotshot_flatbed">Hotshot Flatbed</SelectItem>
@@ -106,7 +108,7 @@ export default function LoadsPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Все PPM</SelectItem>
+              <SelectItem value="all">{t("admin.loads.allPpm")}</SelectItem>
               <SelectItem value="high">High ($2.50+)</SelectItem>
               <SelectItem value="mid">Mid ($1.80–$2.50)</SelectItem>
               <SelectItem value="low">Low (&lt;$1.80)</SelectItem>
@@ -116,7 +118,7 @@ export default function LoadsPage() {
 
         {error ? (
           <Alert variant="destructive">
-            <AlertDescription>Не удалось загрузить грузы: {(error as Error).message}</AlertDescription>
+            <AlertDescription>{t("admin.loads.loadError", { message: (error as Error).message })}</AlertDescription>
           </Alert>
         ) : (
           <LoadsTable rows={rows} loading={isLoading} />
@@ -124,8 +126,8 @@ export default function LoadsPage() {
 
         {data && (
           <p className="text-xs text-muted-foreground">
-            Всего: {data.length}
-            {(q || equipFilter !== "all" || ppmRange !== "all") && ` · отфильтровано: ${rows.length}`}
+            {t("admin.loads.total", { count: data.length })}
+            {(q || equipFilter !== "all" || ppmRange !== "all") && t("admin.loads.filtered", { count: rows.length })}
           </p>
         )}
       </div>
@@ -138,11 +140,12 @@ function computePpm(l: Load): number {
 }
 
 function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
+  const { t } = useT();
   const [, setLocation] = useLocation();
   const columns: DataTableColumn<Load>[] = [
     {
       key: "lane",
-      header: "Lane",
+      header: t("admin.loads.colLane"),
       cell: (l) => (
         <div className="min-w-0">
           <p className="truncate text-xs font-medium">
@@ -156,7 +159,7 @@ function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
     },
     {
       key: "rate",
-      header: "Rate",
+      header: t("admin.loads.colRate"),
       align: "right",
       mono: true,
       cell: (l) => <MoneyCell value={l.rate} />,
@@ -164,7 +167,7 @@ function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
     },
     {
       key: "miles",
-      header: "Miles",
+      header: t("admin.loads.colMiles"),
       align: "right",
       mono: true,
       cell: (l) => formatMiles(l.loadedMiles),
@@ -173,7 +176,7 @@ function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
     },
     {
       key: "ppm",
-      header: "PPM",
+      header: t("admin.loads.colPpm"),
       align: "right",
       mono: true,
       cell: (l) => {
@@ -185,7 +188,7 @@ function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
     },
     {
       key: "broker",
-      header: "Broker",
+      header: t("admin.loads.colBroker"),
       cell: (l) => (
         <div className="min-w-0">
           <p className="truncate text-xs font-medium">{l.brokerName}</p>
@@ -198,7 +201,7 @@ function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
     },
     {
       key: "fraudRisk",
-      header: "Fraud",
+      header: t("admin.loads.colFraud"),
       align: "center",
       cell: (l) => {
         const variant = l.fraudRisk >= 70 ? "stop" : l.fraudRisk >= 40 ? "verify" : "clean";
@@ -209,14 +212,14 @@ function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
     },
     {
       key: "equipment",
-      header: "Type",
+      header: t("admin.loads.colType"),
       cell: (l) => <span className="text-xs capitalize">{l.equipment.replace("_", " ")}</span>,
       width: "90px",
       hideOnMobile: true,
     },
     {
       key: "pickup",
-      header: "Pickup",
+      header: t("admin.loads.colPickup"),
       cell: (l) => <span className="text-xs text-muted-foreground">{formatDate(l.pickupAt)}</span>,
       width: "120px",
       hideOnMobile: true,
@@ -233,8 +236,8 @@ function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
       empty={
         <EmptyState
           icon={<Package />}
-          title="Нет грузов"
-          description="Грузы появятся после CSV-импорта или email-ingest. Можно добавить через legacy-дашборд."
+          title={t("admin.loads.emptyTitle")}
+          description={t("admin.loads.emptyDescription")}
         />
       }
     />

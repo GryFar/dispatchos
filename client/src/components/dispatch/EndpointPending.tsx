@@ -1,5 +1,6 @@
 import { Clock, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /**
  * EndpointPending — баннер для экранов, чей backend будет реализован в Phase 3.
@@ -16,6 +17,7 @@ export function EndpointPending({
   description?: string;
   className?: string;
 }) {
+  const { t } = useT();
   return (
     <div
       className={cn(
@@ -39,10 +41,9 @@ export function EndpointPending({
           </div>
         </div>
         <div className="space-y-1.5">
-          <p className="text-sm font-semibold">Раздел будет доступен после Phase 3</p>
+          <p className="text-sm font-semibold">{t("dispatch.EndpointPending.title")}</p>
           <p className="mx-auto max-w-md text-xs leading-relaxed text-muted-foreground">
-            {description ??
-              "Endpoint ещё не реализован на сервере. UI готов и подключён — как только бэкендер выкатит, данные появятся автоматически."}
+            {description ?? t("dispatch.EndpointPending.description")}
           </p>
           <p className="pt-1 font-mono text-[11px] text-muted-foreground">
             <ExternalLink className="mr-1 inline-block h-3 w-3" />

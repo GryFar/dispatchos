@@ -168,19 +168,19 @@ export default function SignupPage() {
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
         <div className="space-y-1.5">
           <Label htmlFor="inviteCode">
-            {t("signup.inviteCode")} <span className="text-muted-foreground">— опционально</span>
+            {t("signup.inviteCode")} <span className="text-muted-foreground">{t("signup.optionalSuffix")}</span>
           </Label>
           <Input
             id="inviteCode"
             type="text"
             autoFocus
             autoComplete="off"
-            placeholder="DOS-XXXX-XXXX-XXXX (или оставьте пустым)"
+            placeholder={t("signup.inviteCodePlaceholder")}
             className="font-mono uppercase tracking-wider"
             {...form.register("inviteCode")}
           />
           <p className="text-xs text-muted-foreground">
-            Есть код приглашения — введите его. Регистрируете свою компанию — оставьте поле пустым.
+            {t("signup.inviteCodeHint")}
           </p>
           {form.formState.errors.inviteCode && (
             <p className="text-xs text-destructive">{form.formState.errors.inviteCode.message}</p>
@@ -333,7 +333,7 @@ function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue
       </div>
 
       <div className="flex justify-center rounded-md border border-border bg-card p-3">
-        <QRCodeSVG value={data.otpauthUrl!} size={176} level="M" aria-label="TOTP QR" />
+        <QRCodeSVG value={data.otpauthUrl!} size={176} level="M" aria-label={t("signup.totpQrAria")} />
       </div>
 
       <div className="space-y-1.5">
@@ -583,7 +583,7 @@ function PostSignupEmailVerify({
             disabled={sending}
           >
             {sending && <Loader2 className="mr-2 h-3 w-3 animate-spin" />}
-            Resend code
+            {t("auth.emailVerify.resend")}
           </Button>
         )
       )}
@@ -616,7 +616,7 @@ function PostSignupPhoneVerify({ onContinue }: { onContinue: () => void }) {
   async function handleSendCode() {
     const e164 = toE164Us(phone);
     if (!e164) {
-      setError("Please enter a valid US phone number.");
+      setError(t("auth.phoneVerify.invalidPhone"));
       return;
     }
     setSending(true);
@@ -637,7 +637,7 @@ function PostSignupPhoneVerify({ onContinue }: { onContinue: () => void }) {
           return;
         }
         if ((err.body as { error?: string } | null)?.error === "phone_type_not_allowed") {
-          setError("VoIP and landline numbers are not supported. Use a mobile number.");
+          setError(t("auth.phoneVerify.voipNotAllowed"));
           return;
         }
         setError(err.message);

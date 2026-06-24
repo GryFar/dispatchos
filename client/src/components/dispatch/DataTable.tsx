@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { densityClass, type Density } from "@/lib/density";
 import { EmptyState } from "./EmptyState";
+import { useT } from "@/lib/i18n";
 
 /**
  * DataTable — лёгкая обёртка над <table> с поддержкой density,
@@ -51,6 +52,7 @@ export function DataTable<T>({
   empty,
   className,
 }: DataTableProps<T>) {
+  const { t } = useT();
   const cellPad = densityClass(density, {
     compact: "py-2 px-3",
     comfortable: "py-3 px-4",
@@ -112,7 +114,7 @@ export function DataTable<T>({
     return empty ? (
       <>{empty}</>
     ) : (
-      <EmptyState title="Нет данных" description="Здесь пока пусто." />
+      <EmptyState title={t("dispatch.DataTable.emptyTitle")} description={t("dispatch.DataTable.emptyDescription")} />
     );
   }
 

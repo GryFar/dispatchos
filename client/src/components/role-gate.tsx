@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { Loader2 } from "lucide-react";
 import type { UserRole } from "@shared/schema";
 import { useAuth } from "@/lib/use-auth";
+import { useT } from "@/lib/i18n";
 
 /**
  * RoleGate — оборачивает страницу/портал.
@@ -20,6 +21,7 @@ import { useAuth } from "@/lib/use-auth";
  * Никаких 403-page'ей — просто незаметно отправляем туда, где user должен быть.
  */
 export function RoleGate({ allow, children }: { allow: UserRole[]; children: ReactNode }) {
+  const { t } = useT();
   const { user, isLoading } = useAuth();
   const [, setLocation] = useLocation();
 
@@ -46,7 +48,7 @@ export function RoleGate({ allow, children }: { allow: UserRole[]; children: Rea
             <div className="absolute inset-0 -m-2 animate-pulse rounded-full bg-primary/20 blur-md" />
             <Loader2 className="relative h-6 w-6 animate-spin text-primary" />
           </div>
-          <p className="text-xs text-muted-foreground">Загрузка...</p>
+          <p className="text-xs text-muted-foreground">{t("common.loading")}</p>
         </div>
       </div>
     );

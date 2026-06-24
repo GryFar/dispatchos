@@ -22,6 +22,7 @@ import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useT } from "@/lib/i18n";
 
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -42,10 +43,10 @@ function formatTime(value: string) {
   }).format(new Date(value));
 }
 
-function verdictLabel(verdict: ScoredLoad["verdict"]) {
-  if (verdict === "book") return "Брать";
-  if (verdict === "negotiate") return "Торг";
-  return "Стоп";
+function verdictLabel(verdict: ScoredLoad["verdict"], t: (key: string) => string) {
+  if (verdict === "book") return t("admin.legacyDashboard.verdictBook");
+  if (verdict === "negotiate") return t("admin.legacyDashboard.verdictNegotiate");
+  return t("admin.legacyDashboard.verdictStop");
 }
 
 function verdictClass(verdict: ScoredLoad["verdict"]) {
@@ -204,6 +205,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function AuthGate({ children }: { children: React.ReactNode }) {
+  const { t } = useT();
   const { data: auth, isLoading } = useQuery<any>({
     queryKey: ["/api/auth/status"],
     queryFn: async () => {
@@ -250,32 +252,32 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     <main className="grid min-h-screen place-items-center bg-background p-6 text-foreground">
       <Card className="w-full max-w-xl surface-card">
         <CardHeader>
-          <CardTitle>DispatchOS security</CardTitle>
+          <CardTitle>{t("admin.legacyDashboard.securityTitle")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {error ? <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm">{error}</div> : null}
           {!auth?.isConfigured ? (
             <form className="space-y-3" onSubmit={submitSetup}>
-              <p className="text-sm text-muted-foreground">First launch: create local owner password and 2FA secret.</p>
-              <Field label="Username"><Input value={setup.username} onChange={(e) => setSetup({ ...setup, username: e.target.value })} /></Field>
-              <Field label="Password, 10+ chars"><Input type="password" value={setup.password} onChange={(e) => setSetup({ ...setup, password: e.target.value })} /></Field>
-              <Button type="submit">Create owner + 2FA</Button>
+              <p className="text-sm text-muted-foreground">{t("admin.legacyDashboard.firstLaunchHint")}</p>
+              <Field label={t("admin.legacyDashboard.username")}><Input value={setup.username} onChange={(e) => setSetup({ ...setup, username: e.target.value })} /></Field>
+              <Field label={t("admin.legacyDashboard.passwordMin")}><Input type="password" value={setup.password} onChange={(e) => setSetup({ ...setup, password: e.target.value })} /></Field>
+              <Button type="submit">{t("admin.legacyDashboard.createOwner2fa")}</Button>
               {setupResult ? (
                 <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-sm">
-                  <p className="font-semibold">Save this TOTP secret now:</p>
+                  <p className="font-semibold">{t("admin.legacyDashboard.saveTotpNow")}</p>
                   <p className="mt-1 font-mono">{setupResult.totpSecret}</p>
                   <p className="mt-2 text-muted-foreground break-all">{setupResult.otpauthUrl}</p>
-                  <p className="mt-2">Add it to Google Authenticator, Authy, 1Password, or Apple Passwords. Then login below.</p>
+                  <p className="mt-2">{t("admin.legacyDashboard.addToAuthenticator")}</p>
                 </div>
               ) : null}
             </form>
           ) : (
             <form className="space-y-3" onSubmit={submitLogin}>
-              <p className="text-sm text-muted-foreground">Login with password and 6-digit authenticator code.</p>
-              <Field label="Username"><Input value={login.username} onChange={(e) => setLogin({ ...login, username: e.target.value })} /></Field>
-              <Field label="Password"><Input type="password" value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} /></Field>
-              <Field label="2FA code"><Input inputMode="numeric" value={login.token} onChange={(e) => setLogin({ ...login, token: e.target.value })} /></Field>
-              <Button type="submit">Login</Button>
+              <p className="text-sm text-muted-foreground">{t("admin.legacyDashboard.loginHint")}</p>
+              <Field label={t("admin.legacyDashboard.username")}><Input value={login.username} onChange={(e) => setLogin({ ...login, username: e.target.value })} /></Field>
+              <Field label={t("admin.legacyDashboard.password")}><Input type="password" value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} /></Field>
+              <Field label={t("admin.legacyDashboard.twoFaCode")}><Input inputMode="numeric" value={login.token} onChange={(e) => setLogin({ ...login, token: e.target.value })} /></Field>
+              <Button type="submit">{t("common.login")}</Button>
             </form>
           )}
         </CardContent>
@@ -285,6 +287,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 function OperatorForms({ clientId, clients, loads }: { clientId: string; clients: DispatchBoard["clients"]; loads: ScoredLoad[] }) {
+  const { t } = useT();
   const [clientForm, setClientForm] = useState(emptyClientForm);
   const [locationForm, setLocationForm] = useState(emptyLocationForm);
   const [loadForm, setLoadForm] = useState(emptyLoadForm);
@@ -331,7 +334,7 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
       },
     });
     setClientForm(emptyClientForm);
-    await refresh("Client saved. Ranking refreshed.");
+    await refresh(t("admin.legacyDashboard.statusClientSaved"));
   }
 
   async function submitLocation(event: FormEvent) {
@@ -347,7 +350,7 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
       notes: locationForm.notes,
     });
     setLocationForm(emptyLocationForm);
-    await refresh("/loc updated. Loads re-ranked from new position.");
+    await refresh(t("admin.legacyDashboard.statusLocUpdated"));
   }
 
   async function submitLoad(event: FormEvent) {
@@ -375,14 +378,14 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
       notes: loadForm.notes,
     });
     setLoadForm(emptyLoadForm);
-    await refresh("Load saved. Dispatch score recalculated.");
+    await refresh(t("admin.legacyDashboard.statusLoadSaved"));
   }
 
   async function submitBroker(event: FormEvent) {
     event.preventDefault();
     const response = await apiRequest("POST", "/api/broker/check", brokerForm);
     setBrokerResult(await response.json());
-    await refresh("Broker check saved to records.");
+    await refresh(t("admin.legacyDashboard.statusBrokerSaved"));
   }
 
   async function submitDocument(event: FormEvent) {
@@ -397,14 +400,14 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
       notes: documentForm.notes,
     });
     setDocumentForm(emptyDocumentForm);
-    await refresh("Document metadata saved.");
+    await refresh(t("admin.legacyDashboard.statusDocumentSaved"));
   }
 
   async function submitCsv(event: FormEvent) {
     event.preventDefault();
     const response = await apiRequest("POST", "/api/loads/import-csv", { csv: csvText });
     const result = await response.json();
-    await refresh(`CSV import complete: ${result.created.length} loads created, ${result.errors.length} errors.`);
+    await refresh(t("admin.legacyDashboard.statusCsvImported", { created: result.created.length, errors: result.errors.length }));
   }
 
   async function fetchDrivePlan() {
@@ -415,7 +418,7 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
   async function createLocalDriveFolders() {
     const response = await apiRequest("POST", "/api/drive/create-local-folders", { clientId });
     setDrivePlan(await response.json());
-    await refresh("Local Drive folder structure created under dispatchos_data/drive.");
+    await refresh(t("admin.legacyDashboard.statusDriveFoldersCreated"));
   }
 
   async function submitTelegram(event: FormEvent) {
@@ -430,20 +433,20 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
       lng: telegramForm.lng ? Number(telegramForm.lng) : undefined,
     });
     setTelegramResult(await response.json());
-    await refresh(`Telegram ${telegramForm.command} processed.`);
+    await refresh(t("admin.legacyDashboard.statusTelegramProcessed", { command: telegramForm.command }));
   }
 
   async function submitEmail(event: FormEvent) {
     event.preventDefault();
     const response = await apiRequest("POST", "/api/email/ingest", emailForm);
     setEmailResult(await response.json());
-    await refresh("Broker email ingested.");
+    await refresh(t("admin.legacyDashboard.statusEmailIngested"));
   }
 
   async function submitUpload(event: FormEvent) {
     event.preventDefault();
     if (!uploadFile) {
-      setStatus("Choose a file before upload.");
+      setStatus(t("admin.legacyDashboard.statusChooseFile"));
       return;
     }
     const form = new FormData();
@@ -457,174 +460,174 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
     if (!response.ok) throw new Error(await response.text());
     setUploadFile(null);
     setUploadForm(emptyUploadForm);
-    await refresh("File uploaded locally and document record saved.");
+    await refresh(t("admin.legacyDashboard.statusFileUploaded"));
   }
 
   return (
     <Card className="surface-card">
       <CardHeader>
-        <CardTitle className="text-lg">Operator workflow</CardTitle>
+        <CardTitle className="text-lg">{t("admin.legacyDashboard.operatorWorkflow")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
         {status ? <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm">{status}</div> : null}
 
         <form className="space-y-3 rounded-2xl border border-border p-4" onSubmit={submitClient}>
-          <h3 className="font-semibold">1. Add Client</h3>
+          <h3 className="font-semibold">{t("admin.legacyDashboard.step1AddClient")}</h3>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Name"><Input required value={clientForm.name} onChange={(e) => setClientForm({ ...clientForm, name: e.target.value })} /></Field>
-            <Field label="MC"><Input required value={clientForm.mc} onChange={(e) => setClientForm({ ...clientForm, mc: e.target.value })} /></Field>
-            <Field label="Equipment">
+            <Field label={t("admin.legacyDashboard.name")}><Input required value={clientForm.name} onChange={(e) => setClientForm({ ...clientForm, name: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.mc")}><Input required value={clientForm.mc} onChange={(e) => setClientForm({ ...clientForm, mc: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.equipment")}>
               <select className="form-select" value={clientForm.equipment} onChange={(e) => setClientForm({ ...clientForm, equipment: e.target.value })}>
-                <option value="enclosed_car_hauler">Enclosed car hauler</option>
-                <option value="open_car_hauler">Open car hauler</option>
-                <option value="hotshot_flatbed">Hotshot flatbed</option>
-                <option value="sprinter_van">Sprinter van</option>
+                <option value="enclosed_car_hauler">{t("admin.legacyDashboard.equipEnclosed")}</option>
+                <option value="open_car_hauler">{t("admin.legacyDashboard.equipOpen")}</option>
+                <option value="hotshot_flatbed">{t("admin.legacyDashboard.equipHotshot")}</option>
+                <option value="sprinter_van">{t("admin.legacyDashboard.equipSprinter")}</option>
               </select>
             </Field>
-            <Field label="City"><Input required value={clientForm.city} onChange={(e) => setClientForm({ ...clientForm, city: e.target.value })} /></Field>
-            <Field label="State"><Input required value={clientForm.state} onChange={(e) => setClientForm({ ...clientForm, state: e.target.value.toUpperCase() })} /></Field>
-            <Field label="Lat"><Input required value={clientForm.lat} onChange={(e) => setClientForm({ ...clientForm, lat: e.target.value })} /></Field>
-            <Field label="Lng"><Input required value={clientForm.lng} onChange={(e) => setClientForm({ ...clientForm, lng: e.target.value })} /></Field>
-            <Field label="Target PPM"><Input required value={clientForm.targetPpm} onChange={(e) => setClientForm({ ...clientForm, targetPpm: e.target.value })} /></Field>
-            <Field label="Minimum PPM"><Input required value={clientForm.minimumPpm} onChange={(e) => setClientForm({ ...clientForm, minimumPpm: e.target.value })} /></Field>
-            <Field label="MPG"><Input required value={clientForm.mpg} onChange={(e) => setClientForm({ ...clientForm, mpg: e.target.value })} /></Field>
-            <Field label="Fuel $/gal"><Input required value={clientForm.fuelPrice} onChange={(e) => setClientForm({ ...clientForm, fuelPrice: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.city")}><Input required value={clientForm.city} onChange={(e) => setClientForm({ ...clientForm, city: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.state")}><Input required value={clientForm.state} onChange={(e) => setClientForm({ ...clientForm, state: e.target.value.toUpperCase() })} /></Field>
+            <Field label={t("admin.legacyDashboard.lat")}><Input required value={clientForm.lat} onChange={(e) => setClientForm({ ...clientForm, lat: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.lng")}><Input required value={clientForm.lng} onChange={(e) => setClientForm({ ...clientForm, lng: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.targetPpm")}><Input required value={clientForm.targetPpm} onChange={(e) => setClientForm({ ...clientForm, targetPpm: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.minimumPpm")}><Input required value={clientForm.minimumPpm} onChange={(e) => setClientForm({ ...clientForm, minimumPpm: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.mpg")}><Input required value={clientForm.mpg} onChange={(e) => setClientForm({ ...clientForm, mpg: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.fuelPerGal")}><Input required value={clientForm.fuelPrice} onChange={(e) => setClientForm({ ...clientForm, fuelPrice: e.target.value })} /></Field>
           </div>
-          <Field label="Preferred lanes CSV"><Input value={clientForm.preferredLanes} onChange={(e) => setClientForm({ ...clientForm, preferredLanes: e.target.value })} /></Field>
-          <Field label="Avoid states CSV"><Input value={clientForm.avoidStates} onChange={(e) => setClientForm({ ...clientForm, avoidStates: e.target.value.toUpperCase() })} /></Field>
-          <Button data-testid="button-add-client" type="submit">Save client</Button>
+          <Field label={t("admin.legacyDashboard.preferredLanesCsv")}><Input value={clientForm.preferredLanes} onChange={(e) => setClientForm({ ...clientForm, preferredLanes: e.target.value })} /></Field>
+          <Field label={t("admin.legacyDashboard.avoidStatesCsv")}><Input value={clientForm.avoidStates} onChange={(e) => setClientForm({ ...clientForm, avoidStates: e.target.value.toUpperCase() })} /></Field>
+          <Button data-testid="button-add-client" type="submit">{t("admin.legacyDashboard.saveClient")}</Button>
         </form>
 
         <form className="space-y-3 rounded-2xl border border-border p-4" onSubmit={submitLocation}>
-          <h3 className="font-semibold">2. Update /loc</h3>
+          <h3 className="font-semibold">{t("admin.legacyDashboard.step2UpdateLoc")}</h3>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="City"><Input required value={locationForm.city} onChange={(e) => setLocationForm({ ...locationForm, city: e.target.value })} /></Field>
-            <Field label="State"><Input required value={locationForm.state} onChange={(e) => setLocationForm({ ...locationForm, state: e.target.value.toUpperCase() })} /></Field>
-            <Field label="Lat"><Input required value={locationForm.lat} onChange={(e) => setLocationForm({ ...locationForm, lat: e.target.value })} /></Field>
-            <Field label="Lng"><Input required value={locationForm.lng} onChange={(e) => setLocationForm({ ...locationForm, lng: e.target.value })} /></Field>
-            <Field label="Status">
+            <Field label={t("admin.legacyDashboard.city")}><Input required value={locationForm.city} onChange={(e) => setLocationForm({ ...locationForm, city: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.state")}><Input required value={locationForm.state} onChange={(e) => setLocationForm({ ...locationForm, state: e.target.value.toUpperCase() })} /></Field>
+            <Field label={t("admin.legacyDashboard.lat")}><Input required value={locationForm.lat} onChange={(e) => setLocationForm({ ...locationForm, lat: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.lng")}><Input required value={locationForm.lng} onChange={(e) => setLocationForm({ ...locationForm, lng: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.status")}>
               <select className="form-select" value={locationForm.status} onChange={(e) => setLocationForm({ ...locationForm, status: e.target.value })}>
-                <option value="empty">Empty</option>
-                <option value="loaded">Loaded</option>
-                <option value="at_pickup">At pickup</option>
-                <option value="at_delivery">At delivery</option>
-                <option value="delivered">Delivered</option>
-                <option value="offline">Offline</option>
+                <option value="empty">{t("admin.legacyDashboard.statusEmpty")}</option>
+                <option value="loaded">{t("admin.legacyDashboard.statusLoaded")}</option>
+                <option value="at_pickup">{t("admin.legacyDashboard.statusAtPickup")}</option>
+                <option value="at_delivery">{t("admin.legacyDashboard.statusAtDelivery")}</option>
+                <option value="delivered">{t("admin.legacyDashboard.statusDelivered")}</option>
+                <option value="offline">{t("admin.legacyDashboard.statusOffline")}</option>
               </select>
             </Field>
-            <Field label="Available at"><Input type="datetime-local" value={locationForm.availableAt} onChange={(e) => setLocationForm({ ...locationForm, availableAt: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.availableAt")}><Input type="datetime-local" value={locationForm.availableAt} onChange={(e) => setLocationForm({ ...locationForm, availableAt: e.target.value })} /></Field>
           </div>
-          <Field label="Notes"><Textarea value={locationForm.notes} onChange={(e) => setLocationForm({ ...locationForm, notes: e.target.value })} /></Field>
-          <Button data-testid="button-update-location" type="submit">Update location</Button>
+          <Field label={t("admin.legacyDashboard.notes")}><Textarea value={locationForm.notes} onChange={(e) => setLocationForm({ ...locationForm, notes: e.target.value })} /></Field>
+          <Button data-testid="button-update-location" type="submit">{t("admin.legacyDashboard.updateLocation")}</Button>
         </form>
 
         <form className="space-y-3 rounded-2xl border border-border p-4" onSubmit={submitLoad}>
-          <h3 className="font-semibold">3. Add Load</h3>
+          <h3 className="font-semibold">{t("admin.legacyDashboard.step3AddLoad")}</h3>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Source"><Input value={loadForm.source} onChange={(e) => setLoadForm({ ...loadForm, source: e.target.value })} /></Field>
-            <Field label="Equipment">
+            <Field label={t("admin.legacyDashboard.source")}><Input value={loadForm.source} onChange={(e) => setLoadForm({ ...loadForm, source: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.equipment")}>
               <select className="form-select" value={loadForm.equipment} onChange={(e) => setLoadForm({ ...loadForm, equipment: e.target.value })}>
-                <option value="enclosed_car_hauler">Enclosed car hauler</option>
-                <option value="open_car_hauler">Open car hauler</option>
-                <option value="hotshot_flatbed">Hotshot flatbed</option>
-                <option value="sprinter_van">Sprinter van</option>
+                <option value="enclosed_car_hauler">{t("admin.legacyDashboard.equipEnclosed")}</option>
+                <option value="open_car_hauler">{t("admin.legacyDashboard.equipOpen")}</option>
+                <option value="hotshot_flatbed">{t("admin.legacyDashboard.equipHotshot")}</option>
+                <option value="sprinter_van">{t("admin.legacyDashboard.equipSprinter")}</option>
               </select>
             </Field>
-            <Field label="Origin city"><Input required value={loadForm.originCity} onChange={(e) => setLoadForm({ ...loadForm, originCity: e.target.value })} /></Field>
-            <Field label="Origin state"><Input required value={loadForm.originState} onChange={(e) => setLoadForm({ ...loadForm, originState: e.target.value.toUpperCase() })} /></Field>
-            <Field label="Origin lat"><Input required value={loadForm.originLat} onChange={(e) => setLoadForm({ ...loadForm, originLat: e.target.value })} /></Field>
-            <Field label="Origin lng"><Input required value={loadForm.originLng} onChange={(e) => setLoadForm({ ...loadForm, originLng: e.target.value })} /></Field>
-            <Field label="Destination city"><Input required value={loadForm.destinationCity} onChange={(e) => setLoadForm({ ...loadForm, destinationCity: e.target.value })} /></Field>
-            <Field label="Destination state"><Input required value={loadForm.destinationState} onChange={(e) => setLoadForm({ ...loadForm, destinationState: e.target.value.toUpperCase() })} /></Field>
-            <Field label="Destination lat"><Input required value={loadForm.destinationLat} onChange={(e) => setLoadForm({ ...loadForm, destinationLat: e.target.value })} /></Field>
-            <Field label="Destination lng"><Input required value={loadForm.destinationLng} onChange={(e) => setLoadForm({ ...loadForm, destinationLng: e.target.value })} /></Field>
-            <Field label="Rate"><Input required value={loadForm.rate} onChange={(e) => setLoadForm({ ...loadForm, rate: e.target.value })} /></Field>
-            <Field label="Loaded miles"><Input required value={loadForm.loadedMiles} onChange={(e) => setLoadForm({ ...loadForm, loadedMiles: e.target.value })} /></Field>
-            <Field label="Pickup"><Input type="datetime-local" value={loadForm.pickupAt} onChange={(e) => setLoadForm({ ...loadForm, pickupAt: e.target.value })} /></Field>
-            <Field label="Delivery"><Input type="datetime-local" value={loadForm.deliveryAt} onChange={(e) => setLoadForm({ ...loadForm, deliveryAt: e.target.value })} /></Field>
-            <Field label="Broker"><Input required value={loadForm.brokerName} onChange={(e) => setLoadForm({ ...loadForm, brokerName: e.target.value })} /></Field>
-            <Field label="Broker MC"><Input required value={loadForm.brokerMc} onChange={(e) => setLoadForm({ ...loadForm, brokerMc: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.originCity")}><Input required value={loadForm.originCity} onChange={(e) => setLoadForm({ ...loadForm, originCity: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.originState")}><Input required value={loadForm.originState} onChange={(e) => setLoadForm({ ...loadForm, originState: e.target.value.toUpperCase() })} /></Field>
+            <Field label={t("admin.legacyDashboard.originLat")}><Input required value={loadForm.originLat} onChange={(e) => setLoadForm({ ...loadForm, originLat: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.originLng")}><Input required value={loadForm.originLng} onChange={(e) => setLoadForm({ ...loadForm, originLng: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.destinationCity")}><Input required value={loadForm.destinationCity} onChange={(e) => setLoadForm({ ...loadForm, destinationCity: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.destinationState")}><Input required value={loadForm.destinationState} onChange={(e) => setLoadForm({ ...loadForm, destinationState: e.target.value.toUpperCase() })} /></Field>
+            <Field label={t("admin.legacyDashboard.destinationLat")}><Input required value={loadForm.destinationLat} onChange={(e) => setLoadForm({ ...loadForm, destinationLat: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.destinationLng")}><Input required value={loadForm.destinationLng} onChange={(e) => setLoadForm({ ...loadForm, destinationLng: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.rate")}><Input required value={loadForm.rate} onChange={(e) => setLoadForm({ ...loadForm, rate: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.loadedMiles")}><Input required value={loadForm.loadedMiles} onChange={(e) => setLoadForm({ ...loadForm, loadedMiles: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.pickup")}><Input type="datetime-local" value={loadForm.pickupAt} onChange={(e) => setLoadForm({ ...loadForm, pickupAt: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.delivery")}><Input type="datetime-local" value={loadForm.deliveryAt} onChange={(e) => setLoadForm({ ...loadForm, deliveryAt: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.broker")}><Input required value={loadForm.brokerName} onChange={(e) => setLoadForm({ ...loadForm, brokerName: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.brokerMc")}><Input required value={loadForm.brokerMc} onChange={(e) => setLoadForm({ ...loadForm, brokerMc: e.target.value })} /></Field>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="Broker score"><Input value={loadForm.brokerScore} onChange={(e) => setLoadForm({ ...loadForm, brokerScore: e.target.value })} /></Field>
-            <Field label="Fraud risk"><Input value={loadForm.fraudRisk} onChange={(e) => setLoadForm({ ...loadForm, fraudRisk: e.target.value })} /></Field>
-            <Field label="Market quality"><Input value={loadForm.marketQuality} onChange={(e) => setLoadForm({ ...loadForm, marketQuality: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.brokerScore")}><Input value={loadForm.brokerScore} onChange={(e) => setLoadForm({ ...loadForm, brokerScore: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.fraudRisk")}><Input value={loadForm.fraudRisk} onChange={(e) => setLoadForm({ ...loadForm, fraudRisk: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.marketQuality")}><Input value={loadForm.marketQuality} onChange={(e) => setLoadForm({ ...loadForm, marketQuality: e.target.value })} /></Field>
           </div>
-          <Field label="Notes"><Textarea value={loadForm.notes} onChange={(e) => setLoadForm({ ...loadForm, notes: e.target.value })} /></Field>
-          <Button data-testid="button-add-load" type="submit">Save load</Button>
+          <Field label={t("admin.legacyDashboard.notes")}><Textarea value={loadForm.notes} onChange={(e) => setLoadForm({ ...loadForm, notes: e.target.value })} /></Field>
+          <Button data-testid="button-add-load" type="submit">{t("admin.legacyDashboard.saveLoad")}</Button>
         </form>
 
         <div className="grid gap-4 xl:grid-cols-2">
           <form className="space-y-3 rounded-2xl border border-border p-4" onSubmit={submitBroker}>
-            <h3 className="font-semibold">4. Broker Check</h3>
-            <Field label="Broker name"><Input value={brokerForm.brokerName} onChange={(e) => setBrokerForm({ ...brokerForm, brokerName: e.target.value })} /></Field>
-            <Field label="Broker MC"><Input required value={brokerForm.brokerMc} onChange={(e) => setBrokerForm({ ...brokerForm, brokerMc: e.target.value })} /></Field>
-            <Button data-testid="button-broker-check" type="submit">Check broker</Button>
+            <h3 className="font-semibold">{t("admin.legacyDashboard.step4BrokerCheck")}</h3>
+            <Field label={t("admin.legacyDashboard.brokerName")}><Input value={brokerForm.brokerName} onChange={(e) => setBrokerForm({ ...brokerForm, brokerName: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.brokerMc")}><Input required value={brokerForm.brokerMc} onChange={(e) => setBrokerForm({ ...brokerForm, brokerMc: e.target.value })} /></Field>
+            <Button data-testid="button-broker-check" type="submit">{t("admin.legacyDashboard.checkBroker")}</Button>
             {brokerResult ? (
               <div className="rounded-xl border border-border bg-muted/40 p-3 text-sm">
-                <p className="font-semibold">Verdict: {brokerResult.verdict} · Risk {brokerResult.riskScore}</p>
-                <p className="text-muted-foreground">Authority: {brokerResult.authorityStatus} · {brokerResult.authorityAgeMonths} months</p>
+                <p className="font-semibold">{t("admin.legacyDashboard.verdictRiskLine", { verdict: brokerResult.verdict, risk: brokerResult.riskScore })}</p>
+                <p className="text-muted-foreground">{t("admin.legacyDashboard.authorityLine", { status: brokerResult.authorityStatus, months: brokerResult.authorityAgeMonths })}</p>
                 {brokerResult.flags?.map((flag: string) => <p className="mt-1 text-amber-700 dark:text-amber-300" key={flag}>• {flag}</p>)}
               </div>
             ) : null}
           </form>
 
           <form className="space-y-3 rounded-2xl border border-border p-4" onSubmit={submitDocument}>
-            <h3 className="font-semibold">5. Document Metadata</h3>
-            <Field label="Client">
+            <h3 className="font-semibold">{t("admin.legacyDashboard.step5DocumentMetadata")}</h3>
+            <Field label={t("admin.legacyDashboard.client")}>
               <select className="form-select" value={documentForm.clientId || clientId} onChange={(e) => setDocumentForm({ ...documentForm, clientId: e.target.value })}>
                 {clients.map((client) => <option key={client.id} value={client.id}>{client.name}{(client as any).contactPersonName ? ` (${(client as any).contactPersonName})` : ""} · {client.mc}</option>)}
               </select>
             </Field>
-            <Field label="Load optional">
+            <Field label={t("admin.legacyDashboard.loadOptional")}>
               <select className="form-select" value={documentForm.loadId} onChange={(e) => setDocumentForm({ ...documentForm, loadId: e.target.value })}>
-                <option value="">No load selected</option>
+                <option value="">{t("admin.legacyDashboard.noLoadSelected")}</option>
                 {loads.map((load) => <option key={load.id} value={load.id}>{load.originCity} → {load.destinationCity}</option>)}
               </select>
             </Field>
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Type">
+              <Field label={t("admin.legacyDashboard.type")}>
                 <select className="form-select" value={documentForm.type} onChange={(e) => setDocumentForm({ ...documentForm, type: e.target.value })}>
-                  <option value="rate_confirmation">Rate confirmation</option>
-                  <option value="bol">BOL</option>
-                  <option value="pod">POD</option>
-                  <option value="coi">COI</option>
-                  <option value="w9">W-9</option>
-                  <option value="authorization_letter">Authorization letter</option>
-                  <option value="other">Other</option>
+                  <option value="rate_confirmation">{t("admin.legacyDashboard.docRateConfirmation")}</option>
+                  <option value="bol">{t("admin.legacyDashboard.docBol")}</option>
+                  <option value="pod">{t("admin.legacyDashboard.docPod")}</option>
+                  <option value="coi">{t("admin.legacyDashboard.docCoi")}</option>
+                  <option value="w9">{t("admin.legacyDashboard.docW9")}</option>
+                  <option value="authorization_letter">{t("admin.legacyDashboard.docAuthLetter")}</option>
+                  <option value="other">{t("admin.legacyDashboard.docOther")}</option>
                 </select>
               </Field>
-              <Field label="Status">
+              <Field label={t("admin.legacyDashboard.status")}>
                 <select className="form-select" value={documentForm.status} onChange={(e) => setDocumentForm({ ...documentForm, status: e.target.value })}>
-                  <option value="needed">Needed</option>
-                  <option value="received">Received</option>
-                  <option value="submitted">Submitted</option>
-                  <option value="verified">Verified</option>
-                  <option value="issue">Issue</option>
+                  <option value="needed">{t("admin.legacyDashboard.docStatusNeeded")}</option>
+                  <option value="received">{t("admin.legacyDashboard.docStatusReceived")}</option>
+                  <option value="submitted">{t("admin.legacyDashboard.docStatusSubmitted")}</option>
+                  <option value="verified">{t("admin.legacyDashboard.docStatusVerified")}</option>
+                  <option value="issue">{t("admin.legacyDashboard.docStatusIssue")}</option>
                 </select>
               </Field>
             </div>
-            <Field label="File name"><Input required value={documentForm.fileName} onChange={(e) => setDocumentForm({ ...documentForm, fileName: e.target.value })} /></Field>
-            <Field label="Storage URL optional"><Input value={documentForm.storageUrl} onChange={(e) => setDocumentForm({ ...documentForm, storageUrl: e.target.value })} /></Field>
-            <Field label="Notes"><Textarea value={documentForm.notes} onChange={(e) => setDocumentForm({ ...documentForm, notes: e.target.value })} /></Field>
-            <Button data-testid="button-save-document" type="submit">Save document</Button>
+            <Field label={t("admin.legacyDashboard.fileName")}><Input required value={documentForm.fileName} onChange={(e) => setDocumentForm({ ...documentForm, fileName: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.storageUrlOptional")}><Input value={documentForm.storageUrl} onChange={(e) => setDocumentForm({ ...documentForm, storageUrl: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.notes")}><Textarea value={documentForm.notes} onChange={(e) => setDocumentForm({ ...documentForm, notes: e.target.value })} /></Field>
+            <Button data-testid="button-save-document" type="submit">{t("admin.legacyDashboard.saveDocument")}</Button>
           </form>
         </div>
 
         <div className="grid gap-4 xl:grid-cols-2">
           <form className="space-y-3 rounded-2xl border border-border p-4" onSubmit={submitCsv}>
-            <h3 className="font-semibold">6. CSV Import Loads</h3>
-            <p className="text-sm text-muted-foreground">Paste load board export with headers matching the sample.</p>
+            <h3 className="font-semibold">{t("admin.legacyDashboard.step6CsvImport")}</h3>
+            <p className="text-sm text-muted-foreground">{t("admin.legacyDashboard.csvImportHint")}</p>
             <Textarea className="min-h-[180px] font-mono text-xs" value={csvText} onChange={(e) => setCsvText(e.target.value)} />
-            <Button data-testid="button-import-csv" type="submit">Import CSV</Button>
+            <Button data-testid="button-import-csv" type="submit">{t("admin.legacyDashboard.importCsv")}</Button>
           </form>
 
           <div className="space-y-3 rounded-2xl border border-border p-4">
-            <h3 className="font-semibold">7. Google Drive Folder Plan</h3>
-            <p className="text-sm text-muted-foreground">Creates the exact folder blueprint for the selected client. Connector-backed folder creation is next.</p>
+            <h3 className="font-semibold">{t("admin.legacyDashboard.step7DriveFolderPlan")}</h3>
+            <p className="text-sm text-muted-foreground">{t("admin.legacyDashboard.drivePlanHint")}</p>
             <div className="flex flex-wrap gap-2">
-              <Button data-testid="button-drive-plan" type="button" variant="outline" onClick={fetchDrivePlan}>Generate plan</Button>
-              <Button data-testid="button-drive-create-local" type="button" onClick={createLocalDriveFolders}>Create local folders</Button>
+              <Button data-testid="button-drive-plan" type="button" variant="outline" onClick={fetchDrivePlan}>{t("admin.legacyDashboard.generatePlan")}</Button>
+              <Button data-testid="button-drive-create-local" type="button" onClick={createLocalDriveFolders}>{t("admin.legacyDashboard.createLocalFolders")}</Button>
             </div>
             {drivePlan ? (
               <div className="space-y-2">
@@ -641,37 +644,37 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
 
         <div className="grid gap-4 xl:grid-cols-3">
           <form className="space-y-3 rounded-2xl border border-border p-4" onSubmit={submitUpload}>
-            <h3 className="font-semibold">8. Upload Rate Con / BOL / POD</h3>
-            <Field label="Client">
+            <h3 className="font-semibold">{t("admin.legacyDashboard.step8Upload")}</h3>
+            <Field label={t("admin.legacyDashboard.client")}>
               <select className="form-select" value={uploadForm.clientId || clientId} onChange={(e) => setUploadForm({ ...uploadForm, clientId: e.target.value })}>
                 {clients.map((client) => <option key={client.id} value={client.id}>{client.name}{(client as any).contactPersonName ? ` (${(client as any).contactPersonName})` : ""}</option>)}
               </select>
             </Field>
-            <Field label="Load">
+            <Field label={t("admin.legacyDashboard.load")}>
               <select className="form-select" value={uploadForm.loadId} onChange={(e) => setUploadForm({ ...uploadForm, loadId: e.target.value })}>
-                <option value="">No load selected</option>
+                <option value="">{t("admin.legacyDashboard.noLoadSelected")}</option>
                 {loads.map((load) => <option key={load.id} value={load.id}>{load.originCity} → {load.destinationCity}</option>)}
               </select>
             </Field>
-            <Field label="Type">
+            <Field label={t("admin.legacyDashboard.type")}>
               <select className="form-select" value={uploadForm.type} onChange={(e) => setUploadForm({ ...uploadForm, type: e.target.value })}>
-                <option value="rate_confirmation">Rate confirmation</option>
-                <option value="bol">BOL</option>
-                <option value="pod">POD</option>
-                <option value="coi">COI</option>
-                <option value="w9">W-9</option>
-                <option value="authorization_letter">Authorization letter</option>
-                <option value="other">Other</option>
+                <option value="rate_confirmation">{t("admin.legacyDashboard.docRateConfirmation")}</option>
+                <option value="bol">{t("admin.legacyDashboard.docBol")}</option>
+                <option value="pod">{t("admin.legacyDashboard.docPod")}</option>
+                <option value="coi">{t("admin.legacyDashboard.docCoi")}</option>
+                <option value="w9">{t("admin.legacyDashboard.docW9")}</option>
+                <option value="authorization_letter">{t("admin.legacyDashboard.docAuthLetter")}</option>
+                <option value="other">{t("admin.legacyDashboard.docOther")}</option>
               </select>
             </Field>
-            <Field label="File"><Input type="file" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} /></Field>
-            <Field label="Notes"><Textarea value={uploadForm.notes} onChange={(e) => setUploadForm({ ...uploadForm, notes: e.target.value })} /></Field>
-            <Button data-testid="button-upload-document" type="submit">Upload file</Button>
+            <Field label={t("admin.legacyDashboard.file")}><Input type="file" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} /></Field>
+            <Field label={t("admin.legacyDashboard.notes")}><Textarea value={uploadForm.notes} onChange={(e) => setUploadForm({ ...uploadForm, notes: e.target.value })} /></Field>
+            <Button data-testid="button-upload-document" type="submit">{t("admin.legacyDashboard.uploadFile")}</Button>
           </form>
 
           <form className="space-y-3 rounded-2xl border border-border p-4" onSubmit={submitTelegram}>
-            <h3 className="font-semibold">9. Telegram Commands</h3>
-            <Field label="Command">
+            <h3 className="font-semibold">{t("admin.legacyDashboard.step9TelegramCommands")}</h3>
+            <Field label={t("admin.legacyDashboard.command")}>
               <select className="form-select" value={telegramForm.command} onChange={(e) => setTelegramForm({ ...telegramForm, command: e.target.value })}>
                 <option value="/loc">/loc</option>
                 <option value="/yes">/yes</option>
@@ -680,25 +683,25 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
               </select>
             </Field>
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="City"><Input value={telegramForm.city} onChange={(e) => setTelegramForm({ ...telegramForm, city: e.target.value })} /></Field>
-              <Field label="State"><Input value={telegramForm.state} onChange={(e) => setTelegramForm({ ...telegramForm, state: e.target.value.toUpperCase() })} /></Field>
-              <Field label="Lat"><Input value={telegramForm.lat} onChange={(e) => setTelegramForm({ ...telegramForm, lat: e.target.value })} /></Field>
-              <Field label="Lng"><Input value={telegramForm.lng} onChange={(e) => setTelegramForm({ ...telegramForm, lng: e.target.value })} /></Field>
+              <Field label={t("admin.legacyDashboard.city")}><Input value={telegramForm.city} onChange={(e) => setTelegramForm({ ...telegramForm, city: e.target.value })} /></Field>
+              <Field label={t("admin.legacyDashboard.state")}><Input value={telegramForm.state} onChange={(e) => setTelegramForm({ ...telegramForm, state: e.target.value.toUpperCase() })} /></Field>
+              <Field label={t("admin.legacyDashboard.lat")}><Input value={telegramForm.lat} onChange={(e) => setTelegramForm({ ...telegramForm, lat: e.target.value })} /></Field>
+              <Field label={t("admin.legacyDashboard.lng")}><Input value={telegramForm.lng} onChange={(e) => setTelegramForm({ ...telegramForm, lng: e.target.value })} /></Field>
             </div>
-            <Field label="Text"><Textarea value={telegramForm.text} onChange={(e) => setTelegramForm({ ...telegramForm, text: e.target.value })} /></Field>
-            <Button data-testid="button-telegram-command" type="submit">Process command</Button>
+            <Field label={t("admin.legacyDashboard.text")}><Textarea value={telegramForm.text} onChange={(e) => setTelegramForm({ ...telegramForm, text: e.target.value })} /></Field>
+            <Button data-testid="button-telegram-command" type="submit">{t("admin.legacyDashboard.processCommand")}</Button>
             {telegramResult ? <p className="text-sm text-muted-foreground">{telegramResult.reply}</p> : null}
           </form>
 
           <form className="space-y-3 rounded-2xl border border-border p-4" onSubmit={submitEmail}>
-            <h3 className="font-semibold">10. Gmail / Broker Email Ingest</h3>
-            <Field label="From"><Input required value={emailForm.from} onChange={(e) => setEmailForm({ ...emailForm, from: e.target.value })} /></Field>
-            <Field label="Subject"><Input required value={emailForm.subject} onChange={(e) => setEmailForm({ ...emailForm, subject: e.target.value })} /></Field>
-            <Field label="Body"><Textarea required className="min-h-[150px]" value={emailForm.body} onChange={(e) => setEmailForm({ ...emailForm, body: e.target.value })} /></Field>
-            <Button data-testid="button-email-ingest" type="submit">Ingest email</Button>
+            <h3 className="font-semibold">{t("admin.legacyDashboard.step10EmailIngest")}</h3>
+            <Field label={t("admin.legacyDashboard.from")}><Input required value={emailForm.from} onChange={(e) => setEmailForm({ ...emailForm, from: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.subject")}><Input required value={emailForm.subject} onChange={(e) => setEmailForm({ ...emailForm, subject: e.target.value })} /></Field>
+            <Field label={t("admin.legacyDashboard.body")}><Textarea required className="min-h-[150px]" value={emailForm.body} onChange={(e) => setEmailForm({ ...emailForm, body: e.target.value })} /></Field>
+            <Button data-testid="button-email-ingest" type="submit">{t("admin.legacyDashboard.ingestEmail")}</Button>
             {emailResult ? (
               <div className="rounded-xl border border-border bg-muted/40 p-3 text-sm">
-                <p className="font-medium">Possible load: {String(emailResult.parsed?.possibleLoad)}</p>
+                <p className="font-medium">{t("admin.legacyDashboard.possibleLoad", { value: String(emailResult.parsed?.possibleLoad) })}</p>
                 <p className="text-muted-foreground">{JSON.stringify(emailResult.parsed?.extracted)}</p>
               </div>
             ) : null}
@@ -710,6 +713,7 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
 }
 
 function LoadCard({ load, rank }: { load: ScoredLoad; rank: number }) {
+  const { t } = useT();
   return (
     <article className="rounded-2xl border border-border bg-card p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -717,7 +721,7 @@ function LoadCard({ load, rank }: { load: ScoredLoad; rank: number }) {
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline">#{rank}</Badge>
             <Badge className={verdictClass(load.verdict)} variant="outline">
-              {verdictLabel(load.verdict)}
+              {verdictLabel(load.verdict, t)}
             </Badge>
             <Badge variant="secondary">{load.source}</Badge>
           </div>
@@ -727,49 +731,49 @@ function LoadCard({ load, rank }: { load: ScoredLoad; rank: number }) {
             {load.destinationCity}, {load.destinationState}
           </h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            {load.brokerName} · {load.brokerMc} · pickup {formatTime(load.pickupAt)}
+            {load.brokerName} · {load.brokerMc} · {t("admin.legacyDashboard.pickupAt", { time: formatTime(load.pickupAt) })}
           </p>
         </div>
         <div className="text-right">
-          <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Dispatch score</p>
+          <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("admin.legacyDashboard.dispatchScore")}</p>
           <p className={`text-2xl font-semibold ${scoreTone(load.dispatchScore)}`}>{load.dispatchScore}</p>
         </div>
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <div className="mini-stat">
-          <span>Gross</span>
+          <span>{t("admin.legacyDashboard.gross")}</span>
           <strong>{money.format(load.rate)}</strong>
         </div>
         <div className="mini-stat">
-          <span>Net total PPM</span>
+          <span>{t("admin.legacyDashboard.netTotalPpm")}</span>
           <strong>{ppm(load.netPpmTotal)}</strong>
         </div>
         <div className="mini-stat">
-          <span>Loaded / total</span>
+          <span>{t("admin.legacyDashboard.loadedTotal")}</span>
           <strong>
-            {load.loadedMiles} / {load.totalMiles} mi
+            {t("admin.legacyDashboard.milesPair", { loaded: load.loadedMiles, total: load.totalMiles })}
           </strong>
         </div>
         <div className="mini-stat">
-          <span>Deadhead</span>
+          <span>{t("admin.legacyDashboard.deadhead")}</span>
           <strong>
-            {load.deadheadMiles} mi · {Math.round(load.deadheadRatio * 100)}%
+            {t("admin.legacyDashboard.deadheadValue", { miles: load.deadheadMiles, percent: Math.round(load.deadheadRatio * 100) })}
           </strong>
         </div>
         <div className="mini-stat">
-          <span>Est. net</span>
+          <span>{t("admin.legacyDashboard.estNet")}</span>
           <strong>{money.format(load.estimatedNet)}</strong>
         </div>
       </div>
 
       <div className="mt-4 rounded-xl bg-muted/50 p-3">
         <p className="text-sm">
-          <span className="font-medium">Почему так в рейтинге:</span> {load.rankReason}
+          <span className="font-medium">{t("admin.legacyDashboard.whyRanked")}</span> {load.rankReason}
         </p>
         {load.counterOffer ? (
           <p className="mt-2 text-sm text-amber-700 dark:text-amber-300">
-            Counter-offer suggestion: {money.format(load.counterOffer)} чтобы выйти на target net PPM.
+            {t("admin.legacyDashboard.counterOfferSuggestion", { amount: money.format(load.counterOffer) })}
           </p>
         ) : null}
       </div>
@@ -805,6 +809,7 @@ export default function LegacyDashboardPage() {
 }
 
 function DispatchDashboard() {
+  const { t } = useT();
   const [clientId, setClientId] = useState("ivan-enclosed-01");
   const { data, isLoading, isError } = useQuery<DispatchBoard>({
     queryKey: ["/api/dispatch-board", clientId],
@@ -853,10 +858,19 @@ function DispatchDashboard() {
     const highestGross = [...data.loads].sort((a, b) => b.rate - a.rate)[0];
     const best = data.topRecommendation;
     if (highestGross.id === best.id) {
-      return `Самый высокий gross сейчас тоже лучший по score: ${money.format(best.rate)} / ${ppm(best.netPpmTotal)} net total.`;
+      return t("admin.legacyDashboard.comparisonSameBest", { gross: money.format(best.rate), netPpm: ppm(best.netPpmTotal) });
     }
-    return `${best.originCity} → ${best.destinationCity} лучше, чем ${highestGross.originCity} → ${highestGross.destinationCity}: gross ${money.format(best.rate)} против ${money.format(highestGross.rate)}, но net total PPM ${ppm(best.netPpmTotal)} против ${ppm(highestGross.netPpmTotal)} после deadhead.`;
-  }, [data]);
+    return t("admin.legacyDashboard.comparisonBetter", {
+      bestOrigin: best.originCity,
+      bestDest: best.destinationCity,
+      grossOrigin: highestGross.originCity,
+      grossDest: highestGross.destinationCity,
+      bestGross: money.format(best.rate),
+      highestGross: money.format(highestGross.rate),
+      bestNetPpm: ppm(best.netPpmTotal),
+      highestNetPpm: ppm(highestGross.netPpmTotal),
+    });
+  }, [data, t]);
 
   if (isLoading) {
     return (
@@ -878,10 +892,10 @@ function DispatchDashboard() {
       <main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
         <Card className="max-w-md">
           <CardHeader>
-            <CardTitle>DispatchOS не загрузился</CardTitle>
+            <CardTitle>{t("admin.legacyDashboard.loadFailedTitle")}</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-muted-foreground">Проверь backend `/api/dispatch-board` и перезапусти программу.</p>
+            <p className="text-muted-foreground">{t("admin.legacyDashboard.loadFailedHint")}</p>
           </CardContent>
         </Card>
       </main>
@@ -898,7 +912,7 @@ function DispatchDashboard() {
     return (
       <main className="min-h-screen bg-background text-foreground">
         <div className="mx-auto max-w-7xl px-5 py-20 text-center text-muted-foreground">
-          Пока нет данных для дашборда — добавьте клиента и грузы.
+          {t("admin.legacyDashboard.emptyState")}
         </div>
       </main>
     );
@@ -915,18 +929,17 @@ function DispatchDashboard() {
               </div>
               <div>
                 <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">DispatchOS</p>
-                <h1 className="text-xl font-semibold">Location-aware load selection</h1>
+                <h1 className="text-xl font-semibold">{t("admin.legacyDashboard.headerTitle")}</h1>
               </div>
             </div>
             <p className="mt-3 max-w-3xl text-sm text-muted-foreground">
-              Программа ранжирует грузы от текущей позиции клиента: live location, deadhead, net total PPM,
-              pickup feasibility, broker risk и качество destination market. Gross rate больше не решает один.
+              {t("admin.legacyDashboard.headerSubtitle")}
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Select value={clientId} onValueChange={setClientId}>
               <SelectTrigger className="w-full sm:w-[260px]" data-testid="select-client">
-                <SelectValue placeholder="Выбрать клиента" />
+                <SelectValue placeholder={t("admin.legacyDashboard.selectClient")} />
               </SelectTrigger>
               <SelectContent>
                 {data.clients.map((item) => (
@@ -938,7 +951,7 @@ function DispatchDashboard() {
             </Select>
             <Button data-testid="button-request-location" variant="outline">
               <LocateFixed className="mr-2 h-4 w-4" />
-              Send /loc
+              {t("admin.legacyDashboard.sendLoc")}
             </Button>
           </div>
         </div>
@@ -948,27 +961,27 @@ function DispatchDashboard() {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <MetricCard
             icon={<MapPinned className="h-5 w-5" />}
-            label="Current position"
+            label={t("admin.legacyDashboard.currentPosition")}
             value={`${client.currentLocation.city}, ${client.currentLocation.state}`}
-            helper={`${client.currentLocation.source.replaceAll("_", " ")} · updated ${best.locationAgeMinutes} min ago`}
+            helper={t("admin.legacyDashboard.updatedMinAgo", { source: client.currentLocation.source.replaceAll("_", " "), minutes: best.locationAgeMinutes })}
           />
           <MetricCard
             icon={<Clock3 className="h-5 w-5" />}
-            label="Location confidence"
+            label={t("admin.legacyDashboard.locationConfidence")}
             value={`${best.locationConfidence.toUpperCase()} · ${best.locationAgeMinutes}m`}
             helper={data.locationPolicy.command}
           />
           <MetricCard
             icon={<Target className="h-5 w-5" />}
-            label="Target / minimum"
+            label={t("admin.legacyDashboard.targetMinimum")}
             value={`${ppm(client.targetPpm)} / ${ppm(client.minimumPpm)}`}
-            helper={`${client.mpg} MPG · fuel ${money.format(client.fuelPrice)}/gal`}
+            helper={t("admin.legacyDashboard.mpgFuel", { mpg: client.mpg, fuel: money.format(client.fuelPrice) })}
           />
           <MetricCard
             icon={<Gauge className="h-5 w-5" />}
-            label="Best load"
+            label={t("admin.legacyDashboard.bestLoad")}
             value={`${best.originCity} → ${best.destinationCity}`}
-            helper={`${money.format(best.rate)} gross · ${ppm(best.netPpmTotal)} net total`}
+            helper={t("admin.legacyDashboard.grossNetTotal", { gross: money.format(best.rate), netPpm: ppm(best.netPpmTotal) })}
           />
         </div>
 
@@ -977,40 +990,40 @@ function DispatchDashboard() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <CheckCircle2 className="h-5 w-5 text-emerald-600" />
-                Лучший выбор сейчас
+                {t("admin.legacyDashboard.bestChoiceNow")}
               </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="rounded-2xl bg-primary p-5 text-primary-foreground">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div>
-                    <p className="text-sm opacity-80">#{data.loads.findIndex((load) => load.id === best.id) + 1} recommendation</p>
+                    <p className="text-sm opacity-80">{t("admin.legacyDashboard.recommendationRank", { rank: data.loads.findIndex((load) => load.id === best.id) + 1 })}</p>
                     <h2 className="mt-1 text-xl font-semibold">
                       {best.originCity}, {best.originState} → {best.destinationCity}, {best.destinationState}
                     </h2>
                     <p className="mt-2 max-w-2xl text-sm opacity-90">{bestComparison}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm opacity-80">Score</p>
+                    <p className="text-sm opacity-80">{t("admin.legacyDashboard.score")}</p>
                     <p className="text-3xl font-semibold">{best.dispatchScore}</p>
                   </div>
                 </div>
                 <div className="mt-5 grid gap-3 sm:grid-cols-4">
                   <div>
-                    <p className="text-xs uppercase tracking-[0.18em] opacity-70">Net total</p>
+                    <p className="text-xs uppercase tracking-[0.18em] opacity-70">{t("admin.legacyDashboard.netTotal")}</p>
                     <p className="text-lg font-semibold">{ppm(best.netPpmTotal)}</p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-[0.18em] opacity-70">Deadhead</p>
-                    <p className="text-lg font-semibold">{best.deadheadMiles} mi</p>
+                    <p className="text-xs uppercase tracking-[0.18em] opacity-70">{t("admin.legacyDashboard.deadhead")}</p>
+                    <p className="text-lg font-semibold">{t("admin.legacyDashboard.milesValue", { miles: best.deadheadMiles })}</p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-[0.18em] opacity-70">Net</p>
+                    <p className="text-xs uppercase tracking-[0.18em] opacity-70">{t("admin.legacyDashboard.net")}</p>
                     <p className="text-lg font-semibold">{money.format(best.estimatedNet)}</p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-[0.18em] opacity-70">Verdict</p>
-                    <p className="text-lg font-semibold">{verdictLabel(best.verdict)}</p>
+                    <p className="text-xs uppercase tracking-[0.18em] opacity-70">{t("admin.legacyDashboard.verdict")}</p>
+                    <p className="text-lg font-semibold">{verdictLabel(best.verdict, t)}</p>
                   </div>
                 </div>
               </div>
@@ -1021,29 +1034,28 @@ function DispatchDashboard() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <ShieldCheck className="h-5 w-5 text-primary" />
-                Scoring weights
+                {t("admin.legacyDashboard.scoringWeights")}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               {[
-                ["Net total PPM", 42],
-                ["Low deadhead", 18],
-                ["Pickup feasibility", 15],
-                ["Broker/fraud safety", 12],
-                ["Destination market", 8],
-                ["Location confidence", 5],
-              ].map(([label, value]) => (
-                <div key={label}>
+                ["admin.legacyDashboard.weightNetTotalPpm", 42],
+                ["admin.legacyDashboard.weightLowDeadhead", 18],
+                ["admin.legacyDashboard.weightPickupFeasibility", 15],
+                ["admin.legacyDashboard.weightBrokerSafety", 12],
+                ["admin.legacyDashboard.weightDestinationMarket", 8],
+                ["admin.legacyDashboard.weightLocationConfidence", 5],
+              ].map(([labelKey, value]) => (
+                <div key={labelKey}>
                   <div className="mb-1 flex justify-between text-sm">
-                    <span>{label}</span>
+                    <span>{t(String(labelKey))}</span>
                     <span className="text-muted-foreground">{value}%</span>
                   </div>
                   <Progress value={Number(value)} />
                 </div>
               ))}
               <div className="rounded-xl border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
-                Правило: если груз A платит больше gross, но груз B имеет выше net total PPM и меньше deadhead,
-                DispatchOS рекомендует B.
+                {t("admin.legacyDashboard.scoringRule")}
               </div>
             </CardContent>
           </Card>
@@ -1055,12 +1067,12 @@ function DispatchDashboard() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Truck className="h-5 w-5 text-primary" />
-                  Client live state
+                  {t("admin.legacyDashboard.clientLiveState")}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="rounded-2xl border border-border bg-muted/40 p-4">
-                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Driver</p>
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("admin.legacyDashboard.driver")}</p>
                   <p className="mt-1 text-lg font-semibold">
                     {client.name} · {client.mc}
                   </p>
@@ -1068,21 +1080,21 @@ function DispatchDashboard() {
                     <p className="text-xs text-muted-foreground">{(client as any).contactPersonName}</p>
                   )}
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {client.equipment.replaceAll("_", " ")} · status {client.currentLocation.status.replaceAll("_", " ")}
+                    {t("admin.legacyDashboard.equipmentStatusLine", { equipment: client.equipment.replaceAll("_", " "), status: client.currentLocation.status.replaceAll("_", " ") })}
                   </p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="mini-stat">
-                    <span>Available</span>
+                    <span>{t("admin.legacyDashboard.available")}</span>
                     <strong>{formatTime(client.currentLocation.availableAt)}</strong>
                   </div>
                   <div className="mini-stat">
-                    <span>Position age</span>
-                    <strong className={confidenceClass(best.locationConfidence)}>{best.locationAgeMinutes} min</strong>
+                    <span>{t("admin.legacyDashboard.positionAge")}</span>
+                    <strong className={confidenceClass(best.locationConfidence)}>{t("admin.legacyDashboard.minutesValue", { minutes: best.locationAgeMinutes })}</strong>
                   </div>
                 </div>
                 <div>
-                  <p className="mb-2 text-sm font-medium">Preferred lanes</p>
+                  <p className="mb-2 text-sm font-medium">{t("admin.legacyDashboard.preferredLanes")}</p>
                   <div className="flex flex-wrap gap-2">
                     {client.preferredLanes.map((lane) => (
                       <Badge key={lane} variant="secondary">
@@ -1099,11 +1111,11 @@ function DispatchDashboard() {
 
             <Card className="surface-card">
               <CardHeader>
-                <CardTitle className="text-lg">Audit & backup</CardTitle>
+                <CardTitle className="text-lg">{t("admin.legacyDashboard.auditBackup")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <Button asChild data-testid="button-backup-export" variant="outline">
-                  <a href="/api/backup/export">Export JSON backup</a>
+                  <a href="/api/backup/export">{t("admin.legacyDashboard.exportJsonBackup")}</a>
                 </Button>
                 <div className="space-y-2">
                   {auditEvents.map((event) => (
@@ -1119,7 +1131,7 @@ function DispatchDashboard() {
 
             <Card className="surface-card">
               <CardHeader>
-                <CardTitle className="text-lg">Integrations & weekly report</CardTitle>
+                <CardTitle className="text-lg">{t("admin.legacyDashboard.integrationsWeeklyReport")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="space-y-2">
@@ -1127,48 +1139,48 @@ function DispatchDashboard() {
                     <div className="rounded-lg border border-border bg-muted/35 p-2 text-xs" key={item.key}>
                       <p className="font-medium">{item.label}</p>
                       <p className={item.ok ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>
-                        {item.ok ? "OK" : "Needs attention"}{item.value ? ` · ${item.value}` : ""}
+                        {item.ok ? t("admin.legacyDashboard.ok") : t("admin.legacyDashboard.needsAttention")}{item.value ? ` · ${item.value}` : ""}
                       </p>
                     </div>
                   ))}
                   {integrationStatus?.integrations?.map((item: any) => (
                     <div className="rounded-lg border border-border bg-muted/35 p-2 text-xs" key={item.key}>
                       <p className="font-medium">{item.label}</p>
-                      <p className="text-muted-foreground">Status: {item.status}</p>
-                      {item.missing?.length ? <p className="text-amber-700 dark:text-amber-300">Missing: {item.missing.join(", ")}</p> : null}
+                      <p className="text-muted-foreground">{t("admin.legacyDashboard.statusLabel", { status: item.status })}</p>
+                      {item.missing?.length ? <p className="text-amber-700 dark:text-amber-300">{t("admin.legacyDashboard.missingLabel", { missing: item.missing.join(", ") })}</p> : null}
                     </div>
                   ))}
                 </div>
-                <Button data-testid="button-weekly-report" type="button" onClick={generateWeeklyReport}>Generate weekly report</Button>
+                <Button data-testid="button-weekly-report" type="button" onClick={generateWeeklyReport}>{t("admin.legacyDashboard.generateWeeklyReport")}</Button>
                 {portalStatus ? (
                   <div className="rounded-xl border border-border bg-muted/40 p-3 text-sm">
-                    <p className="font-semibold">Portal readiness</p>
-                    <p>Admin: {portalStatus.adminPortal.status}</p>
-                    <p>Client: {portalStatus.clientPortal.status}</p>
-                    <p>Moderation: {portalStatus.moderation.status}</p>
+                    <p className="font-semibold">{t("admin.legacyDashboard.portalReadiness")}</p>
+                    <p>{t("admin.legacyDashboard.portalAdmin", { status: portalStatus.adminPortal.status })}</p>
+                    <p>{t("admin.legacyDashboard.portalClient", { status: portalStatus.clientPortal.status })}</p>
+                    <p>{t("admin.legacyDashboard.portalModeration", { status: portalStatus.moderation.status })}</p>
                   </div>
                 ) : null}
                 {weeklyReport ? (
                   <div className="rounded-xl border border-border bg-muted/40 p-3 text-sm">
-                    <p className="font-semibold">{weeklyReport.client.name} weekly report</p>
-                    <p>Recommended loads: {weeklyReport.summary.recommendedLoads}</p>
-                    <p>Gross potential: {money.format(weeklyReport.summary.grossPotential)}</p>
-                    <p>Dispatch fee: {money.format(weeklyReport.summary.totalDispatchFee)}</p>
+                    <p className="font-semibold">{t("admin.legacyDashboard.weeklyReportTitle", { name: weeklyReport.client.name })}</p>
+                    <p>{t("admin.legacyDashboard.recommendedLoads", { count: weeklyReport.summary.recommendedLoads })}</p>
+                    <p>{t("admin.legacyDashboard.grossPotential", { amount: money.format(weeklyReport.summary.grossPotential) })}</p>
+                    <p>{t("admin.legacyDashboard.dispatchFee", { amount: money.format(weeklyReport.summary.totalDispatchFee) })}</p>
                   </div>
                 ) : null}
               </CardContent>
             </Card>
           </div>
 
-          <section className="space-y-4" aria-label="Ranked loads">
+          <section className="space-y-4" aria-label={t("admin.legacyDashboard.rankedLoadsAria")}>
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-semibold">Ranked load inbox</h2>
+                <h2 className="text-lg font-semibold">{t("admin.legacyDashboard.rankedLoadInbox")}</h2>
                 <p className="text-sm text-muted-foreground">
-                  Отсортировано по реальной выгоде от позиции клиента, не по gross.
+                  {t("admin.legacyDashboard.rankedLoadInboxHint")}
                 </p>
               </div>
-              <Badge variant="outline">{data.loads.length} matching loads</Badge>
+              <Badge variant="outline">{t("admin.legacyDashboard.matchingLoads", { count: data.loads.length })}</Badge>
             </div>
             {data.loads.map((load, index) => (
               <LoadCard key={load.id} load={load} rank={index + 1} />

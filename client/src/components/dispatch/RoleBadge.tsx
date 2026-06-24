@@ -1,5 +1,6 @@
 import { Shield, Headset, Truck } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /**
  * RoleBadge — стабильный визуал роли. Используется в Users table,
@@ -14,7 +15,12 @@ export function RoleBadge({
   className?: string;
   size?: "sm" | "md";
 }) {
-  const labels = { admin: "Admin", dispatcher: "Диспетчер", driver: "Водитель" } as const;
+  const { t } = useT();
+  const labels = {
+    admin: t("dispatch.RoleBadge.admin"),
+    dispatcher: t("dispatch.RoleBadge.dispatcher"),
+    driver: t("dispatch.RoleBadge.driver"),
+  };
   const Icon = role === "admin" ? Shield : role === "dispatcher" ? Headset : Truck;
   const tone =
     role === "admin"

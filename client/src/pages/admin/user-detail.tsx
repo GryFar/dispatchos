@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import type { Client, UserPublic, UserRole } from "@shared/schema";
 import { apiJson, ApiError } from "@/lib/queryClient";
+import { useT } from "@/lib/i18n";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,10 +60,10 @@ import { DriverLocationCard } from "@/components/tracking/DriverLocationCard";
  * Backend: GET/PATCH/DELETE /api/admin/users/:id (server/routes/admin.ts)
  */
 
-const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
-  { value: "admin", label: "Админ" },
-  { value: "dispatcher", label: "Диспетчер" },
-  { value: "driver", label: "Водитель" },
+const ROLE_OPTIONS: { value: UserRole; labelKey: string }[] = [
+  { value: "admin", labelKey: "admin.userDetail.roleAdmin" },
+  { value: "dispatcher", labelKey: "admin.userDetail.roleDispatcher" },
+  { value: "driver", labelKey: "admin.userDetail.roleDriver" },
 ];
 
 type FormState = {
@@ -82,6 +83,7 @@ type FormState = {
 };
 
 export default function UserDetailPage() {
+  const { t } = useT();
   const [match, params] = useRoute("/users/:id");
   const [, setLocation] = useLocation();
   const userId = match ? params?.id : null;
@@ -151,11 +153,11 @@ export default function UserDetailPage() {
       return apiJson<UserPublic>("PATCH", `/api/admin/users/${userId}`, body);
     },
     onSuccess: () => {
-      toast({ title: "Сохранено", description: "Профиль пользователя обновлён." });
+      toast({ title: t("admin.userDetail.saved"), description: t("admin.userDetail.savedDesc") });
       qc.invalidateQueries({ queryKey: ["/api/admin/users"], exact: false });
     },
     onError: (err: Error) => {
-      toast({ title: "Не удалось сохранить", description: err.message, variant: "destructive" });
+      toast({ title: t("admin.userDetail.saveFailed"), description: err.message, variant: "destructive" });
     },
   });
 
@@ -164,24 +166,24 @@ export default function UserDetailPage() {
       apiJson<UserPublic>("PATCH", `/api/admin/users/${userId}`, { blocked }),
     onSuccess: (updated) => {
       toast({
-        title: updated.blocked ? "Заблокирован" : "Разблокирован",
+        title: updated.blocked ? t("admin.userDetail.blocked") : t("admin.userDetail.unblocked"),
       });
       qc.invalidateQueries({ queryKey: ["/api/admin/users"], exact: false });
     },
     onError: (err: Error) => {
-      toast({ title: "Не удалось", description: err.message, variant: "destructive" });
+      toast({ title: t("admin.userDetail.actionFailed"), description: err.message, variant: "destructive" });
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: () => apiJson("DELETE", `/api/admin/users/${userId}`),
     onSuccess: () => {
-      toast({ title: "Пользователь удалён" });
+      toast({ title: t("admin.userDetail.userDeleted") });
       qc.invalidateQueries({ queryKey: ["/api/admin/users"], exact: false });
       setLocation("/users");
     },
     onError: (err: Error) => {
-      toast({ title: "Не удалось удалить", description: err.message, variant: "destructive" });
+      toast({ title: t("admin.userDetail.deleteFailed"), description: err.message, variant: "destructive" });
       setDeleteOpen(false);
     },
   });
@@ -204,7 +206,7 @@ export default function UserDetailPage() {
         <BackBar onClick={() => setLocation("/users")} />
         <Card className="border-destructive/40 bg-destructive/5 p-4 text-sm">
           <p className="font-medium">
-            {is404 ? "Пользователь не найден." : "Не удалось загрузить пользователя."}
+            {is404 ? t("admin.userDetail.notFound") : t("admin.userDetail.loadFailed")}
           </p>
         </Card>
       </div>
@@ -229,12 +231,12 @@ export default function UserDetailPage() {
           <RoleBadge role={data.role} />
           {data.blocked && !isDeleted && (
             <Badge variant="outline" className="border-amber-500/40 text-amber-600">
-              Заблокирован
+              {t("admin.userDetail.blocked")}
             </Badge>
           )}
           {isDeleted && (
             <Badge variant="outline" className="border-destructive/40 text-destructive">
-              Удалён
+              {t("admin.userDetail.deleted")}
             </Badge>
           )}
         </div>
@@ -242,10 +244,9 @@ export default function UserDetailPage() {
 
       {isDeleted && (
         <Card className="border-destructive/40 bg-destructive/5 p-4 text-sm">
-          <p className="font-medium">Этот пользователь удалён.</p>
+          <p className="font-medium">{t("admin.userDetail.deletedBannerTitle")}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Удалён {formatDateFull(data.deletedAt!)}. Запись сохранена для целостности
-            истории (рейсы, аудит). Редактирование отключено.
+            {t("admin.userDetail.deletedBannerDesc", { date: formatDateFull(data.deletedAt!) })}
           </p>
         </Card>
       )}
@@ -253,11 +254,11 @@ export default function UserDetailPage() {
       {/* Profile card */}
       <Card>
         <CardHeader>
-          <CardTitle>Профиль</CardTitle>
+          <CardTitle>{t("admin.userDetail.profile")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="fullName">Имя</Label>
+            <Label htmlFor="fullName">{t("admin.userDetail.name")}</Label>
             <Input
               id="fullName"
               value={form.fullName}
@@ -267,7 +268,7 @@ export default function UserDetailPage() {
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="email">Email</Label>
+            <Label htmlFor="email">{t("common.email")}</Label>
             <Input
               id="email"
               type="email"
@@ -276,12 +277,12 @@ export default function UserDetailPage() {
               onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
             />
             <p className="text-[11px] text-muted-foreground">
-              Используется для входа. Изменение потребует от юзера входить по новому адресу.
+              {t("admin.userDetail.emailHint")}
             </p>
           </div>
 
           <div className="space-y-1.5">
-            <Label>Роль</Label>
+            <Label>{t("admin.userDetail.role")}</Label>
             <Select
               value={form.role}
               disabled={isDeleted}
@@ -293,7 +294,7 @@ export default function UserDetailPage() {
               <SelectContent>
                 {ROLE_OPTIONS.map((r) => (
                   <SelectItem key={r.value} value={r.value}>
-                    {r.label}
+                    {t(r.labelKey)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -302,7 +303,7 @@ export default function UserDetailPage() {
 
           {form.role === "driver" && (
             <div className="space-y-2">
-              <Label>Тип занятости</Label>
+              <Label>{t("admin.userDetail.employmentType")}</Label>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -315,8 +316,8 @@ export default function UserDetailPage() {
                       : "border-border text-muted-foreground hover:border-foreground/30",
                   )}
                 >
-                  <div className="font-medium">Работает на компанию</div>
-                  <div className="mt-0.5 text-[11px] opacity-80">Привязывается к конкретному carrier</div>
+                  <div className="font-medium">{t("admin.userDetail.employeeTitle")}</div>
+                  <div className="mt-0.5 text-[11px] opacity-80">{t("admin.userDetail.employeeDesc")}</div>
                 </button>
                 <button
                   type="button"
@@ -329,20 +330,20 @@ export default function UserDetailPage() {
                       : "border-border text-muted-foreground hover:border-foreground/30",
                   )}
                 >
-                  <div className="font-medium">Owner-operator</div>
-                  <div className="mt-0.5 text-[11px] opacity-80">Сам себе carrier, без привязки</div>
+                  <div className="font-medium">{t("admin.userDetail.ownerOperatorTitle")}</div>
+                  <div className="mt-0.5 text-[11px] opacity-80">{t("admin.userDetail.ownerOperatorDesc")}</div>
                 </button>
               </div>
               {form.driverIsEmployee && (
                 <div className="space-y-1.5 pt-1">
-                  <Label>Клиент (carrier)</Label>
+                  <Label>{t("admin.userDetail.clientCarrier")}</Label>
                   <ClientCombobox
                     value={form.linkedClientId}
                     disabled={isDeleted}
                     onChange={(v) => setForm((f) => ({ ...f, linkedClientId: v }))}
                   />
                   <p className="text-[11px] text-muted-foreground">
-                    Водитель видит только этого клиента на своём дашборде.
+                    {t("admin.userDetail.clientCarrierHint")}
                   </p>
                 </div>
               )}
@@ -350,7 +351,7 @@ export default function UserDetailPage() {
           )}
 
           <div className="space-y-1.5">
-            <Label htmlFor="phone">Phone (US)</Label>
+            <Label htmlFor="phone">{t("admin.userDetail.phoneUs")}</Label>
             <Input
               id="phone"
               value={form.phone}
@@ -365,24 +366,24 @@ export default function UserDetailPage() {
               }}
             />
             <p className="text-[11px] text-muted-foreground">
-              US format: (XXX) XXX-XXXX. Stored as +1XXXXXXXXXX (E.164).
+              {t("admin.userDetail.phoneHint")}
             </p>
           </div>
 
           {/* Henry QA Bug #5 — truck unit number, drivers only */}
           {form.role === "driver" && (
             <div className="space-y-1.5">
-              <Label htmlFor="unitNumber">Truck unit #</Label>
+              <Label htmlFor="unitNumber">{t("admin.userDetail.truckUnit")}</Label>
               <Input
                 id="unitNumber"
                 value={form.unitNumber}
                 disabled={isDeleted}
-                placeholder="e.g. Unit 42 or T-07"
+                placeholder={t("admin.userDetail.truckUnitPlaceholder")}
                 maxLength={50}
                 onChange={(e) => setForm((f) => ({ ...f, unitNumber: e.target.value }))}
               />
               <p className="text-[11px] text-muted-foreground">
-                Identifies the driver’s truck in dispatch cockpit and driver lists.
+                {t("admin.userDetail.truckUnitHint")}
               </p>
             </div>
           )}
@@ -390,10 +391,10 @@ export default function UserDetailPage() {
           <div className="flex items-center justify-between rounded-md border border-border p-3">
             <div>
               <p className="text-sm font-medium">
-                {data.blocked ? "Заблокирован" : "Активен"}
+                {data.blocked ? t("admin.userDetail.blocked") : t("admin.userDetail.active")}
               </p>
               <p className="text-xs text-muted-foreground">
-                Блокировка — обратимая приостановка доступа.
+                {t("admin.userDetail.blockHint")}
               </p>
             </div>
             <Button
@@ -404,11 +405,11 @@ export default function UserDetailPage() {
             >
               {data.blocked ? (
                 <>
-                  <ShieldCheck className="h-4 w-4" /> Разблокировать
+                  <ShieldCheck className="h-4 w-4" /> {t("admin.userDetail.unblock")}
                 </>
               ) : (
                 <>
-                  <ShieldOff className="h-4 w-4" /> Заблокировать
+                  <ShieldOff className="h-4 w-4" /> {t("admin.userDetail.block")}
                 </>
               )}
             </Button>
@@ -425,16 +426,16 @@ export default function UserDetailPage() {
       {!isDeleted && (
         <Card>
           <CardHeader>
-            <CardTitle>Безопасность</CardTitle>
+            <CardTitle>{t("admin.userDetail.security")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-medium">Two-Factor Authentication</p>
+                <p className="text-sm font-medium">{t("admin.userDetail.twoFactor")}</p>
                 <p className="text-xs text-muted-foreground">
                   {data.twoFactorEnabled
-                    ? "Включено. Пользователь вводит 6-значный код при входе."
-                    : "Не включено. При входе код не запрашивается."}
+                    ? t("admin.userDetail.twoFactorOn")
+                    : t("admin.userDetail.twoFactorOff")}
                 </p>
               </div>
               <div className="flex shrink-0 gap-2">
@@ -443,7 +444,7 @@ export default function UserDetailPage() {
                   size="sm"
                   onClick={() => setResetTotpMode("rotate")}
                 >
-                  <ShieldCheck className="h-4 w-4" /> Новый QR
+                  <ShieldCheck className="h-4 w-4" /> {t("admin.userDetail.newQr")}
                 </Button>
                 {data.twoFactorEnabled && (
                   <Button
@@ -451,13 +452,13 @@ export default function UserDetailPage() {
                     size="sm"
                     onClick={() => setResetTotpMode("disable")}
                   >
-                    <ShieldOff className="h-4 w-4" /> Отключить
+                    <ShieldOff className="h-4 w-4" /> {t("admin.userDetail.disable")}
                   </Button>
                 )}
               </div>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              «Новый QR» — выдаёт сразу новый секрет. «Отключить» — убирает 2FA, юзер зайдёт без кода и сможет настроить 2FA заново в Настройках.
+              {t("admin.userDetail.twoFactorActionsHint")}
             </p>
           </CardContent>
         </Card>
@@ -467,12 +468,11 @@ export default function UserDetailPage() {
       {!isDeleted && (
         <Card className="border-destructive/30">
           <CardHeader>
-            <CardTitle className="text-destructive">Опасная зона</CardTitle>
+            <CardTitle className="text-destructive">{t("admin.userDetail.dangerZone")}</CardTitle>
           </CardHeader>
           <CardContent className="flex items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
-              Удаление убирает пользователя из системы навсегда. История
-              (рейсы, аудит) сохраняется, но войти он больше не сможет.
+              {t("admin.userDetail.deleteWarning")}
             </p>
             <Button
               variant="outline"
@@ -480,7 +480,7 @@ export default function UserDetailPage() {
               className="shrink-0 border-destructive/40 text-destructive hover:bg-destructive/10"
               onClick={() => setDeleteOpen(true)}
             >
-              <Trash2 className="h-4 w-4" /> Удалить
+              <Trash2 className="h-4 w-4" /> {t("admin.userDetail.delete")}
             </Button>
           </CardContent>
         </Card>
@@ -499,7 +499,7 @@ export default function UserDetailPage() {
               ) : (
                 <Save className="h-4 w-4" />
               )}
-              Сохранить
+              {t("common.save")}
             </Button>
           </div>
         </div>
@@ -523,11 +523,10 @@ export default function UserDetailPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-destructive" />
-              Удалить пользователя?
+              {t("admin.userDetail.deleteConfirmTitle")}
             </DialogTitle>
             <DialogDescription>
-              {data.fullName || data.email} будет удалён навсегда. Это действие
-              нельзя отменить через интерфейс. История сохранится.
+              {t("admin.userDetail.deleteConfirmDesc", { name: data.fullName || data.email })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2 sm:gap-2">
@@ -536,7 +535,7 @@ export default function UserDetailPage() {
               onClick={() => setDeleteOpen(false)}
               disabled={deleteMutation.isPending}
             >
-              Отмена
+              {t("common.cancel")}
             </Button>
             <Button
               className="border-destructive/40 bg-destructive text-destructive-foreground hover:bg-destructive/90"
@@ -548,7 +547,7 @@ export default function UserDetailPage() {
               ) : (
                 <Trash2 className="h-4 w-4" />
               )}
-              Удалить навсегда
+              {t("admin.userDetail.deleteForever")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -558,13 +557,14 @@ export default function UserDetailPage() {
 }
 
 function BackBar({ onClick }: { onClick: () => void }) {
+  const { t } = useT();
   return (
     <button
       onClick={onClick}
       className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
     >
       <ArrowLeft className="h-4 w-4" />
-      Назад к пользователям
+      {t("admin.userDetail.backToUsers")}
     </button>
   );
 }
@@ -578,6 +578,7 @@ function ClientCombobox({
   onChange: (v: string) => void;
   disabled?: boolean;
 }) {
+  const { t } = useT();
   const [open, setOpen] = useState(false);
   const { data: clients = [], isLoading } = useQuery<Client[]>({
     queryKey: ["/api/clients"],
@@ -606,7 +607,7 @@ function ClientCombobox({
             </span>
           ) : (
             <span className="text-muted-foreground">
-              {isLoading ? "Загрузка..." : "Выберите клиента"}
+              {isLoading ? t("common.loading") : t("admin.userDetail.selectClient")}
             </span>
           )}
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
@@ -614,8 +615,8 @@ function ClientCombobox({
       </PopoverTrigger>
       <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
         <Command>
-          <CommandInput placeholder="Поиск по имени, MC или ID..." />
-          <CommandEmpty>Клиенты не найдены.</CommandEmpty>
+          <CommandInput placeholder={t("admin.userDetail.clientSearchPlaceholder")} />
+          <CommandEmpty>{t("admin.userDetail.noClients")}</CommandEmpty>
           <CommandGroup className="max-h-64 overflow-auto">
             {value && (
               <CommandItem
@@ -626,7 +627,7 @@ function ClientCombobox({
                 }}
                 className="text-muted-foreground"
               >
-                Очистить выбор
+                {t("admin.userDetail.clearSelection")}
               </CommandItem>
             )}
             {clients.map((c) => (
