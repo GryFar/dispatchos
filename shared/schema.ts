@@ -184,12 +184,21 @@ export const loadSchema = z.object({
   fraudRisk: z.number(),
   marketQuality: z.number(),
   notes: z.string().optional(),
-  /** First-class driver assignment. Replaces the additive loadDriverFieldsSchema addon. */
-  driverId: z.string().optional(),
+  /** First-class driver assignment. Replaces the additive loadDriverFieldsSchema addon.
+   *  `.nullish()` not `.optional()`: an unassigned / un-booked load persists
+   *  {"driverId": null} (e.g. after a driver is removed). Plain `.optional()`
+   *  rejected the stored null ("Expected string, received null") and made
+   *  loadFullSchema.parse throw on every driverless load — 400-ing load-detail
+   *  and dropping the load from the dashboard peek. Same .optional()-vs-.nullable()
+   *  trap as bookedAt. */
+  driverId: z.string().nullish(),
 });
 
 export const insertLoadSchema = loadSchema.partial({ id: true }).extend({
   id: z.string().optional(),
+  // Freight pay is never negative. INPUT path only - NOT loadSchema (read schema),
+  // so stored/feed rows are never rejected on read (the 470c0e9 trap). Billing floors at 0.
+  rate: z.number().nonnegative(),
 });
 
 export const updateLocationSchema = driverLocationSchema.partial({
@@ -234,9 +243,25 @@ export const documentSchema = z.object({
   createdAt: z.string(),
 });
 
+// storageUrl is free-form operator input (a link to the doc). Reject dangerous
+// URL schemes (javascript:, data:, file:, ...) on write so a stored value can
+// never become an XSS sink if a consumer renders it without the client guard.
+// Allow http(s) + scheme-less/relative (the upload path stores a local path
+// server-side, bypassing this schema). READ schema stays loose -> no read trap.
+function isSafeStorageUrl(v: string): boolean {
+  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(v.trim());
+  if (!m) return true;
+  const scheme = m[1].toLowerCase();
+  return scheme === "http" || scheme === "https";
+}
+
 export const insertDocumentSchema = documentSchema.partial({ id: true, createdAt: true }).extend({
   id: z.string().optional(),
   createdAt: z.string().optional(),
+  storageUrl: z
+    .string()
+    .refine(isSafeStorageUrl, { message: "storageUrl must be an http(s) URL or a relative path" })
+    .optional(),
 });
 
 // ===========================================================================
@@ -383,6 +408,9 @@ export const userPublicSchema = z.object({
   // feat/twilio-verify-phone-email — verification timestamps.
   phoneVerifiedAt: z.string().nullable().optional(),
   emailVerifiedAt: z.string().nullable().optional(),
+  // Per-user subscription end (ISO). Set at signup = now + invite.subscriptionDays.
+  // null = no per-user subscription (legacy users / bootstrapped admin).
+  subscriptionEndsAt: z.string().nullable().optional(),
 });
 
 // Body schema for PATCH /api/me/preferences— currently only carries
@@ -474,6 +502,9 @@ export const inviteSchema = z.object({
   createdByUserId: z.string(),
   // For driver invites: pre-link to a specific client record on consume.
   linkedClientId: z.string().optional(),
+  // Per-user subscription length (days), copied onto the user at signup.
+  // Optional for legacy invites created before this field existed.
+  subscriptionDays: z.number().int().optional(),
 });
 
 export const createInviteSchema = z.object({
@@ -481,6 +512,9 @@ export const createInviteSchema = z.object({
   email: z.string().email().optional(),
   ttlHours: z.number().int().positive().max(24 * 30).optional(), // max 30d
   linkedClientId: z.string().optional(),
+  // Per-user subscription length (days) granted to the account created from
+  // this invite. Default 30. The user sees the countdown; access stops at 0.
+  subscriptionDays: z.coerce.number().int().min(1).max(365).default(30),
 });
 
 // ===========================================================================
@@ -750,6 +784,9 @@ export const signupResponseSchema = z.object({
   totpSecret: z.string().optional(),
   otpauthUrl: z.string().optional(),
   redirect: z.string(),
+  // Invited users (driver/dispatcher from an invite) skip the carrier
+  // onboarding wizard (persona/MC/plan) -> false. Self-serve carrier signup -> true.
+  needsOnboarding: z.boolean().optional(),
   // fix/totp-onboarding-verify: short-lived token (10 min) for the confirm-signup
   // step. Required for new users; absent for legacy bootstrapped users.
   pendingConfirmationToken: z.string().optional(),
@@ -818,7 +855,11 @@ export const dateOnlySchema = z
  */
 export const loadBookingFieldsSchema = z.object({
   clientId: z.string().optional(),
-  bookedAt: dateOnlySchema.optional(),
+  // `.nullish()` = optional (key absent on fresh inserts) OR null (persisted
+  // for an un-booked load — e.g. {"bookedAt": null}). `.optional()` alone
+  // rejected the stored null and made loadFullSchema.parse throw on every
+  // un-booked load, 400-ing the whole dispatcher dashboard.
+  bookedAt: dateOnlySchema.nullish(),
 });
 
 /** loadSchema extended with the optional booking-link fields. */

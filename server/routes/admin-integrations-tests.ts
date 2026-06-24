@@ -12,6 +12,7 @@ import type { Express, Request, Response as ExpressResponse } from "express";
 import { INTEGRATIONS, type IntegrationDescriptor } from "../lib/integrations";
 import { getIntegrationValue } from "../lib/integration-config";
 import { storage } from "../storage";
+import { assertSafeOutboundUrl } from "../lib/url-guard";
 
 // Alias the global Response (undici/fetch) — keeps it visually distinct from
 // Express's Response and stops tsc from collapsing both into one type.
@@ -49,6 +50,13 @@ async function timedFetch(
   url: string,
   init?: RequestInit & { timeoutMs?: number },
 ): Promise<{ res: FetchResponse | null; ms: number; err?: Error }> {
+  // Anti-SSRF: the URL can be admin-set (FMCSA_API_URL); never fetch an
+  // internal / cloud-metadata address.
+  try {
+    assertSafeOutboundUrl(url);
+  } catch (err) {
+    return { res: null, ms: 0, err: err as Error };
+  }
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), init?.timeoutMs ?? 8000);
   const start = Date.now();

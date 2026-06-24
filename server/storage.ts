@@ -202,7 +202,8 @@ CREATE TABLE IF NOT EXISTS users (
   linked_client_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  last_login_at TEXT
+  last_login_at TEXT,
+  subscription_ends_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS users_role_idx ON users(role);
@@ -217,7 +218,8 @@ CREATE TABLE IF NOT EXISTS invites (
   consumed_by_user_id TEXT,
   linked_client_id TEXT,
   created_at TEXT NOT NULL,
-  created_by_user_id TEXT NOT NULL
+  created_by_user_id TEXT NOT NULL,
+  subscription_days INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS invites_email_idx ON invites(email);
@@ -687,6 +689,14 @@ sqlite.exec(`
   );
 `);
 ensureUserDriverColumns();
+
+// Per-user subscription columns (additive migration for existing DBs).
+{
+  const _ucols = new Set((sqlite.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!_ucols.has("subscription_ends_at")) sqlite.exec("ALTER TABLE users ADD COLUMN subscription_ends_at TEXT");
+  const _icols = new Set((sqlite.prepare("PRAGMA table_info(invites)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!_icols.has("subscription_days")) sqlite.exec("ALTER TABLE invites ADD COLUMN subscription_days INTEGER");
+}
 // Compliance documents — add optional client_id scope so admins can attach a
 // doc to the carrier instead of a specific user. NULL = per-driver only.
 function ensureDriverDocumentsColumns() {
@@ -1149,6 +1159,23 @@ sqlite.exec(`
     ON broker_trust_signals(broker_mc, reported_at DESC);
   CREATE INDEX IF NOT EXISTS broker_trust_signals_load_idx
     ON broker_trust_signals(load_id);
+  -- Audit M5: automatic per-load lifecycle signals must count ONCE per load
+  -- (a duplicate booked/completed/cancelled inflates the broker trust score).
+  -- Collapse any existing duplicates, then a partial UNIQUE index makes the
+  -- existing INSERT OR IGNORE idempotent. Manual signals are never deduped.
+  DELETE FROM broker_trust_signals
+  WHERE load_id IS NOT NULL
+    AND signal_type IN ('load_booked','load_completed','load_cancelled_by_broker','load_refused_by_carrier')
+    AND rowid NOT IN (
+      SELECT MIN(rowid) FROM broker_trust_signals
+      WHERE load_id IS NOT NULL
+        AND signal_type IN ('load_booked','load_completed','load_cancelled_by_broker','load_refused_by_carrier')
+      GROUP BY load_id, signal_type
+    );
+  CREATE UNIQUE INDEX IF NOT EXISTS broker_trust_signals_auto_dedup
+    ON broker_trust_signals(load_id, signal_type)
+    WHERE load_id IS NOT NULL
+      AND signal_type IN ('load_booked','load_completed','load_cancelled_by_broker','load_refused_by_carrier');
 `);
 
 
@@ -1335,6 +1362,8 @@ interface UserRow {
   phone_verified: number | null;
   phone_verified_at: string | null;
   email_verified_at: string | null;
+  // Per-user subscription end (ISO). NULL = no per-user subscription.
+  subscription_ends_at: string | null;
   // Session invalidation epoch (bumped on admin password/TOTP reset).
   session_epoch: number | null;
 }
@@ -1383,6 +1412,8 @@ export interface UserInternal {
   phoneVerified: boolean;
   phoneVerifiedAt?: string;
   emailVerifiedAt?: string;
+  // Per-user subscription end (ISO). Set at signup = now + invite.subscriptionDays.
+  subscriptionEndsAt?: string;
 }
 
 // Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
@@ -1458,6 +1489,7 @@ function rowToUserInternal(row: UserRow | undefined): UserInternal | undefined {
     phoneVerified: row.phone_verified === 1,
     phoneVerifiedAt: row.phone_verified_at ?? undefined,
     emailVerifiedAt: row.email_verified_at ?? undefined,
+    subscriptionEndsAt: row.subscription_ends_at ?? undefined,
   };
 }
 
@@ -1487,6 +1519,7 @@ function toUserPublic(user: UserInternal, extras?: { assignedClientIds?: string[
     // feat/twilio-verify-phone-email
     phoneVerifiedAt: user.phoneVerifiedAt ?? null,
     emailVerifiedAt: user.emailVerifiedAt ?? null,
+    subscriptionEndsAt: user.subscriptionEndsAt ?? null,
   };
 }
 
@@ -1905,6 +1938,14 @@ export const storage = {
     const ALREADY = "__INVITE_ALREADY_CONSUMED__";
     const txn = sqlite.transaction(() => {
       const user = this.createUser(input);
+      // Per-user subscription: clock starts now, lasts the invite's
+      // subscriptionDays (default 30) -- this is what the user's countdown reads.
+      const inviteRow = sqlite
+        .prepare("SELECT subscription_days FROM invites WHERE code = ?")
+        .get(code) as { subscription_days?: number | null } | undefined;
+      const subDays = inviteRow?.subscription_days ?? 30;
+      const subscriptionEndsAt = new Date(Date.now() + subDays * 24 * 3600 * 1000).toISOString();
+      sqlite.prepare("UPDATE users SET subscription_ends_at = ? WHERE id = ?").run(subscriptionEndsAt, user.id);
       const r = sqlite
         .prepare(
           "UPDATE invites SET consumed_at = ?, consumed_by_user_id = ? WHERE code = ? AND consumed_at IS NULL",
@@ -1912,7 +1953,7 @@ export const storage = {
         .run(now(), user.id, code);
       if (r.changes === 0) throw new Error(ALREADY);
       this.audit("invite.consumed", "invite", code, { userId: user.id });
-      return user;
+      return { ...user, subscriptionEndsAt };
     });
     try {
       return txn();
@@ -2688,6 +2729,7 @@ export const storage = {
     email?: string;
     ttlHours?: number;
     linkedClientId?: string;
+    subscriptionDays?: number;
     createdByUserId: string;
   }): Invite {
     const ttlMs = (input.ttlHours ?? 72) * 60 * 60 * 1000;
@@ -2698,8 +2740,8 @@ export const storage = {
         `
         INSERT INTO invites (
           code, role, email, expires_at, consumed_at, consumed_by_user_id,
-          linked_client_id, created_at, created_by_user_id
-        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+          linked_client_id, created_at, created_by_user_id, subscription_days
+        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
       `,
       )
       .run(
@@ -2710,6 +2752,7 @@ export const storage = {
         input.linkedClientId ?? null,
         createdAt,
         input.createdByUserId,
+        input.subscriptionDays ?? 30,
       );
     const invite: Invite = {
       code: input.code,
@@ -2719,6 +2762,7 @@ export const storage = {
       linkedClientId: input.linkedClientId,
       createdAt,
       createdByUserId: input.createdByUserId,
+      subscriptionDays: input.subscriptionDays ?? 30,
     };
     // Audit (do NOT log linkedClientId payload as sensitive — but code is
     // already addressable by admin, so safe to include).
@@ -3325,6 +3369,37 @@ export const storage = {
   /** Phase 3 P2: fetch one invoice by id. Returns undefined if not found. */
   getInvoice(id: string): Invoice | undefined {
     const row = sqlite.prepare("SELECT * FROM invoices WHERE id = ?").get(id) as any;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      clientId: row.client_id,
+      weekStart: row.week_start,
+      weekEnd: row.week_end,
+      flatFee: row.flat_fee,
+      percentFee: row.percent_fee,
+      grossBooked: row.gross_booked,
+      totalDue: row.total_due,
+      status: row.status,
+      generatedAt: row.generated_at,
+      sentAt: row.sent_at ?? undefined,
+      paidAt: row.paid_at ?? undefined,
+      notes: row.notes ?? undefined,
+    };
+  },
+
+  /**
+   * Audit H3: find a NON-VOID invoice for this client whose billed week
+   * [week_start, week_end] OVERLAPS the requested [weekStart, weekEnd]. The
+   * UNIQUE(client_id, week_start) index only blocks an identical week_start;
+   * mis-aligned / overlapping windows (e.g. Mon-Sun vs Tue-Mon) slip past it
+   * and would bill the shared loads twice. billing/generate uses this to 409.
+   */
+  findOverlappingInvoice(clientId: string, weekStart: string, weekEnd: string): Invoice | undefined {
+    const row = sqlite
+      .prepare(
+        "SELECT * FROM invoices WHERE client_id = ? AND status != 'void' AND week_start <= ? AND week_end >= ? ORDER BY week_start ASC LIMIT 1",
+      )
+      .get(clientId, weekEnd, weekStart) as any;
     if (!row) return undefined;
     return {
       id: row.id,
@@ -3986,7 +4061,11 @@ export const storage = {
   ): { ok: true; load: Load } | { ok: false; conflict: true; actual: string | null } {
     const ALREADY = "__LOAD_REASSIGN_CONFLICT__";
     const timestamp = now();
-    const bookedAt = newDriverId ? timestamp : null;
+    // bookedAt is a date-only "YYYY-MM-DD" value by convention (billing week
+    // boundaries + dateOnlySchema both require it; a full ISO timestamp fails
+    // loadFullSchema and 400s every dispatcher/driver load view). `timestamp`
+    // is full ISO, so slice to the calendar date.
+    const bookedAt = newDriverId ? timestamp.slice(0, 10) : null;
     const txn = sqlite.transaction(() => {
       // Guard on the driver_id column. `IS` (not `=`) so NULL compares correctly
       // — `driver_id = NULL` is never true in SQL, but `driver_id IS NULL` is.
@@ -6309,6 +6388,19 @@ export const storage = {
         activeDriversCount: driverCounts.get(id) ?? 0,
         activeLoadsCount: loadCounts.get(id) ?? 0,
       }));
+  },
+
+  /**
+   * Cockpit per-driver cards: active drivers linked to a carrier (role=driver,
+   * not blocked/deleted). Name + status so the cockpit can render one card per
+   * driver instead of one per carrier.
+   */
+  listDriversForClient(clientId: string): Array<{ id: string; fullName: string; driverStatus: string | null }> {
+    return sqlite
+      .prepare(
+        "SELECT id, full_name AS fullName, driver_status AS driverStatus FROM users WHERE role = 'driver' AND blocked = 0 AND deleted_at IS NULL AND linked_client_id = ? ORDER BY full_name ASC",
+      )
+      .all(clientId) as Array<{ id: string; fullName: string; driverStatus: string | null }>;
   },
 
   listLoadsForClientIds(

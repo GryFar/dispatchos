@@ -135,7 +135,15 @@ export default function SignupPage() {
     if (verifyStep === "phone") {
       return (
         <AuthShell>
-          <PostSignupPhoneVerify onContinue={() => setLocation("/onboarding")} />
+          <PostSignupPhoneVerify
+            onContinue={() =>
+              setLocation(
+                successData.needsOnboarding
+                  ? "/onboarding"
+                  : defaultRouteForRole(successData.role),
+              )
+            }
+          />
         </AuthShell>
       );
     }

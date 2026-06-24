@@ -42,6 +42,9 @@ interface CockpitCarrier {
   activeLoadsCount: number;
   activeDriversCount: number;
   alerts: string[];
+  driverId: string | null;
+  driverName: string | null;
+  driverStatus: string | null;
 }
 
 interface CockpitSuggestion {
@@ -130,7 +133,9 @@ export default function DispatchCockpitPage() {
               description={t("dispatch.cockpit.empty_desc")}
             />
           ) : (
-            data.carriers.map((c) => <CarrierCard key={c.id} carrier={c} />)
+            data.carriers.map((c) => (
+              <CarrierCard key={`${c.id}-${c.driverId ?? "none"}`} carrier={c} />
+            ))
           )}
         </section>
 
@@ -212,9 +217,12 @@ function CarrierCard({ carrier }: { carrier: CockpitCarrier }) {
     <Card className="p-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium">{carrier.name}</p>
-          <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
-            {formatMc(carrier.mc)}
+          <p className="truncate text-sm font-medium">
+            {carrier.driverName ?? carrier.name}
+          </p>
+          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+            {carrier.driverName ? `${carrier.name} - ` : ""}
+            <span className="font-mono">{formatMc(carrier.mc)}</span>
           </p>
         </div>
         <StatusBadge variant={statusVariant(carrier.status)} className="shrink-0">

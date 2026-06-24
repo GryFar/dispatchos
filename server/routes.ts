@@ -38,6 +38,8 @@ import {
   verifyTotp,
 } from "./auth";
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
+import { assertSafeOutboundUrl } from "./lib/url-guard";
+import { sanitizePathSegment, isWithinDir } from "./lib/safe-path";
 import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerAdminIntegrationTestsRoutes } from "./routes/admin-integrations-tests";
@@ -48,6 +50,7 @@ import { registerTrackRoutes } from "./routes/track";
 import { registerDispatchRoutes } from "./routes/dispatch";
 import { registerBrokerTrustRoutes } from "./routes/broker-trust";
 import { registerCockpitRoutes } from "./routes/cockpit";
+import { registerFleetRoutes } from "./routes/fleet";
 import { registerPredictiveRoutes } from "./routes/predictive";
 import { registerLeadRoutes } from "./routes/leads";
 import { registerWebhookRoutes } from "./routes/webhooks";
@@ -55,7 +58,7 @@ import { registerCronRoutes } from "./routes/cron";
 import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { registerBillingRoutes } from "./routes/billing";
-import { enrichLoadSync, outboundMarketScore, getRouteFuelPrice } from "./lib/ai";
+import { enrichLoadSync, outboundMarketScore, getRouteFuelPrice, observedLaneQualityAdjustment } from "./lib/ai";
 import { resolveScoreWeights } from "./lib/score-weights";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
@@ -479,7 +482,21 @@ export function scoreLoadForClient(client: Client, load: Load, persist = true): 
   const feasibilityScore =
     pickupFeasibility === "easy" ? 100 : pickupFeasibility === "tight" ? 58 : 0;
   const brokerSafetyScore = clamp((load.brokerScore * 0.65) + ((100 - load.fraudRisk) * 0.35), 0, 100);
-  const laneScore = load.marketQuality;
+  // Refine lane quality with REAL observed rates (lane_history) when a lane has
+  // enough data — completes the recordLaneObservation -> getLaneAvgPpm pipeline
+  // that previously wrote observations but never read them. Cold-start safe
+  // (no data -> 0 adjustment, so launch/sparse lanes are unchanged) and
+  // env-tunable: DISPATCHOS_LANE_OBSERVED_WEIGHT (default 1; set 0 to disable).
+  const laneObsWeightRaw = Number.parseFloat(process.env.DISPATCHOS_LANE_OBSERVED_WEIGHT ?? "");
+  const laneObsWeight = Number.isFinite(laneObsWeightRaw) ? clamp(laneObsWeightRaw, 0, 2) : 1;
+  let laneScore = load.marketQuality;
+  if (laneObsWeight > 0) {
+    const observed = storage.getLaneAvgPpm(load.originState, load.destinationState);
+    const adj = observedLaneQualityAdjustment(
+      load.originState, load.destinationState, load.equipment, observed, load.pickupAt,
+    );
+    laneScore = clamp(load.marketQuality + laneObsWeight * adj, 0, 100);
+  }
   const locationScore =
     locationConfidence === "high" ? 100 : locationConfidence === "medium" ? 72 : 32;
 
@@ -700,6 +717,7 @@ async function checkBrokerRisk(brokerMc: string, brokerName = "Unknown Broker"):
   if (process.env.FMCSA_API_URL && fmcsaWebKey) {
     try {
       const url = `${process.env.FMCSA_API_URL.replace(/\/$/, "")}?webKey=${encodeURIComponent(fmcsaWebKey)}&mc=${encodeURIComponent(normalized.replace(/\D/g, ""))}`;
+      assertSafeOutboundUrl(url);
       const response = await fetch(url);
       const payload: any = await response.json().catch(() => ({}));
       const statusText = JSON.stringify(payload).toLowerCase();
@@ -844,7 +862,12 @@ function createLocalDriveFolders(clientId?: string) {
   const plan = buildDrivePlan(clientId);
   const created: string[] = [];
   for (const folder of plan.folders) {
-    const root = path.join(localDriveRoot, folder.path.replace(/^DispatchOS\/Clients\//, ""));
+    // Anti-traversal: client.name / client.mc are operator-controlled; a name
+    // like "../../etc" must never escape localDriveRoot (buildDrivePlan only
+    // stripped whitespace).
+    const rel = sanitizePathSegment(folder.path.replace(/^DispatchOS\/Clients\//, ""));
+    const root = path.join(localDriveRoot, rel);
+    if (!isWithinDir(localDriveRoot, root)) continue;
     fs.mkdirSync(root, { recursive: true });
     created.push(root);
     for (const subfolder of folder.subfolders) {
@@ -1356,6 +1379,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         inviteCode: invite.code,
         role: created.role,
       });
+      // Invited users (driver/dispatcher) are not carrier owners -- the
+      // persona/MC/plan onboarding wizard does not apply. Mark it complete so
+      // they never land in it. Empty data => the GET /api/me/onboarding
+      // self-heal never provisions a carrier (it requires a persona).
+      storage.upsertOnboardingProgress(created.id, { step: 4, data: {}, completed: true });
     } else {
       // ---------------- Self-serve carrier signup (no invite) ----------------
       // Anti-fraud is carried by the MC + FMCSA gate in onboarding (one MC =
@@ -1402,6 +1430,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       totpSecret,
       otpauthUrl: buildOtpAuthUrl(created.email, totpSecret),
       redirect,
+      needsOnboarding: !body.inviteCode,
       pendingConfirmationToken,
     });
   });
@@ -1852,6 +1881,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // -------------------------------------------------------------------------
+  // Per-user subscription read-only gate. CRITICAL: registered BEFORE all the
+  // portal route modules below (registerMeRoutes / Dispatch / cockpit / fleet /
+  // predictive). In Express an app.use middleware only runs for routes added
+  // AFTER it; while this sat below the modules it never ran for them, so an
+  // expired driver/dispatcher kept full write access to their portal.
+  // Blocks MUTATING requests with 402 once subscriptionEndsAt is past; reads
+  // stay open (badge, logout, language switch, billing). Admins, NULL-sub
+  // accounts, and public/token routes (getCurrentUser == null) pass through.
+  // -------------------------------------------------------------------------
+  app.use("/api", (req, res, next) => {
+    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
+    if (
+      req.path.startsWith("/auth/") ||
+      req.path.startsWith("/billing") ||
+      req.path === "/me/preferences" ||
+      req.path === "/logout"
+    ) {
+      return next();
+    }
+    const subUser = getCurrentUser(req);
+    if (!subUser || subUser.role === "admin") return next();
+    const subEndsAt = subUser.subscriptionEndsAt;
+    if (!subEndsAt || new Date(subEndsAt).getTime() > Date.now()) return next();
+    return res.status(402).json({
+      message: "Подписка истекла. Обратитесь к администратору для продления.",
+      code: "subscription_expired",
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Phase 3 admin routes. Registered BEFORE the shared `app.use("/api", ...)`
   // gate below so each handler manages its own `requireRole('admin')` instead
   // of double-gating through `requireRole.any()`. See server/routes/admin.ts.
@@ -1907,6 +1966,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerDispatchRoutes(app);
   registerBrokerTrustRoutes(app);
   registerCockpitRoutes(app);
+  registerFleetRoutes(app);
   registerPredictiveRoutes(app);
 
   // -------------------------------------------------------------------------
@@ -1943,8 +2003,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Audit V3-13 — dispatch board is operational data (loads, drivers,
-  // statuses). Restrict to admin + dispatcher; drivers/anonymous should
-  // not see fleet-wide load assignments.
+  // statuses). Admin-only: dispatchers get fleet/load data via the cockpit and
+  // /api/dispatch/* endpoints, not this admin board. Drivers/anonymous blocked.
   app.get("/api/dispatch-board", requireRole("admin"), (req, res) => {
     res.json(buildDispatchBoard(String(req.query.clientId ?? "")));
   });
@@ -1957,7 +2017,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/clients", requireRole("admin"), requireActiveBilling, (req, res) => {
     try {
-      const client = storage.upsertClient(insertClientSchema.parse(req.body));
+      const parsed = insertClientSchema.parse(req.body);
+      // PAYMENT-TRUST fields only (billing status, trial end, Stripe linkage) are
+      // owned by Stripe webhooks + onboarding provisioning and must NOT be settable
+      // via this create endpoint: override any client-supplied value, and on an
+      // id-collision UPDATE carry the STORED value forward so a POST can neither
+      // grant paid status for free nor wipe an existing carrier's billing.
+      // planTier / seat counts / ownerUserId stay settable -- an admin legitimately
+      // assigns a plan when creating a carrier (the seat-limit flow relies on it).
+      const existing: Client | undefined = parsed.id ? storage.getClient(parsed.id) : undefined;
+      const input = {
+        ...parsed,
+        billingStatus: existing?.billingStatus,
+        trialEndsAt: existing?.trialEndsAt,
+        stripeCustomerId: existing?.stripeCustomerId,
+        stripeSubscriptionId: existing?.stripeSubscriptionId,
+      };
+      const client = storage.upsertClient(input);
       res.status(201).json(client);
     } catch (error) {
       handleZodError(error, res);

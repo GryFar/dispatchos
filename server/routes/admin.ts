@@ -532,6 +532,7 @@ export function registerAdminRoutes(app: Express): void {
         email: body.email,
         ttlHours: body.ttlHours,
         linkedClientId: body.linkedClientId,
+        subscriptionDays: body.subscriptionDays,
         createdByUserId: actor.id,
       });
 
@@ -1167,11 +1168,12 @@ export function registerAdminRoutes(app: Express): void {
       // them here so we don't assign/bill an archived carrier.
       if (!client || client.deletedAt) return res.status(404).json({ message: "Client not found" });
 
-      const dup = storage.findInvoiceForWeek(body.clientId, body.weekStart);
+      const dup = storage.findOverlappingInvoice(body.clientId, body.weekStart, body.weekEnd);
       if (dup) {
         return res.status(409).json({
-          message: "Invoice for this client and week already exists",
+          message: "An invoice covering an overlapping week already exists for this client.",
           existingInvoiceId: dup.id,
+          existingWeek: { weekStart: dup.weekStart, weekEnd: dup.weekEnd },
         });
       }
 
