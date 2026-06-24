@@ -3,6 +3,7 @@ import { ShieldQuestion } from "lucide-react";
 import { apiJson } from "@/lib/queryClient";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /**
  * TrustBadge — Broker Trust Score indicator (Killer #1).
@@ -42,6 +43,7 @@ export function TrustBadge({
   className?: string;
   size?: "default" | "sm";
 }) {
+  const { t } = useT();
   const mc = (brokerMc ?? "").trim();
   const { data, isLoading, isError } = useQuery<TrustResponse>({
     queryKey: ["/api/broker-trust", mc],
@@ -75,10 +77,10 @@ export function TrustBadge({
           textSize,
           className,
         )}
-        title="Нет данных о брокере — оцените после рейса"
+        title={t("dispatch.TrustBadge.noDataTooltip")}
       >
         <ShieldQuestion className="h-3 w-3" />
-        Trust: —
+        {t("dispatch.TrustBadge.trustLabel")}: —
       </span>
     );
   }
@@ -88,9 +90,13 @@ export function TrustBadge({
       variant={tierVariant(data.tier)}
       dot
       className={cn(textSize, className)}
-      title={`${data.totalSignals} сигнал(ов) · ${data.positiveCount}+ / ${data.negativeCount}−`}
+      title={t("dispatch.TrustBadge.signalsTooltip", {
+        total: data.totalSignals,
+        positive: data.positiveCount,
+        negative: data.negativeCount,
+      })}
     >
-      Trust: {data.score}
+      {t("dispatch.TrustBadge.trustLabel")}: {data.score}
     </StatusBadge>
   );
 }

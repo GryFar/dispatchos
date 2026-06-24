@@ -6,6 +6,8 @@
  * consistent output across admin, dispatcher, and driver portals.
  */
 
+import { tr } from "@/lib/i18n";
+
 const moneyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -124,14 +126,14 @@ export function formatRelativeAgo(iso: string | Date | null | undefined): string
     const d = typeof iso === "string" ? new Date(iso) : iso;
     const diffMs = Date.now() - d.getTime();
     const min = Math.floor(diffMs / 60_000);
-    if (min < 1) return "только что";
-    if (min < 60) return `${min}m ago`;
+    if (min < 1) return tr("format.justNow");
+    if (min < 60) return tr("format.minAgo", { n: min });
     const hours = Math.floor(min / 60);
-    if (hours < 24) return `${hours}h ago`;
+    if (hours < 24) return tr("format.hourAgo", { n: hours });
     const days = Math.floor(hours / 24);
-    if (days < 30) return `${days}d ago`;
+    if (days < 30) return tr("format.dayAgo", { n: days });
     const months = Math.floor(days / 30);
-    return `${months}mo ago`;
+    return tr("format.monthAgo", { n: months });
   } catch {
     return String(iso);
   }
@@ -139,8 +141,8 @@ export function formatRelativeAgo(iso: string | Date | null | undefined): string
 
 /** Short role label for badges, role columns. */
 export function formatRole(role: string | null | undefined): string {
-  if (role === "admin") return "Admin";
-  if (role === "dispatcher") return "Диспетчер";
-  if (role === "driver") return "Водитель";
+  if (role === "admin") return tr("format.role.admin");
+  if (role === "dispatcher") return tr("format.role.dispatcher");
+  if (role === "driver") return tr("format.role.driver");
   return role ?? "—";
 }

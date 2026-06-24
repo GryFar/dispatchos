@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { DensityProvider } from "@/lib/density";
+import { useT } from "@/lib/i18n";
 
 /**
  * Documents page — архив всех документов (rate con, BOL, POD, COI, W9, etc).
@@ -56,15 +57,18 @@ const STATUS_VARIANT: Record<string, "active" | "clean" | "verify" | "stop" | "p
   issue: "stop",
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  needed: "Нужен",
-  received: "Получен",
-  submitted: "Отправлен",
-  verified: "Проверен",
-  issue: "Проблема",
+const STATUS_KEYS = ["needed", "received", "submitted", "verified", "issue"] as const;
+
+const STATUS_LABEL_KEY: Record<string, string> = {
+  needed: "admin.documents.statusNeeded",
+  received: "admin.documents.statusReceived",
+  submitted: "admin.documents.statusSubmitted",
+  verified: "admin.documents.statusVerified",
+  issue: "admin.documents.statusIssue",
 };
 
 export default function DocumentsPage() {
+  const { t } = useT();
   const [q, setQ] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | string>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | string>("all");
@@ -108,11 +112,11 @@ export default function DocumentsPage() {
         <header className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              Admin / Документы
+              {t("admin.documents.eyebrow")}
             </p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">Документы</h1>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("admin.documents.title")}</h1>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              Архив rate con, BOL, POD, COI, W9 по всем клиентам.
+              {t("admin.documents.subtitle")}
             </p>
           </div>
         </header>
@@ -123,7 +127,7 @@ export default function DocumentsPage() {
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Поиск: файл, клиент, notes"
+              placeholder={t("admin.documents.searchPlaceholder")}
               className="pl-9"
             />
           </div>
@@ -132,7 +136,7 @@ export default function DocumentsPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Все типы</SelectItem>
+              <SelectItem value="all">{t("admin.documents.allTypes")}</SelectItem>
               {Object.entries(TYPE_LABELS).map(([k, v]) => (
                 <SelectItem key={k} value={k}>{v}</SelectItem>
               ))}
@@ -143,9 +147,9 @@ export default function DocumentsPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Все статусы</SelectItem>
-              {Object.entries(STATUS_LABEL).map(([k, v]) => (
-                <SelectItem key={k} value={k}>{v}</SelectItem>
+              <SelectItem value="all">{t("admin.documents.allStatuses")}</SelectItem>
+              {STATUS_KEYS.map((k) => (
+                <SelectItem key={k} value={k}>{t(STATUS_LABEL_KEY[k])}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -153,7 +157,7 @@ export default function DocumentsPage() {
 
         {docsQuery.error ? (
           <Alert variant="destructive">
-            <AlertDescription>Не удалось загрузить документы: {(docsQuery.error as Error).message}</AlertDescription>
+            <AlertDescription>{t("admin.documents.loadError", { message: (docsQuery.error as Error).message })}</AlertDescription>
           </Alert>
         ) : (
           <DocumentsTable rows={rows} loading={docsQuery.isLoading} clientMap={clientMap} />
@@ -161,8 +165,8 @@ export default function DocumentsPage() {
 
         {docsQuery.data && (
           <p className="text-xs text-muted-foreground">
-            Всего: {docsQuery.data.length}
-            {(q || typeFilter !== "all" || statusFilter !== "all") && ` · отфильтровано: ${rows.length}`}
+            {t("admin.documents.total", { count: docsQuery.data.length })}
+            {(q || typeFilter !== "all" || statusFilter !== "all") && t("admin.documents.filtered", { count: rows.length })}
           </p>
         )}
       </div>
@@ -179,10 +183,11 @@ function DocumentsTable({
   loading: boolean;
   clientMap: Map<string, string>;
 }) {
+  const { t } = useT();
   const columns: DataTableColumn<DocumentRecord>[] = [
     {
       key: "file",
-      header: "Файл",
+      header: t("admin.documents.colFile"),
       cell: (d) => (
         <div className="flex items-center gap-2 min-w-0">
           <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -195,13 +200,13 @@ function DocumentsTable({
     },
     {
       key: "type",
-      header: "Тип",
+      header: t("admin.documents.colType"),
       cell: (d) => <StatusBadge variant="info">{TYPE_LABELS[d.type] ?? d.type}</StatusBadge>,
       width: "120px",
     },
     {
       key: "client",
-      header: "Клиент",
+      header: t("admin.documents.colClient"),
       cell: (d) => (
         <span className="text-xs">
           {clientMap.get(d.clientId) ?? d.clientId}
@@ -211,17 +216,17 @@ function DocumentsTable({
     },
     {
       key: "status",
-      header: "Статус",
+      header: t("admin.documents.colStatus"),
       cell: (d) => (
         <StatusBadge variant={STATUS_VARIANT[d.status]} dot>
-          {STATUS_LABEL[d.status] ?? d.status}
+          {STATUS_LABEL_KEY[d.status] ? t(STATUS_LABEL_KEY[d.status]) : d.status}
         </StatusBadge>
       ),
       width: "120px",
     },
     {
       key: "created",
-      header: "Добавлен",
+      header: t("admin.documents.colCreated"),
       cell: (d) => (
         <span className="text-[10px] text-muted-foreground" title={formatDateFull(d.createdAt)}>
           {formatDate(d.createdAt)}
@@ -244,7 +249,7 @@ function DocumentsTable({
             className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
           >
             <ExternalLink className="h-3 w-3" />
-            Открыть
+            {t("admin.documents.open")}
           </a>
         ) : null;
       },
@@ -262,8 +267,8 @@ function DocumentsTable({
       empty={
         <EmptyState
           icon={<FileText />}
-          title="Нет документов"
-          description="Загрузите rate con, BOL или POD через legacy-дашборд или прямой API."
+          title={t("admin.documents.emptyTitle")}
+          description={t("admin.documents.emptyDescription")}
         />
       }
     />

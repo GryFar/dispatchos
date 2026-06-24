@@ -165,13 +165,13 @@ export default function DriverLoadDetailPage() {
       <Card className="p-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <StopBlock
-            label="Pickup"
+            label={t("driver.loadDetail.pickup")}
             city={data.originCity}
             state={data.originState}
             iso={data.pickupAt}
           />
           <StopBlock
-            label="Delivery"
+            label={t("driver.loadDetail.delivery")}
             city={data.destinationCity}
             state={data.destinationState}
             iso={data.deliveryAt}
@@ -302,7 +302,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
       toast({
         variant: "destructive",
         title: t("common.error"),
-        description: "Geolocation is not available in this browser.",
+        description: t("driver.loadDetail.geoUnavailable"),
       });
       return;
     }
@@ -338,7 +338,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
           ) : (
             <Truck className="h-5 w-5" />
           )}
-          <span className="text-xs font-medium">Check-in</span>
+          <span className="text-xs font-medium">{t("driver.loadDetail.checkInAction")}</span>
         </Button>
         <Button
           variant="outline"
@@ -347,7 +347,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
           onClick={() => setExpenseOpen(true)}
         >
           <Camera className="h-5 w-5" />
-          <span className="text-xs font-medium">Receipt</span>
+          <span className="text-xs font-medium">{t("driver.loadDetail.receipt")}</span>
         </Button>
         <Button
           variant="outline"
@@ -356,7 +356,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
           onClick={() => setFuelOpen(true)}
         >
           <Fuel className="h-5 w-5" />
-          <span className="text-xs font-medium">Fuel</span>
+          <span className="text-xs font-medium">{t("driver.loadDetail.fuel")}</span>
         </Button>
         <Button
           variant="outline"
@@ -366,7 +366,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
           onClick={() => withGeo("delivered")}
         >
           <CheckCircle2 className="h-5 w-5" />
-          <span className="text-xs font-medium">Delivered</span>
+          <span className="text-xs font-medium">{t("driver.loadDetail.delivered")}</span>
         </Button>
         <Button
           variant="outline"
@@ -375,7 +375,7 @@ function ActionButtons({ loadId }: { loadId: string }) {
           onClick={() => setIssueOpen(true)}
         >
           <AlertTriangle className="h-5 w-5" />
-          <span className="text-xs font-medium">Issue</span>
+          <span className="text-xs font-medium">{t("driver.loadDetail.issue")}</span>
         </Button>
       </div>
 
@@ -416,7 +416,7 @@ function IssueDialog({
     onSuccess: () => {
       toast({
         title: t("common.success"),
-        description: "Your dispatcher has been notified.",
+        description: t("driver.loadDetail.issue.notified"),
       });
       qc.invalidateQueries({ queryKey: ["me", "dashboard"] });
       onOpenChange(false);
@@ -432,44 +432,44 @@ function IssueDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Report an issue</DialogTitle>
+          <DialogTitle>{t("driver.loadDetail.issue.dialogTitle")}</DialogTitle>
           <DialogDescription>
-            Your dispatcher will be notified and can follow up.
+            {t("driver.loadDetail.issue.dialogDesc")}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1.5">
-            <Label htmlFor="issue-sev">Severity</Label>
+            <Label htmlFor="issue-sev">{t("driver.loadDetail.issue.severity")}</Label>
             <Select value={severity} onValueChange={(v) => setSeverity(v as IssueSeverity)}>
               <SelectTrigger id="issue-sev" className="h-11">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="info">Info</SelectItem>
-                <SelectItem value="warn">Warning</SelectItem>
-                <SelectItem value="urgent">URGENT</SelectItem>
+                <SelectItem value="info">{t("driver.loadDetail.issue.sevInfo")}</SelectItem>
+                <SelectItem value="warn">{t("driver.loadDetail.issue.sevWarn")}</SelectItem>
+                <SelectItem value="urgent">{t("driver.loadDetail.issue.sevUrgent")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="issue-title">Title</Label>
+            <Label htmlFor="issue-title">{t("driver.loadDetail.issue.titleLabel")}</Label>
             <Input
               id="issue-title"
               value={title}
               maxLength={120}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Broker not responding"
+              placeholder={t("driver.loadDetail.issue.titlePlaceholder")}
               className="h-11"
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="issue-desc">Description (optional)</Label>
+            <Label htmlFor="issue-desc">{t("driver.loadDetail.issue.descLabel")}</Label>
             <Textarea
               id="issue-desc"
               value={description}
               maxLength={2000}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What happened, what you tried..."
+              placeholder={t("driver.loadDetail.issue.descPlaceholder")}
               rows={4}
             />
           </div>
@@ -567,15 +567,15 @@ function ExpenseDialog({
     onSuccess: (data) => {
       const ocr = data.ocr;
       if (!ocr || ocr.total == null) {
-        toast({ title: "Couldn't read the receipt — enter the amount manually" });
+        toast({ title: t("driver.loadDetail.expense.ocrFailed") });
         return;
       }
       setAmount(String(ocr.total));
       if (ocr.stationName) setNotes((prev) => prev || ocr.stationName!);
-      toast({ title: `Read $${ocr.total} from receipt` });
+      toast({ title: t("driver.loadDetail.expense.ocrRead", { total: ocr.total }) });
     },
     onError: (err: ApiError) =>
-      toast({ variant: "destructive", title: "Scan failed", description: err.message }),
+      toast({ variant: "destructive", title: t("driver.loadDetail.expense.scanFailed"), description: err.message }),
   });
 
   return (
@@ -584,7 +584,7 @@ function ExpenseDialog({
         <DialogHeader>
           <DialogTitle>{t("driver.load_detail.expense.title")}</DialogTitle>
           <DialogDescription>
-            Fuel, parking, tolls, repairs — for your records.
+            {t("driver.loadDetail.expense.dialogDesc")}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -596,10 +596,10 @@ function ExpenseDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="fuel">{t("driver.load_detail.expense.fuel")}</SelectItem>
-                <SelectItem value="parking">Parking</SelectItem>
+                <SelectItem value="parking">{t("driver.loadDetail.expense.parking")}</SelectItem>
                 <SelectItem value="tolls">{t("driver.load_detail.expense.toll")}</SelectItem>
-                <SelectItem value="repair">Repair</SelectItem>
-                <SelectItem value="lumper">Lumper</SelectItem>
+                <SelectItem value="repair">{t("driver.loadDetail.expense.repair")}</SelectItem>
+                <SelectItem value="lumper">{t("driver.loadDetail.expense.lumper")}</SelectItem>
                 <SelectItem value="other">{t("driver.load_detail.expense.other")}</SelectItem>
               </SelectContent>
             </Select>
@@ -630,7 +630,7 @@ function ExpenseDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="exp-photo">Receipt photo (optional)</Label>
+            <Label htmlFor="exp-photo">{t("driver.loadDetail.expense.photoLabel")}</Label>
             <Input
               id="exp-photo"
               type="file"
@@ -648,7 +648,7 @@ function ExpenseDialog({
                 disabled={scanMutation.isPending}
               >
                 {scanMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Scan receipt
+                {t("driver.loadDetail.expense.scanReceipt")}
               </Button>
             )}
           </div>
@@ -713,7 +713,7 @@ function FuelDialog({
       });
     },
     onSuccess: () => {
-      toast({ title: "Fuel logged" });
+      toast({ title: t("driver.loadDetail.fuelDialog.logged") });
       qc.invalidateQueries({ queryKey: ["/api/me/fuel"] });
       onOpenChange(false);
       setGallons("");
@@ -723,7 +723,7 @@ function FuelDialog({
       setFuelType("diesel");
     },
     onError: (err: ApiError) =>
-      toast({ variant: "destructive", title: "Couldn't log fuel", description: err.message }),
+      toast({ variant: "destructive", title: t("driver.loadDetail.fuelDialog.logError"), description: err.message }),
   });
 
   const total = gallons && price ? (Number(gallons) * Number(price)).toFixed(2) : null;
@@ -732,46 +732,46 @@ function FuelDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Log fuel</DialogTitle>
+          <DialogTitle>{t("driver.loadDetail.fuelDialog.title")}</DialogTitle>
           <DialogDescription>
-            Feeds your IFTA gallons + MPG. Your current location is attached for state attribution.
+            {t("driver.loadDetail.fuelDialog.dialogDesc")}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="fuel-gal">Gallons</Label>
+              <Label htmlFor="fuel-gal">{t("driver.loadDetail.fuelDialog.gallons")}</Label>
               <Input id="fuel-gal" type="number" step="0.01" min="0.01" value={gallons}
                 onChange={(e) => setGallons(e.target.value)} className="h-11" />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="fuel-ppg">$/gallon</Label>
+              <Label htmlFor="fuel-ppg">{t("driver.loadDetail.fuelDialog.pricePerGallon")}</Label>
               <Input id="fuel-ppg" type="number" step="0.001" min="0.01" value={price}
                 onChange={(e) => setPrice(e.target.value)} className="h-11" />
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="fuel-type">Fuel type</Label>
+            <Label htmlFor="fuel-type">{t("driver.loadDetail.fuelDialog.fuelType")}</Label>
             <Select value={fuelType} onValueChange={setFuelType}>
               <SelectTrigger id="fuel-type" className="h-11"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="diesel">Diesel</SelectItem>
-                <SelectItem value="gasoline">Gasoline</SelectItem>
-                <SelectItem value="def">DEF</SelectItem>
+                <SelectItem value="diesel">{t("driver.loadDetail.fuelDialog.diesel")}</SelectItem>
+                <SelectItem value="gasoline">{t("driver.loadDetail.fuelDialog.gasoline")}</SelectItem>
+                <SelectItem value="def">{t("driver.loadDetail.fuelDialog.def")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="fuel-station">Station (optional)</Label>
+            <Label htmlFor="fuel-station">{t("driver.loadDetail.fuelDialog.station")}</Label>
             <Input id="fuel-station" value={station} maxLength={120}
-              onChange={(e) => setStation(e.target.value)} className="h-11" placeholder="Pilot, Love's..." />
+              onChange={(e) => setStation(e.target.value)} className="h-11" placeholder={t("driver.loadDetail.fuelDialog.stationPlaceholder")} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="fuel-odo">Odometer (optional)</Label>
+            <Label htmlFor="fuel-odo">{t("driver.loadDetail.fuelDialog.odometer")}</Label>
             <Input id="fuel-odo" type="number" min="0" value={odometer}
               onChange={(e) => setOdometer(e.target.value)} className="h-11" />
           </div>
-          {total && <p className="text-sm text-muted-foreground">Total: ${total}</p>}
+          {total && <p className="text-sm text-muted-foreground">{t("driver.loadDetail.fuelDialog.total", { total })}</p>}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>{t("common.cancel")}</Button>

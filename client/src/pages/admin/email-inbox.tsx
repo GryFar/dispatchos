@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { apiJson } from "@/lib/queryClient";
+import { useT } from "@/lib/i18n";
 
 /**
  * Admin / Входящая почта
@@ -49,6 +50,7 @@ interface EmailIngestResponse {
 }
 
 export default function EmailInboxPage() {
+  const { t } = useT();
   const [selected, setSelected] = useState<EmailIngestItem | null>(null);
 
   const { data, isLoading, isError } = useQuery<EmailIngestResponse>({
@@ -61,16 +63,15 @@ export default function EmailInboxPage() {
     <div className="space-y-6">
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-wider text-muted-foreground">
-          Admin / Платформа
+          {t("admin.emailInbox.eyebrow")}
         </p>
-        <h1 className="text-2xl font-semibold">Входящая почта</h1>
+        <h1 className="text-2xl font-semibold">{t("admin.emailInbox.title")}</h1>
         <p className="text-sm text-muted-foreground">
-          Последние 20 писем, прилетевших на{" "}
+          {t("admin.emailInbox.subtitlePrefix")}{" "}
           <code className="rounded bg-muted px-1 py-0.5 text-xs">
             loads@dispatchos.co
           </code>
-          . Парсер пытается выделить груз; если у письма нет «✓ Распарсено» —
-          стоит расширить шаблон под отправителя.
+          {t("admin.emailInbox.subtitleSuffix")}
         </p>
       </header>
 
@@ -89,7 +90,7 @@ export default function EmailInboxPage() {
         <Card>
           <CardContent className="flex items-center gap-2 py-6 text-sm text-rose-500">
             <AlertTriangle className="h-4 w-4" />
-            Не удалось загрузить ленту входящих.
+            {t("admin.emailInbox.loadError")}
           </CardContent>
         </Card>
       )}
@@ -98,9 +99,9 @@ export default function EmailInboxPage() {
         <Card>
           <CardContent className="flex flex-col items-center gap-2 py-12 text-sm text-muted-foreground">
             <Mail className="h-8 w-8 opacity-50" />
-            <p>Пока ни одного входящего письма.</p>
+            <p>{t("admin.emailInbox.emptyTitle")}</p>
             <p className="text-xs">
-              Когда брокер отправит rate confirmation, оно появится здесь.
+              {t("admin.emailInbox.emptyHint")}
             </p>
           </CardContent>
         </Card>
@@ -111,10 +112,10 @@ export default function EmailInboxPage() {
           <table className="w-full text-sm">
             <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
-                <th className="px-3 py-2 text-left font-medium">Получено</th>
-                <th className="px-3 py-2 text-left font-medium">От</th>
-                <th className="px-3 py-2 text-left font-medium">Тема</th>
-                <th className="px-3 py-2 text-left font-medium">Парсер</th>
+                <th className="px-3 py-2 text-left font-medium">{t("admin.emailInbox.colReceived")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("admin.emailInbox.colFrom")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("admin.emailInbox.colSubject")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("admin.emailInbox.colParser")}</th>
               </tr>
             </thead>
             <tbody>
@@ -137,7 +138,7 @@ export default function EmailInboxPage() {
                     </td>
                     <td className="max-w-[400px] truncate px-3 py-2">
                       {item.subject || (
-                        <span className="text-muted-foreground">(без темы)</span>
+                        <span className="text-muted-foreground">{t("admin.emailInbox.noSubject")}</span>
                       )}
                     </td>
                     <td className="px-3 py-2">
@@ -147,12 +148,12 @@ export default function EmailInboxPage() {
                           className="border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
                         >
                           <CheckCircle2 className="mr-1 h-3 w-3" />
-                          Распарсено
+                          {t("admin.emailInbox.parsed")}
                         </Badge>
                       ) : (
                         <Badge variant="outline" className="text-muted-foreground">
                           <XCircle className="mr-1 h-3 w-3" />
-                          Не распарсено
+                          {t("admin.emailInbox.notParsed")}
                         </Badge>
                       )}
                     </td>
@@ -170,35 +171,35 @@ export default function EmailInboxPage() {
             <>
               <DialogHeader>
                 <DialogTitle className="text-base">
-                  {selected.subject || "(без темы)"}
+                  {selected.subject || t("admin.emailInbox.noSubject")}
                 </DialogTitle>
               </DialogHeader>
               <div className="space-y-3 text-sm">
-                <DetailRow label="ID" value={selected.id} mono />
-                <DetailRow label="От" value={selected.from || "—"} mono />
-                <DetailRow label="Кому" value={selected.to || "—"} mono />
+                <DetailRow label={t("admin.emailInbox.detailId")} value={selected.id} mono />
+                <DetailRow label={t("admin.emailInbox.detailFrom")} value={selected.from || "—"} mono />
+                <DetailRow label={t("admin.emailInbox.detailTo")} value={selected.to || "—"} mono />
                 <DetailRow
-                  label="Получено"
+                  label={t("admin.emailInbox.detailReceived")}
                   value={new Date(selected.createdAt).toLocaleString("ru-RU")}
                 />
 
                 <div>
                   <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
-                    Тело письма
+                    {t("admin.emailInbox.bodyLabel")}
                   </p>
                   <pre className="max-h-60 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-3 text-xs">
-                    {selected.body || "(пусто)"}
+                    {selected.body || t("admin.emailInbox.bodyEmpty")}
                   </pre>
                 </div>
 
                 <div>
                   <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
-                    Результат парсера
+                    {t("admin.emailInbox.parserResultLabel")}
                   </p>
                   <pre className="max-h-60 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-3 text-xs font-mono">
                     {selected.parsed
                       ? JSON.stringify(selected.parsed, null, 2)
-                      : "(парсер не отработал)"}
+                      : t("admin.emailInbox.parserNoResult")}
                   </pre>
                 </div>
               </div>

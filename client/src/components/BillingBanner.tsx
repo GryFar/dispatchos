@@ -13,6 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { AlertTriangle, Clock, CreditCard } from "lucide-react";
 import { apiJson } from "@/lib/queryClient";
+import { useT } from "@/lib/i18n";
 
 interface BillingStatus {
   configured: boolean;
@@ -23,6 +24,7 @@ interface BillingStatus {
 }
 
 export function BillingBanner() {
+  const { t } = useT();
   const [, setLocation] = useLocation();
   const q = useQuery<BillingStatus>({
     queryKey: ["/api/billing/status"],
@@ -51,8 +53,8 @@ export function BillingBanner() {
         <Banner
           tone="red"
           icon={<AlertTriangle className="h-4 w-4" />}
-          text={`Trial ended. ${s.planLabel ?? "Upgrade"} to keep working.`}
-          cta="Upgrade"
+          text={t("BillingBanner.trialEnded", { plan: s.planLabel ?? t("BillingBanner.upgrade") })}
+          cta={t("BillingBanner.upgrade")}
           onCta={() => setLocation("/admin/billing")}
         />
       );
@@ -61,8 +63,8 @@ export function BillingBanner() {
       <Banner
         tone="amber"
         icon={<Clock className="h-4 w-4" />}
-        text={`Trial ends in ${days} day${days === 1 ? "" : "s"}.`}
-        cta="Upgrade"
+        text={days === 1 ? t("BillingBanner.trialEndsInDay", { days }) : t("BillingBanner.trialEndsInDays", { days })}
+        cta={t("BillingBanner.upgrade")}
         onCta={() => setLocation("/admin/billing")}
       />
     );
@@ -73,8 +75,8 @@ export function BillingBanner() {
       <Banner
         tone="red"
         icon={<CreditCard className="h-4 w-4" />}
-        text="Платёж не прошёл. Обнови карту, иначе аккаунт станет read-only."
-        cta="Manage billing"
+        text={t("BillingBanner.pastDue")}
+        cta={t("BillingBanner.manageBilling")}
         onCta={() => setLocation("/admin/billing")}
       />
     );
@@ -85,8 +87,8 @@ export function BillingBanner() {
       <Banner
         tone="red"
         icon={<AlertTriangle className="h-4 w-4" />}
-        text="Аккаунт в read-only режиме. Большинство действий заблокированы. Upgrade чтобы продолжить."
-        cta="Upgrade"
+        text={t("BillingBanner.expired")}
+        cta={t("BillingBanner.upgrade")}
         onCta={() => setLocation("/admin/billing")}
       />
     );
@@ -97,8 +99,8 @@ export function BillingBanner() {
       <Banner
         tone="amber"
         icon={<AlertTriangle className="h-4 w-4" />}
-        text="Подписка отменена. Доступ сохраняется до конца оплаченного периода."
-        cta="Reactivate"
+        text={t("BillingBanner.canceled")}
+        cta={t("BillingBanner.reactivate")}
         onCta={() => setLocation("/admin/billing")}
       />
     );

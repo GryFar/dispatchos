@@ -362,7 +362,7 @@ function Resume2FASetup({
       </div>
 
       <div className="flex justify-center rounded-md border border-border bg-card p-3">
-        <QRCodeSVG value={setupData.otpauthUrl} size={176} level="M" aria-label="TOTP QR" />
+        <QRCodeSVG value={setupData.otpauthUrl} size={176} level="M" aria-label={t("login.totpQrLabel")} />
       </div>
 
       <div className="space-y-1.5">

@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /**
  * Admin / Client detail
@@ -72,6 +73,7 @@ const US_STATES = [
 type TabKey = "profile" | "location" | "stats" | "fuel" | "ifta" | "safety" | "clearinghouse";
 
 export default function ClientDetailPage() {
+  const { t } = useT();
   const [, params] = useRoute("/clients/:id");
   const [, setLocation] = useLocation();
   const [tab, setTab] = useState<TabKey>("profile");
@@ -89,7 +91,7 @@ export default function ClientDetailPage() {
       <Card>
         <CardContent className="py-6 text-sm text-rose-500">
           <AlertTriangle className="mr-2 inline h-4 w-4" />
-          Не указан ID клиента в URL.
+          {t("admin.clientDetail.noClientId")}
         </CardContent>
       </Card>
     );
@@ -109,9 +111,9 @@ export default function ClientDetailPage() {
       <Card>
         <CardContent className="flex items-center gap-2 py-6 text-sm text-rose-500">
           <AlertTriangle className="h-4 w-4" />
-          Клиент не найден или ошибка загрузки.
+          {t("admin.clientDetail.loadError")}
           <Button variant="ghost" size="sm" onClick={() => setLocation("/clients")}>
-            ← К списку
+            {t("admin.clientDetail.backToList")}
           </Button>
         </CardContent>
       </Card>
@@ -123,7 +125,7 @@ export default function ClientDetailPage() {
       {/* Breadcrumb + back */}
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <Link href="/clients" className="hover:text-foreground">
-          ← Клиенты
+          {t("admin.clientDetail.breadcrumbClients")}
         </Link>
         <ChevronRight className="h-3 w-3" />
         <span>{client.name}</span>
@@ -153,13 +155,13 @@ export default function ClientDetailPage() {
       {/* Tabs */}
       <div className="flex gap-1 border-b border-border">
         <TabButton active={tab === "profile"} onClick={() => setTab("profile")}>
-          Профиль
+          {t("admin.clientDetail.tabProfile")}
         </TabButton>
         <TabButton active={tab === "location"} onClick={() => setTab("location")}>
-          Локация
+          {t("admin.clientDetail.tabLocation")}
         </TabButton>
         <TabButton active={tab === "fuel"} onClick={() => setTab("fuel")}>
-          Топливо
+          {t("admin.clientDetail.tabFuel")}
         </TabButton>
         <TabButton active={tab === "ifta"} onClick={() => setTab("ifta")}>
           IFTA
@@ -171,7 +173,7 @@ export default function ClientDetailPage() {
           D&A
         </TabButton>
         <TabButton active={tab === "stats"} onClick={() => setTab("stats")}>
-          Статистика
+          {t("admin.clientDetail.tabStats")}
         </TabButton>
       </div>
 
@@ -216,6 +218,7 @@ function TabButton({
 // ---------------------------------------------------------------------------
 
 function ProfileTab({ client }: { client: Client }) {
+  const { t } = useT();
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -314,12 +317,12 @@ function ProfileTab({ client }: { client: Client }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/clients", client.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({ title: "Сохранено", description: "Профиль клиента обновлён." });
+      toast({ title: t("common.success"), description: t("admin.clientDetail.profileSaved") });
     },
     onError: (e: any) => {
       toast({
-        title: "Ошибка",
-        description: e?.message ?? "Не удалось сохранить",
+        title: t("common.error"),
+        description: e?.message ?? t("admin.clientDetail.saveFailed"),
         variant: "destructive",
       });
     },
@@ -404,19 +407,19 @@ function ProfileTab({ client }: { client: Client }) {
       {/* Block 1 — Company info */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Company info</CardTitle>
+          <CardTitle className="text-base">{t("admin.clientDetail.companyInfo")}</CardTitle>
           <p className="text-xs text-muted-foreground">
-            Legal/DBA company name from MC filing. Not the contact person&apos;s name.
+            {t("admin.clientDetail.companyInfoHint")}
           </p>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
-          <Field label="Company name (legal/DBA)">
+          <Field label={t("admin.clientDetail.companyNameLabel")}>
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
           <Field label="MC#">
             <Input value={form.mc} onChange={(e) => setForm({ ...form, mc: e.target.value })} />
           </Field>
-          <Field label="Основной equipment">
+          <Field label={t("admin.clientDetail.primaryEquipment")}>
             <Select
               value={form.equipment}
               onValueChange={(v) => setForm({ ...form, equipment: v as Equipment })}
@@ -439,20 +442,20 @@ function ProfileTab({ client }: { client: Client }) {
       {/* Block 1b — Henry QA Bug #6+7: Contact person */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Contact person</CardTitle>
+          <CardTitle className="text-base">{t("admin.clientDetail.contactPerson")}</CardTitle>
           <p className="text-xs text-muted-foreground">
-            Manager or primary contact at this carrier. Shown as “Company — Name” throughout the app.
+            {t("admin.clientDetail.contactPersonHint")}
           </p>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
-          <Field label="Contact name">
+          <Field label={t("admin.clientDetail.contactName")}>
             <Input
-              placeholder="e.g. John Smith"
+              placeholder={t("admin.clientDetail.contactNamePlaceholder")}
               value={form.contactPersonName}
               onChange={(e) => setForm({ ...form, contactPersonName: e.target.value })}
             />
           </Field>
-          <Field label="Contact email">
+          <Field label={t("admin.clientDetail.contactEmail")}>
             <Input
               type="email"
               placeholder="john@example.com"
@@ -460,7 +463,7 @@ function ProfileTab({ client }: { client: Client }) {
               onChange={(e) => setForm({ ...form, contactPersonEmail: e.target.value })}
             />
           </Field>
-          <Field label="Contact phone">
+          <Field label={t("admin.clientDetail.contactPhone")}>
             <Input
               placeholder="(555) 123-4567"
               value={form.contactPersonPhone}
@@ -473,9 +476,9 @@ function ProfileTab({ client }: { client: Client }) {
       {/* Block 2 — Экономика */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Экономика рейса</CardTitle>
+          <CardTitle className="text-base">{t("admin.clientDetail.tripEconomics")}</CardTitle>
           <p className="text-xs text-muted-foreground">
-            Используется в scoreLoadForClient для расчёта чистой прибыли.
+            {t("admin.clientDetail.tripEconomicsHint")}
           </p>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
@@ -495,11 +498,11 @@ function ProfileTab({ client }: { client: Client }) {
               onChange={(e) => setForm({ ...form, minimumPpm: Number(e.target.value) })}
             />
           </Field>
-          <Field label="Ср. MPG (для топл. аналитики)">
+          <Field label={t("admin.clientDetail.avgMpgLabel")}>
             <Input
               type="number"
               step="0.1"
-              placeholder={`по умолч. ${MPG_DEFAULTS[form.equipment as Equipment] ?? 8}`}
+              placeholder={t("admin.clientDetail.avgMpgPlaceholder", { value: MPG_DEFAULTS[form.equipment as Equipment] ?? 8 })}
               value={form.avgMpg}
               onChange={(e) => setForm({ ...form, avgMpg: e.target.value })}
             />
@@ -552,7 +555,7 @@ function ProfileTab({ client }: { client: Client }) {
       {/* Block 3 — Driver pay */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Оплата водителю</CardTitle>
+          <CardTitle className="text-base">{t("admin.clientDetail.driverPay")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <Select
@@ -563,9 +566,9 @@ function ProfileTab({ client }: { client: Client }) {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">Не указано</SelectItem>
-              <SelectItem value="cpm">$/милю (cpm)</SelectItem>
-              <SelectItem value="pct">% от gross</SelectItem>
+              <SelectItem value="none">{t("admin.clientDetail.payModeNone")}</SelectItem>
+              <SelectItem value="cpm">{t("admin.clientDetail.payModeCpm")}</SelectItem>
+              <SelectItem value="pct">{t("admin.clientDetail.payModePct")}</SelectItem>
             </SelectContent>
           </Select>
 
@@ -597,15 +600,15 @@ function ProfileTab({ client }: { client: Client }) {
       {/* Block 4 — Smart-matching фильтры */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Жёсткие фильтры</CardTitle>
+          <CardTitle className="text-base">{t("admin.clientDetail.hardFilters")}</CardTitle>
           <p className="text-xs text-muted-foreground">
-            Грузы не подходящие под фильтры отсеиваются в scoreLoadForClient ДО скоринга.
+            {t("admin.clientDetail.hardFiltersHint")}
           </p>
         </CardHeader>
         <CardContent className="space-y-5">
           <div>
             <Label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Equipment types (multi-trailer)
+              {t("admin.clientDetail.equipmentTypes")}
             </Label>
             <div className="flex flex-wrap gap-2">
               {EQUIPMENT_OPTIONS.map((o) => (
@@ -625,7 +628,7 @@ function ProfileTab({ client }: { client: Client }) {
               ))}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              Оставь пустым — будет использоваться только основной equipment.
+              {t("admin.clientDetail.equipmentTypesHint")}
             </p>
           </div>
 
@@ -649,7 +652,7 @@ function ProfileTab({ client }: { client: Client }) {
             />
           </Field>
 
-          <Field label="Blocked brokers (MC#, через запятую)">
+          <Field label={t("admin.clientDetail.blockedBrokers")}>
             <Input
               placeholder="123456, 789012"
               value={form.blockedBrokers}
@@ -659,7 +662,7 @@ function ProfileTab({ client }: { client: Client }) {
 
           <div>
             <Label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Avoid states ({form.avoidStates.length})
+              {t("admin.clientDetail.avoidStates", { count: form.avoidStates.length })}
             </Label>
             <div className="grid grid-cols-5 gap-1 sm:grid-cols-10">
               {US_STATES.map((st) => (
@@ -688,7 +691,7 @@ function ProfileTab({ client }: { client: Client }) {
           <CardTitle className="text-base">Lanes</CardTitle>
         </CardHeader>
         <CardContent>
-          <Field label="Preferred lanes (через запятую)">
+          <Field label={t("admin.clientDetail.preferredLanes")}>
             <Input
               placeholder="FL-CA, TX-GA"
               value={form.preferredLanes}
@@ -701,11 +704,11 @@ function ProfileTab({ client }: { client: Client }) {
       {/* Block 6 — Insurance expiries (Phase 7.2) */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Страховые сертификаты</CardTitle>
+          <CardTitle className="text-base">{t("admin.clientDetail.insuranceCertificates")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            Мы автоматом алертим в Telegram + email за 14, 7, 3, 1 день до истечения, в день истечения и по факту просрочки.
+            {t("admin.clientDetail.insuranceAlertHint")}
           </p>
           <div className="grid gap-4 sm:grid-cols-3">
             <InsuranceDateField
@@ -734,7 +737,7 @@ function ProfileTab({ client }: { client: Client }) {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            Напоминалки в Telegram + email за 60 / 30 / 14 / 7 / 1 день до UCR и IRP renewals. Пропущенный deadline = $500–2000 штрафы и OOS на дороге.
+            {t("admin.clientDetail.ucrIrpHint")}
           </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
@@ -745,7 +748,7 @@ function ProfileTab({ client }: { client: Client }) {
               />
               <Input
                 className="mt-2"
-                placeholder="Base state (e.g. FL)"
+                placeholder={t("admin.clientDetail.baseStatePlaceholder")}
                 maxLength={2}
                 value={form.ucrBaseState}
                 onChange={(e) => setForm({ ...form, ucrBaseState: e.target.value.toUpperCase() })}
@@ -759,7 +762,7 @@ function ProfileTab({ client }: { client: Client }) {
               />
               <Input
                 className="mt-2"
-                placeholder="Base jurisdiction (e.g. FL)"
+                placeholder={t("admin.clientDetail.baseJurisdictionPlaceholder")}
                 maxLength={2}
                 value={form.irpBaseJurisdiction}
                 onChange={(e) => setForm({ ...form, irpBaseJurisdiction: e.target.value.toUpperCase() })}
@@ -776,7 +779,7 @@ function ProfileTab({ client }: { client: Client }) {
       <div className="sticky bottom-0 -mx-4 flex items-center justify-end gap-2 border-t border-border bg-background/90 px-4 py-3 backdrop-blur md:-mx-6 md:px-6">
         <Button onClick={handleSave} disabled={mutation.isPending}>
           <Save className="mr-2 h-4 w-4" />
-          {mutation.isPending ? "Сохраняем…" : "Сохранить"}
+          {mutation.isPending ? t("admin.clientDetail.saving") : t("common.save")}
         </Button>
       </div>
     </div>
@@ -813,20 +816,21 @@ function InsuranceDateField({
   value: string;
   onChange: (v: string) => void;
 }) {
+  const { t } = useT();
   let badge: { text: string; cls: string } | null = null;
   if (value) {
     const expiry = new Date(`${value}T00:00:00`).getTime();
     const daysUntil = Math.round((expiry - Date.now()) / (24 * 3600 * 1000));
     if (daysUntil < 0) {
-      badge = { text: `🔴 Просрочена на ${Math.abs(daysUntil)} дн.`, cls: "text-destructive border-destructive/40 bg-destructive/5" };
+      badge = { text: t("admin.clientDetail.expiredDaysAgo", { days: Math.abs(daysUntil) }), cls: "text-destructive border-destructive/40 bg-destructive/5" };
     } else if (daysUntil === 0) {
-      badge = { text: "🔴 Истекает сегодня", cls: "text-destructive border-destructive/40 bg-destructive/5" };
+      badge = { text: t("admin.clientDetail.expiresToday"), cls: "text-destructive border-destructive/40 bg-destructive/5" };
     } else if (daysUntil <= 7) {
-      badge = { text: `⚠️ Через ${daysUntil} дн.`, cls: "text-warning border-warning/40 bg-warning/5" };
+      badge = { text: t("admin.clientDetail.inDaysWarn", { days: daysUntil }), cls: "text-warning border-warning/40 bg-warning/5" };
     } else if (daysUntil <= 30) {
-      badge = { text: `🟡 Через ${daysUntil} дн.`, cls: "text-amber-600 border-amber-500/30 bg-amber-500/5" };
+      badge = { text: t("admin.clientDetail.inDaysSoon", { days: daysUntil }), cls: "text-amber-600 border-amber-500/30 bg-amber-500/5" };
     } else {
-      badge = { text: `✅ Через ${daysUntil} дн.`, cls: "text-success border-success/30 bg-success/5" };
+      badge = { text: t("admin.clientDetail.inDaysOk", { days: daysUntil }), cls: "text-success border-success/30 bg-success/5" };
     }
   }
 
@@ -850,13 +854,14 @@ function InsuranceDateField({
 // ---------------------------------------------------------------------------
 
 function LocationTab({ client }: { client: Client }) {
+  const { t } = useT();
   const loc = client.currentLocation;
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Текущая локация</CardTitle>
+        <CardTitle className="text-base">{t("admin.clientDetail.currentLocation")}</CardTitle>
         <p className="text-xs text-muted-foreground">
-          Обновляется через PATCH /api/clients/:id/location (драйвер /loc или manual checkin).
+          {t("admin.clientDetail.currentLocationHint")}
         </p>
       </CardHeader>
       <CardContent>
@@ -867,7 +872,7 @@ function LocationTab({ client }: { client: Client }) {
           <Field label="Longitude">
             <p className="font-mono text-sm">{loc.lng.toFixed(5)}</p>
           </Field>
-          <Field label="Обновлено">
+          <Field label={t("admin.clientDetail.updatedAt")}>
             <p className="text-sm">
               {new Date(loc.updatedAt).toLocaleString("ru-RU")}
             </p>
@@ -883,13 +888,14 @@ function LocationTab({ client }: { client: Client }) {
 // ---------------------------------------------------------------------------
 
 function StatsTab({ client: _client }: { client: Client }) {
+  const { t } = useT();
   return (
     <Card>
       <CardContent className="flex flex-col items-center gap-2 py-12 text-sm text-muted-foreground">
         <MapPin className="h-8 w-8 opacity-50" />
-        <p>Статистика рейсов появится здесь.</p>
+        <p>{t("admin.clientDetail.statsComingSoon")}</p>
         <p className="text-xs">
-          Планируется: история score breakdown, top broker MCs, lane history.
+          {t("admin.clientDetail.statsPlanned")}
         </p>
       </CardContent>
     </Card>
@@ -933,6 +939,7 @@ type FuelSummary = {
 };
 
 function FuelTab({ client }: { client: Client }) {
+  const { t } = useT();
   const [days, setDays] = useState<1 | 7 | 15>(7);
   const q = useQuery<FuelSummary>({
     queryKey: ["/api/admin/clients", client.id, "fuel-summary", days],
@@ -971,7 +978,7 @@ function FuelTab({ client }: { client: Client }) {
               days === d ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            {d === 1 ? "Сутки" : `${d} дней`}
+            {d === 1 ? t("admin.clientDetail.periodDay") : t("admin.clientDetail.periodDays", { days: d })}
           </button>
         ))}
       </div>
@@ -979,13 +986,13 @@ function FuelTab({ client }: { client: Client }) {
       {!hasData && (
         <Card>
           <CardContent className="py-10 text-center text-sm text-muted-foreground">
-            <p className="font-medium">Пока нет данных</p>
+            <p className="font-medium">{t("admin.clientDetail.fuelNoData")}</p>
             <p className="mt-1 text-xs">
-              Чтобы эта вкладка заработала, нужны две вещи:
+              {t("admin.clientDetail.fuelNoDataHint")}
             </p>
             <ul className="mt-2 inline-block text-left text-xs">
-              <li>1. Включите GPS трекинг водителям этого клиента (Пользователи → :id → Геолокация)</li>
-              <li>2. Попросите водителей фоткать чеки в TG-бота — OCR распарсит и запишет</li>
+              <li>{t("admin.clientDetail.fuelNoDataStep1")}</li>
+              <li>{t("admin.clientDetail.fuelNoDataStep2")}</li>
             </ul>
           </CardContent>
         </Card>
@@ -994,11 +1001,11 @@ function FuelTab({ client }: { client: Client }) {
       {hasData && (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            <Stat label="Пройдено" value={`${s.totalMiles.toFixed(0)} mi`} />
-            <Stat label="Расход" value={`${s.gallons.toFixed(1)} gal`} />
-            <Stat label="Сумма" value={`$${(s.spendCents / 100).toFixed(2)}`} />
+            <Stat label={t("admin.clientDetail.fuelMiles")} value={`${s.totalMiles.toFixed(0)} mi`} />
+            <Stat label={t("admin.clientDetail.fuelGallons")} value={`${s.gallons.toFixed(1)} gal`} />
+            <Stat label={t("admin.clientDetail.fuelSpend")} value={`$${(s.spendCents / 100).toFixed(2)}`} />
             <Stat
-              label="Реальный MPG"
+              label={t("admin.clientDetail.fuelActualMpg")}
               value={actualMpgFmt}
               hint={s.expectedMpg != null ? `target ${expectedMpgFmt}` : undefined}
               tone={mpgDeltaPct == null ? "neutral" : mpgDeltaPct < -5 ? "bad" : mpgDeltaPct > 5 ? "good" : "neutral"}
@@ -1009,10 +1016,10 @@ function FuelTab({ client }: { client: Client }) {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
-                <span>Переплаты по заправкам</span>
+                <span>{t("admin.clientDetail.fuelOverpays")}</span>
                 {s.overpayAlerts.length > 0 && (
                   <span className="text-sm font-normal text-warning">
-                    Можно было сэкономить ${s.overpayTotalDollars.toFixed(2)}
+                    {t("admin.clientDetail.fuelCouldSave", { amount: s.overpayTotalDollars.toFixed(2) })}
                   </span>
                 )}
               </CardTitle>
@@ -1020,7 +1027,7 @@ function FuelTab({ client }: { client: Client }) {
             <CardContent>
               {s.overpayAlerts.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  Переплат не обнаружен. Водители заправляются по рыночным ценам.
+                  {t("admin.clientDetail.fuelNoOverpays")}
                 </p>
               ) : (
                 <div className="space-y-2">
@@ -1028,16 +1035,23 @@ function FuelTab({ client }: { client: Client }) {
                     <div key={a.transactionId} className="flex items-start justify-between gap-3 rounded-md border border-warning/30 bg-warning/5 p-3 text-sm">
                       <div className="min-w-0">
                         <p className="font-medium">
-                          {a.stationName ?? "Станция"} — водитель заплатил ${(a.paidCentsPerGallon / 100).toFixed(2)}/gal
+                          {t("admin.clientDetail.fuelStationPaid", {
+                            station: a.stationName ?? t("admin.clientDetail.fuelStationFallback"),
+                            price: (a.paidCentsPerGallon / 100).toFixed(2),
+                          })}
                         </p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
-                          Рядом ({a.cheaperDistanceKm.toFixed(1)} km) было {a.cheaperAtName ?? "другое место"} по $
-                          {(a.cheaperCentsPerGallon / 100).toFixed(2)}/gal — {new Date(a.occurredAt).toLocaleString()}
+                          {t("admin.clientDetail.fuelCheaperNearby", {
+                            km: a.cheaperDistanceKm.toFixed(1),
+                            place: a.cheaperAtName ?? t("admin.clientDetail.fuelOtherPlace"),
+                            price: (a.cheaperCentsPerGallon / 100).toFixed(2),
+                            time: new Date(a.occurredAt).toLocaleString(),
+                          })}
                         </p>
                       </div>
                       <div className="shrink-0 text-right">
                         <p className="text-sm font-semibold text-warning">+${a.savedDollars.toFixed(2)}</p>
-                        <p className="text-[10px] text-muted-foreground">переплатил</p>
+                        <p className="text-[10px] text-muted-foreground">{t("admin.clientDetail.fuelOverpaid")}</p>
                       </div>
                     </div>
                   ))}
@@ -1083,6 +1097,7 @@ interface IftaQuarterReport {
 }
 
 function IftaTab({ client }: { client: Client }) {
+  const { t } = useT();
   const now = new Date();
   const currentYear = now.getUTCFullYear();
   const currentQuarter = (Math.floor(now.getUTCMonth() / 3) + 1) as 1 | 2 | 3 | 4;
@@ -1107,20 +1122,20 @@ function IftaTab({ client }: { client: Client }) {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center justify-between gap-3">
-            <span>IFTA квартальный отчёт</span>
+            <span>{t("admin.clientDetail.iftaTitle")}</span>
             <a
               href={csvUrl}
               className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
               download
             >
-              ↓ Скачать CSV
+              {t("admin.clientDetail.iftaDownloadCsv")}
             </a>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
-              <Label className="text-xs text-muted-foreground">Год</Label>
+              <Label className="text-xs text-muted-foreground">{t("admin.clientDetail.iftaYear")}</Label>
               <Select value={String(year)} onValueChange={(v) => setYear(Number(v))}>
                 <SelectTrigger className="h-8 w-24">
                   <SelectValue />
@@ -1133,7 +1148,7 @@ function IftaTab({ client }: { client: Client }) {
               </Select>
             </div>
             <div className="flex items-center gap-2">
-              <Label className="text-xs text-muted-foreground">Квартал</Label>
+              <Label className="text-xs text-muted-foreground">{t("admin.clientDetail.iftaQuarter")}</Label>
               <div className="inline-flex rounded-md border border-border bg-muted/30 p-1">
                 {([1, 2, 3, 4] as const).map((qq) => (
                   <button
@@ -1153,8 +1168,7 @@ function IftaTab({ client }: { client: Client }) {
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Отчёт агрегирует пройденные мили (из GPS-трека) и купленное топливо (из чеков) по каждому штату
-            для всех водителей работающих на этого перевозчика. CSV можно загружать в IFTA-портал штата регистрации.
+            {t("admin.clientDetail.iftaHint")}
           </p>
         </CardContent>
       </Card>
@@ -1162,7 +1176,7 @@ function IftaTab({ client }: { client: Client }) {
       {q.isLoading && (
         <Card>
           <CardContent className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-            Считаем…
+            {t("admin.clientDetail.iftaCalculating")}
           </CardContent>
         </Card>
       )}
@@ -1171,11 +1185,11 @@ function IftaTab({ client }: { client: Client }) {
         <>
           {/* Totals */}
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            <Stat label="Мили всего" value={`${q.data.totals.miles.toLocaleString()} mi`} />
-            <Stat label="Галлоны всего" value={`${q.data.totals.gallons.toLocaleString()} gal`} />
-            <Stat label="Расход на топливо" value={`$${q.data.totals.fuelCostUsd.toLocaleString()}`} />
+            <Stat label={t("admin.clientDetail.iftaTotalMiles")} value={`${q.data.totals.miles.toLocaleString()} mi`} />
+            <Stat label={t("admin.clientDetail.iftaTotalGallons")} value={`${q.data.totals.gallons.toLocaleString()} gal`} />
+            <Stat label={t("admin.clientDetail.iftaFuelCost")} value={`$${q.data.totals.fuelCostUsd.toLocaleString()}`} />
             <Stat
-              label="Средний MPG"
+              label={t("admin.clientDetail.iftaAvgMpg")}
               value={q.data.totals.avgMpg != null ? q.data.totals.avgMpg.toFixed(2) : "—"}
             />
           </div>
@@ -1183,22 +1197,22 @@ function IftaTab({ client }: { client: Client }) {
           {/* State breakdown */}
           <Card>
             <CardHeader>
-              <CardTitle>По штатам</CardTitle>
+              <CardTitle>{t("admin.clientDetail.iftaByState")}</CardTitle>
             </CardHeader>
             <CardContent>
               {q.data.rows.length === 0 ? (
                 <p className="py-6 text-center text-sm text-muted-foreground">
-                  Нет данных за этот квартал. Включите GPS трекинг водителям и записывайте чеки на топливо.
+                  {t("admin.clientDetail.iftaNoQuarterData")}
                 </p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                        <th className="py-2 pr-3">Штат</th>
-                        <th className="py-2 pr-3 text-right">Мили</th>
-                        <th className="py-2 pr-3 text-right">Галлоны</th>
-                        <th className="py-2 pr-3 text-right">Стоимость</th>
+                        <th className="py-2 pr-3">{t("admin.clientDetail.iftaColState")}</th>
+                        <th className="py-2 pr-3 text-right">{t("admin.clientDetail.iftaColMiles")}</th>
+                        <th className="py-2 pr-3 text-right">{t("admin.clientDetail.iftaColGallons")}</th>
+                        <th className="py-2 pr-3 text-right">{t("admin.clientDetail.iftaColCost")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1220,9 +1234,10 @@ function IftaTab({ client }: { client: Client }) {
           {(q.data.unknownStateMiles > 0 || q.data.unknownStateGallons > 0) && (
             <Card>
               <CardContent className="py-3 text-xs text-muted-foreground">
-                Не удалось отнести к штату: <span className="font-medium">{q.data.unknownStateMiles} mi</span>{" "}
-                и <span className="font-medium">{q.data.unknownStateGallons} gal</span>{" "}
-                (пинги/транзакции вне границ или без координат станции)
+                {t("admin.clientDetail.iftaUnknownState", {
+                  miles: q.data.unknownStateMiles,
+                  gallons: q.data.unknownStateGallons,
+                })}
               </CardContent>
             </Card>
           )}
@@ -1288,6 +1303,7 @@ interface SafetyProfile {
 }
 
 function SafetyTab({ client }: { client: Client }) {
+  const { t } = useT();
   const q = useQuery<SafetyProfile>({
     queryKey: ["/api/admin/clients", client.id, "safety-profile"],
     queryFn: () =>
@@ -1307,18 +1323,16 @@ function SafetyTab({ client }: { client: Client }) {
               download
               className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
             >
-              ↓ Скачать (.md)
+              {t("admin.clientDetail.safetyDownloadMd")}
             </a>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
           <p>
-            Документ для брокерской due-diligence после SCOTUS Montgomery v. Caribe Transport II (2026).
-            Агрегирует FMCSA SAFER snapshot, статус страховок и операционную историю в этой системе.
+            {t("admin.clientDetail.safetyIntro1")}
           </p>
           <p className="text-xs">
-            Можно отдавать брокерам как доказательство carrier vetting. Файл генерируется в формате Markdown,
-            конвертируется в PDF через любой redactor (Notion, Google Docs).
+            {t("admin.clientDetail.safetyIntro2")}
           </p>
         </CardContent>
       </Card>
@@ -1326,7 +1340,7 @@ function SafetyTab({ client }: { client: Client }) {
       {q.isLoading && (
         <Card>
           <CardContent className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-            Собираем профиль…
+            {t("admin.clientDetail.safetyBuilding")}
           </CardContent>
         </Card>
       )}
@@ -1334,7 +1348,7 @@ function SafetyTab({ client }: { client: Client }) {
       {q.isError && (
         <Card>
           <CardContent className="py-4 text-sm text-destructive">
-            Не удалось загрузить профиль. Возможно, FMCSA_WEB_KEY не настроен в Integrations.
+            {t("admin.clientDetail.safetyLoadError")}
           </CardContent>
         </Card>
       )}
@@ -1362,11 +1376,12 @@ function SafetyVerdictCard({
   mc: string;
   fmcsaFetched: boolean;
 }) {
+  const { t } = useT();
   const badgeMap: Record<SafetyProfile["verdict"]["level"], { label: string; cls: string }> = {
-    green: { label: "🟢 GREEN — соответствует due-care", cls: "bg-success/10 text-success border-success/30" },
-    yellow: { label: "🟡 YELLOW — приемлемо с оговорками", cls: "bg-warning/10 text-warning border-warning/30" },
-    red: { label: "🔴 RED — есть дисквалифицирующие сигналы", cls: "bg-destructive/10 text-destructive border-destructive/30" },
-    unknown: { label: "⚪ UNKNOWN — недостаточно данных", cls: "bg-muted text-muted-foreground border-border" },
+    green: { label: t("admin.clientDetail.verdictGreen"), cls: "bg-success/10 text-success border-success/30" },
+    yellow: { label: t("admin.clientDetail.verdictYellow"), cls: "bg-warning/10 text-warning border-warning/30" },
+    red: { label: t("admin.clientDetail.verdictRed"), cls: "bg-destructive/10 text-destructive border-destructive/30" },
+    unknown: { label: t("admin.clientDetail.verdictUnknown"), cls: "bg-muted text-muted-foreground border-border" },
   };
   const badge = badgeMap[verdict.level];
 
@@ -1385,12 +1400,12 @@ function SafetyVerdictCard({
         <p className="text-sm">{verdict.summary}</p>
         {!fmcsaFetched && (
           <p className="text-xs text-warning">
-            ⚠ FMCSA данные не загружены — проверь FMCSA_WEB_KEY в Integrations.
+            {t("admin.clientDetail.fmcsaNotLoaded")}
           </p>
         )}
         {verdict.strengths.length > 0 && (
           <div>
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Сильные стороны</p>
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{t("admin.clientDetail.strengths")}</p>
             <ul className="mt-1 space-y-1 text-sm">
               {verdict.strengths.map((s, i) => (
                 <li key={i} className="flex gap-2"><span className="text-success">✓</span>{s}</li>
@@ -1400,7 +1415,7 @@ function SafetyVerdictCard({
         )}
         {verdict.risks.length > 0 && (
           <div>
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Риски</p>
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{t("admin.clientDetail.risks")}</p>
             <ul className="mt-1 space-y-1 text-sm">
               {verdict.risks.map((r, i) => (
                 <li key={i} className="flex gap-2"><span className="text-destructive">!</span>{r}</li>
@@ -1414,6 +1429,7 @@ function SafetyVerdictCard({
 }
 
 function SafetyInsuranceCard({ insurance }: { insurance: SafetyProfile["insurance"] }) {
+  const { t } = useT();
   const labelMap = { cargo: "Cargo", liability: "Auto liability", general: "General liability" };
   const statusClass = (s: SafetyProfile["insurance"][number]["status"]) =>
     s === "active" ? "text-success"
@@ -1424,7 +1440,7 @@ function SafetyInsuranceCard({ insurance }: { insurance: SafetyProfile["insuranc
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Страховки</CardTitle>
+        <CardTitle className="text-base">{t("admin.clientDetail.insuranceTitle")}</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="space-y-2 text-sm">
@@ -1433,7 +1449,7 @@ function SafetyInsuranceCard({ insurance }: { insurance: SafetyProfile["insuranc
               <span className="font-medium">{labelMap[ins.kind]}</span>
               <span className={`text-right ${statusClass(ins.status)}`}>
                 {ins.status === "missing"
-                  ? "не указано"
+                  ? t("admin.clientDetail.insuranceMissing")
                   : `${ins.status.toUpperCase()}${ins.daysUntilExpiry !== null ? ` · ${ins.daysUntilExpiry}d` : ""}`}
               </span>
             </div>
@@ -1445,22 +1461,23 @@ function SafetyInsuranceCard({ insurance }: { insurance: SafetyProfile["insuranc
 }
 
 function SafetyOperationalCard({ op }: { op: SafetyProfile["operational"] }) {
+  const { t } = useT();
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Операционная история</CardTitle>
+        <CardTitle className="text-base">{t("admin.clientDetail.operationalHistory")}</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <Stat label="Всего грузов" value={String(op.loadsTotal)} />
-          <Stat label="За 90 дней" value={String(op.loadsLast90d)} />
-          <Stat label="Доставлено" value={String(op.loadsDelivered)} />
-          <Stat label="Активных сейчас" value={String(op.loadsActive)} />
+          <Stat label={t("admin.clientDetail.opLoadsTotal")} value={String(op.loadsTotal)} />
+          <Stat label={t("admin.clientDetail.opLast90d")} value={String(op.loadsLast90d)} />
+          <Stat label={t("admin.clientDetail.opDelivered")} value={String(op.loadsDelivered)} />
+          <Stat label={t("admin.clientDetail.opActiveNow")} value={String(op.loadsActive)} />
         </div>
         {op.firstActivityAt && (
           <p className="mt-3 text-xs text-muted-foreground">
-            Первая активность: {new Date(op.firstActivityAt).toISOString().slice(0, 10)}
-            {op.lastActivityAt && ` · Последняя: ${new Date(op.lastActivityAt).toISOString().slice(0, 10)}`}
+            {t("admin.clientDetail.opFirstActivity", { date: new Date(op.firstActivityAt).toISOString().slice(0, 10) })}
+            {op.lastActivityAt && t("admin.clientDetail.opLastActivity", { date: new Date(op.lastActivityAt).toISOString().slice(0, 10) })}
           </p>
         )}
       </CardContent>
@@ -1485,6 +1502,7 @@ interface ClearinghouseDriverRow {
 }
 
 function ClearinghouseTab({ client }: { client: Client }) {
+  const { t } = useT();
   const qc = useQueryClient();
   const queryKey = ["/api/admin/clients", client.id, "clearinghouse"] as const;
   const q = useQuery<{ drivers: ClearinghouseDriverRow[] }>({
@@ -1506,12 +1524,10 @@ function ClearinghouseTab({ client }: { client: Client }) {
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
           <p>
-            FMCSA 49 CFR §382 требует <span className="font-semibold text-foreground">pre-employment</span> query
-            на каждого нового CDL driver'a и <span className="font-semibold text-foreground">annual</span> query
-            каждые 12 месяцев. Штраф $7,500/инцидент.
+            {t("admin.clientDetail.clearinghouseIntro1")}
           </p>
           <p className="text-xs">
-            Сам запрос делайте на clearinghouse.fmcsa.dot.gov, а здесь фиксируйте дату и результат для audit trail.
+            {t("admin.clientDetail.clearinghouseIntro2")}
           </p>
         </CardContent>
       </Card>
@@ -1527,7 +1543,7 @@ function ClearinghouseTab({ client }: { client: Client }) {
       {q.data && q.data.drivers.length === 0 && (
         <Card>
           <CardContent className="py-6 text-center text-sm text-muted-foreground">
-            У этого перевозчика нет привязанных водителей.
+            {t("admin.clientDetail.clearinghouseNoDrivers")}
           </CardContent>
         </Card>
       )}
@@ -1539,12 +1555,12 @@ function ClearinghouseTab({ client }: { client: Client }) {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                    <th className="py-2 pr-3">Driver</th>
-                    <th className="py-2 pr-3">Pre-employment</th>
-                    <th className="py-2 pr-3">Annual last</th>
-                    <th className="py-2 pr-3">Annual valid until</th>
-                    <th className="py-2 pr-3">Status</th>
-                    <th className="py-2 pr-3 text-right">Action</th>
+                    <th className="py-2 pr-3">{t("admin.clientDetail.chColDriver")}</th>
+                    <th className="py-2 pr-3">{t("admin.clientDetail.chColPreEmployment")}</th>
+                    <th className="py-2 pr-3">{t("admin.clientDetail.chColAnnualLast")}</th>
+                    <th className="py-2 pr-3">{t("admin.clientDetail.chColAnnualValidUntil")}</th>
+                    <th className="py-2 pr-3">{t("admin.clientDetail.chColStatus")}</th>
+                    <th className="py-2 pr-3 text-right">{t("admin.clientDetail.chColAction")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1575,6 +1591,7 @@ function ClearinghouseTab({ client }: { client: Client }) {
 function ClearinghouseRow({
   row, onRecord,
 }: { row: ClearinghouseDriverRow; onRecord: () => void }) {
+  const { t } = useT();
   const annualValidMs = row.annual_valid_until ? new Date(row.annual_valid_until).getTime() : null;
   const annualDaysLeft = annualValidMs !== null
     ? Math.floor((annualValidMs - Date.now()) / (24 * 3600 * 1000))
@@ -1583,19 +1600,19 @@ function ClearinghouseRow({
   let statusLabel: string;
   let statusCls: string;
   if (row.annual_result === "prohibited") {
-    statusLabel = "PROHIBITED";
+    statusLabel = t("admin.clientDetail.chStatusProhibited");
     statusCls = "text-destructive";
   } else if (annualDaysLeft === null) {
-    statusLabel = "Annual missing";
+    statusLabel = t("admin.clientDetail.chStatusAnnualMissing");
     statusCls = "text-destructive";
   } else if (annualDaysLeft < 0) {
-    statusLabel = `Expired ${-annualDaysLeft}d ago`;
+    statusLabel = t("admin.clientDetail.chStatusExpired", { days: -annualDaysLeft });
     statusCls = "text-destructive";
   } else if (annualDaysLeft <= 60) {
-    statusLabel = `Due in ${annualDaysLeft}d`;
+    statusLabel = t("admin.clientDetail.chStatusDue", { days: annualDaysLeft });
     statusCls = "text-warning";
   } else {
-    statusLabel = "Current";
+    statusLabel = t("admin.clientDetail.chStatusCurrent");
     statusCls = "text-success";
   }
 
@@ -1613,7 +1630,7 @@ function ClearinghouseRow({
       </td>
       <td className={`py-2 pr-3 text-xs font-medium ${statusCls}`}>{statusLabel}</td>
       <td className="py-2 pr-3 text-right">
-        <Button size="sm" variant="outline" onClick={onRecord}>Записать query</Button>
+        <Button size="sm" variant="outline" onClick={onRecord}>{t("admin.clientDetail.chRecordQuery")}</Button>
       </td>
     </tr>
   );
@@ -1626,6 +1643,7 @@ function ClearinghouseRecordDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useT();
   const toast = useToast();
   const [queryType, setQueryType] = useState<"pre_employment" | "annual">("annual");
   const [result, setResult] = useState<"clear" | "prohibited" | "pending" | "consent_revoked">("clear");
@@ -1640,12 +1658,12 @@ function ClearinghouseRecordDialog({
       notes: notes.trim() || undefined,
     }),
     onSuccess: () => {
-      toast.toast({ title: "Сохранили", description: "D&A query записан в журнал." });
+      toast.toast({ title: t("admin.clientDetail.chSavedTitle"), description: t("admin.clientDetail.chSavedDesc") });
       onSaved();
     },
     onError: (err) => {
       toast.toast({
-        title: "Ошибка",
+        title: t("common.error"),
         description: err instanceof Error ? err.message : String(err),
         variant: "destructive",
       });
@@ -1658,35 +1676,35 @@ function ClearinghouseRecordDialog({
         <button
           type="button"
           onClick={onClose}
-          aria-label="Закрыть"
+          aria-label={t("common.close")}
           className="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
         >
           <X className="h-4 w-4" />
         </button>
-        <h3 className="text-base font-semibold">Записать Clearinghouse query</h3>
+        <h3 className="text-base font-semibold">{t("admin.clientDetail.chDialogTitle")}</h3>
         <p className="mt-1 text-xs text-muted-foreground">{driver.full_name || driver.email}</p>
 
         <div className="mt-4 space-y-3 text-sm">
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Тип запроса</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("admin.clientDetail.chQueryType")}</label>
             <div className="inline-flex rounded-md border border-border bg-muted/30 p-1">
-              {(["pre_employment", "annual"] as const).map((t) => (
+              {(["pre_employment", "annual"] as const).map((qt) => (
                 <button
-                  key={t}
+                  key={qt}
                   type="button"
-                  onClick={() => setQueryType(t)}
+                  onClick={() => setQueryType(qt)}
                   className={`rounded px-3 py-1 text-xs font-medium transition ${
-                    queryType === t ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                    queryType === qt ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {t === "pre_employment" ? "Pre-employment" : "Annual"}
+                  {qt === "pre_employment" ? t("admin.clientDetail.chColPreEmployment") : t("admin.clientDetail.chAnnual")}
                 </button>
               ))}
             </div>
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Дата запроса</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("admin.clientDetail.chQueryDate")}</label>
             <Input
               type="date"
               value={queriedAt}
@@ -1696,35 +1714,35 @@ function ClearinghouseRecordDialog({
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Результат</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("admin.clientDetail.chResult")}</label>
             <select
               value={result}
               onChange={(e) => setResult(e.target.value as typeof result)}
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
             >
-              <option value="clear">Clear (нет нарушений)</option>
-              <option value="prohibited">Prohibited (запрещён)</option>
-              <option value="pending">Pending (в обработке)</option>
-              <option value="consent_revoked">Consent revoked</option>
+              <option value="clear">{t("admin.clientDetail.chResultClear")}</option>
+              <option value="prohibited">{t("admin.clientDetail.chResultProhibited")}</option>
+              <option value="pending">{t("admin.clientDetail.chResultPending")}</option>
+              <option value="consent_revoked">{t("admin.clientDetail.chResultConsentRevoked")}</option>
             </select>
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Заметки (опц.)</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("admin.clientDetail.chNotes")}</label>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={3}
               maxLength={2000}
-              placeholder="FMCSA case ref, контекст"
+              placeholder={t("admin.clientDetail.chNotesPlaceholder")}
               className="w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
             />
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={onClose} disabled={mut.isPending}>Отмена</Button>
+            <Button variant="outline" onClick={onClose} disabled={mut.isPending}>{t("common.cancel")}</Button>
             <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
-              {mut.isPending ? "Сохраняем…" : "Записать"}
+              {mut.isPending ? t("admin.clientDetail.saving") : t("admin.clientDetail.chRecord")}
             </Button>
           </div>
         </div>
@@ -1785,6 +1803,7 @@ const COMPLIANCE_DOC_TYPES = [
 ] as const;
 
 function ComplianceDocsCard({ clientId }: { clientId: string }) {
+  const { t } = useT();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [docType, setDocType] = useState<string>("cargo_insurance");
@@ -1800,7 +1819,7 @@ function ComplianceDocsCard({ clientId }: { clientId: string }) {
 
   async function handleUpload() {
     if (!pickedFile) {
-      toast({ title: "Выберите файл", variant: "destructive" });
+      toast({ title: t("admin.clientDetail.docsPickFile"), variant: "destructive" });
       return;
     }
     setUploading(true);
@@ -1819,7 +1838,7 @@ function ComplianceDocsCard({ clientId }: { clientId: string }) {
         const j = await res.json().catch(() => null);
         throw new Error((j as { message?: string })?.message ?? `${res.status}`);
       }
-      toast({ title: "Документ загружен" });
+      toast({ title: t("admin.clientDetail.docsUploaded") });
       setPickedFile(null);
       setDocExpires("");
       setDocNotes("");
@@ -1832,7 +1851,7 @@ function ComplianceDocsCard({ clientId }: { clientId: string }) {
       });
     } catch (err) {
       toast({
-        title: "Не удалось загрузить",
+        title: t("admin.clientDetail.docsUploadFailed"),
         description: (err as Error).message,
         variant: "destructive",
       });
@@ -1842,7 +1861,7 @@ function ComplianceDocsCard({ clientId }: { clientId: string }) {
   }
 
   async function handleDelete(docId: string) {
-    if (!window.confirm("Удалить документ безвозвратно?")) return;
+    if (!window.confirm(t("admin.clientDetail.docsDeleteConfirm"))) return;
     try {
       const res = await fetch(
         `/api/admin/clients/${clientId}/documents/${docId}`,
@@ -1854,7 +1873,7 @@ function ComplianceDocsCard({ clientId }: { clientId: string }) {
       });
     } catch (err) {
       toast({
-        title: "Не удалось удалить",
+        title: t("admin.clientDetail.docsDeleteFailed"),
         description: (err as Error).message,
         variant: "destructive",
       });
@@ -1863,36 +1882,39 @@ function ComplianceDocsCard({ clientId }: { clientId: string }) {
 
   const items = q.data?.items ?? [];
 
+  const docTypeLabel = (value: string, fallback: string) => {
+    const key = `admin.clientDetail.docType.${value}`;
+    const translated = t(key);
+    return translated === key ? fallback : translated;
+  };
+
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base flex items-center gap-2">
-          <FileText className="h-4 w-4" /> Документы (фото / PDF)
+          <FileText className="h-4 w-4" /> {t("admin.clientDetail.docsTitle")}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-xs text-muted-foreground">
-          Загрузите фото или PDF сертификата — сервер сам подставит дату
-          истечения в соответствующее поле выше (cargo insurance / UCR / IRP и т.д.).
-          Owner-operator водители грузят со своего портала — документ автоматически
-          привязывается к этой компании.
+          {t("admin.clientDetail.docsHint")}
         </p>
 
         <div className="grid gap-3 rounded-lg border border-dashed border-border p-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label className="text-xs">Тип документа</Label>
+            <Label className="text-xs">{t("admin.clientDetail.docsType")}</Label>
             <select
               className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
               value={docType}
               onChange={(e) => setDocType(e.target.value)}
             >
-              {COMPLIANCE_DOC_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>{t.label}</option>
+              {COMPLIANCE_DOC_TYPES.map((dt) => (
+                <option key={dt.value} value={dt.value}>{docTypeLabel(dt.value, dt.label)}</option>
               ))}
             </select>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs">Истекает (опционально)</Label>
+            <Label className="text-xs">{t("admin.clientDetail.docsExpires")}</Label>
             <Input
               type="date"
               value={docExpires}
@@ -1900,16 +1922,16 @@ function ComplianceDocsCard({ clientId }: { clientId: string }) {
             />
           </div>
           <div className="space-y-1.5 sm:col-span-2">
-            <Label className="text-xs">Заметка</Label>
+            <Label className="text-xs">{t("admin.clientDetail.docsNote")}</Label>
             <Input
               value={docNotes}
               onChange={(e) => setDocNotes(e.target.value)}
-              placeholder="Policy #, агент, доп.инфо..."
+              placeholder={t("admin.clientDetail.docsNotePlaceholder")}
               maxLength={500}
             />
           </div>
           <div className="space-y-1.5 sm:col-span-2">
-            <Label className="text-xs">Файл (PDF / JPG / PNG, до 10 MB)</Label>
+            <Label className="text-xs">{t("admin.clientDetail.docsFile")}</Label>
             <Input
               type="file"
               accept=".pdf,.jpg,.jpeg,.png"
@@ -1924,21 +1946,22 @@ function ComplianceDocsCard({ clientId }: { clientId: string }) {
               className="gap-2"
             >
               {uploading ? (
-                <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Загрузка...</>
+                <><Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("common.loading")}</>
               ) : (
-                <><Upload className="h-3.5 w-3.5" /> Загрузить</>
+                <><Upload className="h-3.5 w-3.5" /> {t("admin.clientDetail.docsUpload")}</>
               )}
             </Button>
           </div>
         </div>
 
         {items.length === 0 ? (
-          <p className="text-xs text-muted-foreground">Пока документов нет.</p>
+          <p className="text-xs text-muted-foreground">{t("admin.clientDetail.docsEmpty")}</p>
         ) : (
           <ul className="divide-y divide-border rounded-md border border-border">
             {items.map((d) => {
-              const label =
-                COMPLIANCE_DOC_TYPES.find((t) => t.value === d.type)?.label ?? d.type;
+              const fallbackLabel =
+                COMPLIANCE_DOC_TYPES.find((dt) => dt.value === d.type)?.label ?? d.type;
+              const label = docTypeLabel(d.type, fallbackLabel);
               return (
                 <li
                   key={d.id}
@@ -1950,9 +1973,9 @@ function ComplianceDocsCard({ clientId }: { clientId: string }) {
                       <span className="truncate font-medium">{d.fileName}</span>
                     </div>
                     <div className="mt-0.5 text-xs text-muted-foreground">
-                      {d.expiresAt ? `Истекает ${d.expiresAt}` : "Без срока"}
+                      {d.expiresAt ? t("admin.clientDetail.docsExpiresOn", { date: d.expiresAt }) : t("admin.clientDetail.docsNoExpiry")}
                       {" · "}
-                      загружен {new Date(d.createdAt).toLocaleDateString()}
+                      {t("admin.clientDetail.docsUploadedOn", { date: new Date(d.createdAt).toLocaleDateString() })}
                       {d.notes ? ` · ${d.notes.slice(0, 50)}` : ""}
                     </div>
                   </div>
@@ -1962,7 +1985,7 @@ function ComplianceDocsCard({ clientId }: { clientId: string }) {
                     size="sm"
                     className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
                     onClick={() => handleDelete(d.id)}
-                    title="Удалить документ"
+                    title={t("admin.clientDetail.docsDeleteTitle")}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>

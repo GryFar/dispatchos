@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { useAuth, refreshAuth } from "@/lib/use-auth";
 import { apiJson } from "@/lib/queryClient";
+import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -53,39 +54,39 @@ import { cn } from "@/lib/utils";
 
 interface NavItem {
   href: string;
-  label: string;
+  labelKey: string;
   icon: typeof LayoutDashboard;
   badgeKey?: "approvalQueueCount";
 }
 
 interface NavGroup {
-  label?: string;
+  labelKey?: string;
   items: NavItem[];
 }
 
 const NAV: NavGroup[] = [
   {
     items: [
-      { href: "/", label: "Дашборд", icon: LayoutDashboard },
-      { href: "/users", label: "Пользователи", icon: Users },
-      { href: "/assignments", label: "Назначения", icon: Network },
-      { href: "/clients", label: "Клиенты", icon: Briefcase },
-      { href: "/loads", label: "Грузы", icon: Truck },
-      { href: "/brokers", label: "Брокеры", icon: Headset },
-      { href: "/documents", label: "Документы", icon: FileText },
-      { href: "/queue", label: "Очередь", icon: Inbox, badgeKey: "approvalQueueCount" },
-      { href: "/billing", label: "Биллинг", icon: CreditCard },
-      { href: "/settings", label: "Настройки", icon: Settings },
+      { href: "/", labelKey: "admin.nav.dashboard", icon: LayoutDashboard },
+      { href: "/users", labelKey: "admin.nav.users", icon: Users },
+      { href: "/assignments", labelKey: "admin.nav.assignments", icon: Network },
+      { href: "/clients", labelKey: "admin.nav.clients", icon: Briefcase },
+      { href: "/loads", labelKey: "admin.nav.loads", icon: Truck },
+      { href: "/brokers", labelKey: "admin.nav.brokers", icon: Headset },
+      { href: "/documents", labelKey: "admin.nav.documents", icon: FileText },
+      { href: "/queue", labelKey: "admin.nav.queue", icon: Inbox, badgeKey: "approvalQueueCount" },
+      { href: "/billing", labelKey: "admin.nav.billing", icon: CreditCard },
+      { href: "/settings", labelKey: "admin.nav.settings", icon: Settings },
     ],
   },
   {
-    label: "Платформа",
+    labelKey: "admin.nav.platform",
     items: [
-      { href: "/integrations", label: "Интеграции", icon: Plug },
-      { href: "/load-sources", label: "Источники грузов", icon: Radio },
-      { href: "/email-inbox", label: "Входящая почта", icon: Mail },
-      { href: "/audit", label: "Audit log", icon: History },
-      { href: "/backup", label: "Backup", icon: Database },
+      { href: "/integrations", labelKey: "admin.nav.integrations", icon: Plug },
+      { href: "/load-sources", labelKey: "admin.nav.loadSources", icon: Radio },
+      { href: "/email-inbox", labelKey: "admin.nav.emailInbox", icon: Mail },
+      { href: "/audit", labelKey: "admin.nav.auditLog", icon: History },
+      { href: "/backup", labelKey: "admin.nav.backup", icon: Database },
     ],
   },
 ];
@@ -129,6 +130,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
 }
 
 function SidebarContent({ currentPath, onNavigate }: { currentPath: string; onNavigate?: () => void }) {
+  const { t } = useT();
   // Poll open approval-task count for the sidebar badge. 30 s is plenty —
   // drivers report issues at low volume and we don't need realtime here.
   const { data: queueData } = useQuery<{ total: number }>({
@@ -157,9 +159,9 @@ function SidebarContent({ currentPath, onNavigate }: { currentPath: string; onNa
       <nav className="sidebar-scroll flex-1 overflow-y-auto px-2 py-3">
         {NAV.map((group, groupIdx) => (
           <div key={groupIdx} className={groupIdx > 0 ? "mt-5" : undefined}>
-            {group.label && (
+            {group.labelKey && (
               <p className="mb-1 px-2.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                {group.label}
+                {t(group.labelKey)}
               </p>
             )}
             <ul className="space-y-0.5">
@@ -188,7 +190,7 @@ function SidebarContent({ currentPath, onNavigate }: { currentPath: string; onNa
                           active ? "text-primary" : "group-hover:scale-110",
                         )}
                       />
-                      <span className="flex-1">{item.label}</span>
+                      <span className="flex-1">{t(item.labelKey)}</span>
                       {badgeCount > 0 && (
                         <span
                           className={cn(
@@ -210,14 +212,14 @@ function SidebarContent({ currentPath, onNavigate }: { currentPath: string; onNa
         ))}
 
         <div className="mt-6 px-2.5">
-          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Legacy</p>
+          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{t("admin.nav.legacy")}</p>
           <Link
             href="/legacy-dashboard"
             onClick={onNavigate}
             className="group mt-2 flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent-soft hover:text-foreground"
           >
             <Archive className="h-3.5 w-3.5 transition-transform group-hover:scale-110" />
-            Старый дашборд
+            {t("admin.nav.legacyDashboard")}
           </Link>
         </div>
       </nav>
@@ -231,6 +233,7 @@ function SidebarContent({ currentPath, onNavigate }: { currentPath: string; onNa
 }
 
 function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
+  const { t } = useT();
   const { user } = useAuth();
   const [, setLocation] = useLocation();
 
@@ -246,7 +249,7 @@ function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur-md backdrop-saturate-150 md:px-6">
-      <Button variant="ghost" size="icon" className="md:hidden" onClick={onMobileMenu} aria-label="Меню">
+      <Button variant="ghost" size="icon" className="md:hidden" onClick={onMobileMenu} aria-label={t("admin.nav.menu")}>
         <Menu className="h-5 w-5" />
       </Button>
 
@@ -285,10 +288,10 @@ function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={() => setLocation("/settings")}>
-            <Settings className="mr-2 h-4 w-4" /> Настройки
+            <Settings className="mr-2 h-4 w-4" /> {t("admin.nav.settings")}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
-            <LogOut className="mr-2 h-4 w-4" /> Выйти
+            <LogOut className="mr-2 h-4 w-4" /> {t("common.signOut")}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

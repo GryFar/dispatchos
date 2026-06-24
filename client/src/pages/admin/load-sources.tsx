@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 import { Loader2, Plus, Radio, AlertCircle } from "lucide-react";
 import type { Client } from "@shared/schema";
 import { apiJson } from "@/lib/queryClient";
+import { useT } from "@/lib/i18n";
 import { formatDateFull } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -51,11 +52,11 @@ export interface AdapterMeta {
   implemented: boolean;
 }
 
-const STATUS_LABEL: Record<LoadSourceStatus, string> = {
-  active: "Активен",
-  paused: "На паузе",
-  error: "Ошибка",
-  needs_credentials: "Нужны ключи",
+const STATUS_LABEL_KEY: Record<LoadSourceStatus, string> = {
+  active: "admin.loadSources.statusActive",
+  paused: "admin.loadSources.statusPaused",
+  error: "admin.loadSources.statusError",
+  needs_credentials: "admin.loadSources.statusNeedsCredentials",
 };
 
 // Map our status to a real StatusBadge variant (see StatusBadge.tsx — it has
@@ -78,6 +79,7 @@ function statusVariant(s: LoadSourceStatus): "active" | "info" | "blocked" | "pe
 }
 
 export default function LoadSourcesPage() {
+  const { t } = useT();
   const [, setLocation] = useLocation();
 
   const { data, isLoading } = useQuery<{ loadSources: LoadSource[] }>({
@@ -116,7 +118,7 @@ export default function LoadSourcesPage() {
   const columns: DataTableColumn<LoadSource>[] = [
     {
       key: "label",
-      header: "Название",
+      header: t("admin.loadSources.colName"),
       cell: (s) => (
         <div className="flex flex-col">
           <span className="font-medium">{s.label}</span>
@@ -128,15 +130,15 @@ export default function LoadSourcesPage() {
     },
     {
       key: "client",
-      header: "Клиент",
+      header: t("admin.loadSources.colClient"),
       cell: (s) => clientName.get(s.clientId) ?? <span className="text-muted-foreground">{s.clientId}</span>,
     },
     {
       key: "status",
-      header: "Статус",
+      header: t("admin.loadSources.colStatus"),
       cell: (s) => (
         <div className="flex items-center gap-1.5">
-          <StatusBadge variant={statusVariant(s.status)}>{STATUS_LABEL[s.status]}</StatusBadge>
+          <StatusBadge variant={statusVariant(s.status)}>{t(STATUS_LABEL_KEY[s.status])}</StatusBadge>
           {s.status === "error" && s.lastErrorMsg && (
             <span title={s.lastErrorMsg}>
               <AlertCircle className="h-3.5 w-3.5 text-destructive" />
@@ -147,22 +149,22 @@ export default function LoadSourcesPage() {
     },
     {
       key: "poll",
-      header: "Интервал",
+      header: t("admin.loadSources.colInterval"),
       align: "right",
       mono: true,
       hideOnMobile: true,
-      cell: (s) => `${s.pollIntervalMin} мин`,
+      cell: (s) => t("admin.loadSources.intervalMin", { min: s.pollIntervalMin }),
     },
     {
       key: "lastPolled",
-      header: "Последний опрос",
+      header: t("admin.loadSources.colLastPolled"),
       hideOnMobile: true,
       cell: (s) =>
         s.lastPolledAt ? (
           <div className="flex flex-col">
             <span className="text-xs">{formatDateFull(s.lastPolledAt)}</span>
             <span className="text-[11px] text-muted-foreground">
-              найдено: {s.lastLoadsFound}
+              {t("admin.loadSources.found", { count: s.lastLoadsFound })}
             </span>
           </div>
         ) : (
@@ -176,20 +178,19 @@ export default function LoadSourcesPage() {
       <div className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            Admin / Источники грузов
+            {t("admin.loadSources.eyebrow")}
           </p>
           <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight">
             <Radio className="h-6 w-6 text-primary" />
-            Источники грузов
+            {t("admin.loadSources.title")}
           </h1>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            Автоматический опрос бордов и почты по каждому клиенту. Опрос каждые
-            N минут через cron.
+            {t("admin.loadSources.subtitle")}
           </p>
         </div>
         <Button onClick={() => setLocation("/load-sources/new")}>
           <Plus className="h-4 w-4" />
-          Добавить источник
+          {t("admin.loadSources.addSource")}
         </Button>
       </div>
 
@@ -201,8 +202,8 @@ export default function LoadSourcesPage() {
         <Card className="p-2">
           <EmptyState
             icon={<Radio className="h-6 w-6" />}
-            title="Нет источников"
-            description="Добавьте первый источник грузов — mock для теста или Sylectus по почте."
+            title={t("admin.loadSources.emptyTitle")}
+            description={t("admin.loadSources.emptyDescription")}
           />
         </Card>
       ) : (

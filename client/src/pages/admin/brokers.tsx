@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { DensityProvider } from "@/lib/density";
+import { useT, tr } from "@/lib/i18n";
 
 /**
  * Brokers page — реестр проверенных брокеров.
@@ -40,6 +41,7 @@ import { DensityProvider } from "@/lib/density";
  * POST /api/broker/check → BrokerRecord (initiates FMCSA check)
  */
 export default function BrokersPage() {
+  const { t } = useT();
   const [q, setQ] = useState("");
   const [verdictFilter, setVerdictFilter] = useState<"all" | "clean" | "verify" | "stop">("all");
   const [checkOpen, setCheckOpen] = useState(false);
@@ -72,16 +74,16 @@ export default function BrokersPage() {
         <header className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              Admin / Брокеры
+              {t("admin.brokers.eyebrow")}
             </p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">Брокеры</h1>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("admin.brokers.title")}</h1>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              FMCSA-проверенная база брокеров с verdict'ом и flag'ами.
+              {t("admin.brokers.subtitle")}
             </p>
           </div>
           <Button onClick={() => setCheckOpen(true)}>
             <ShieldCheck className="h-4 w-4" />
-            Проверить брокера
+            {t("admin.brokers.checkBroker")}
           </Button>
         </header>
 
@@ -91,7 +93,7 @@ export default function BrokersPage() {
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Поиск по имени или MC"
+              placeholder={t("admin.brokers.searchPlaceholder")}
               className="pl-9"
             />
           </div>
@@ -100,7 +102,7 @@ export default function BrokersPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Все verdict</SelectItem>
+              <SelectItem value="all">{t("admin.brokers.allVerdicts")}</SelectItem>
               <SelectItem value="clean">Clean</SelectItem>
               <SelectItem value="verify">Verify</SelectItem>
               <SelectItem value="stop">Stop</SelectItem>
@@ -110,7 +112,7 @@ export default function BrokersPage() {
 
         {error ? (
           <Alert variant="destructive">
-            <AlertDescription>Не удалось загрузить брокеров: {(error as Error).message}</AlertDescription>
+            <AlertDescription>{t("admin.brokers.loadError", { message: (error as Error).message })}</AlertDescription>
           </Alert>
         ) : (
           <BrokersTable rows={rows} loading={isLoading} />
@@ -118,8 +120,8 @@ export default function BrokersPage() {
 
         {data && (
           <p className="text-xs text-muted-foreground">
-            Всего: {data.length}
-            {(q || verdictFilter !== "all") && ` · отфильтровано: ${rows.length}`}
+            {t("admin.brokers.total", { count: data.length })}
+            {(q || verdictFilter !== "all") && ` ${t("admin.brokers.filtered", { count: rows.length })}`}
           </p>
         )}
 
@@ -130,10 +132,11 @@ export default function BrokersPage() {
 }
 
 function BrokersTable({ rows, loading }: { rows: BrokerRecord[]; loading: boolean }) {
+  const { t } = useT();
   const columns: DataTableColumn<BrokerRecord>[] = [
     {
       key: "name",
-      header: "Брокер",
+      header: t("admin.brokers.colBroker"),
       cell: (b) => (
         <div className="min-w-0">
           <p className="truncate text-xs font-medium">{b.brokerName}</p>
@@ -156,7 +159,7 @@ function BrokersTable({ rows, loading }: { rows: BrokerRecord[]; loading: boolea
             <StatusBadge variant={variant}>{b.authorityStatus.replace("_", " ")}</StatusBadge>
             {b.authorityAgeMonths > 0 && (
               <p className="mt-0.5 text-[10px] text-muted-foreground">
-                {b.authorityAgeMonths} мес
+                {t("admin.brokers.months", { count: b.authorityAgeMonths })}
               </p>
             )}
           </div>
@@ -205,7 +208,7 @@ function BrokersTable({ rows, loading }: { rows: BrokerRecord[]; loading: boolea
     },
     {
       key: "checked",
-      header: "Проверено",
+      header: t("admin.brokers.colChecked"),
       cell: (b) => (
         <span className="text-[10px] text-muted-foreground" title={formatDateFull(b.checkedAt)}>
           {formatRelativeAgo(b.checkedAt)}
@@ -225,8 +228,8 @@ function BrokersTable({ rows, loading }: { rows: BrokerRecord[]; loading: boolea
       empty={
         <EmptyState
           icon={<Headset />}
-          title="Нет проверенных брокеров"
-          description="Запустите первую проверку через кнопку «Проверить брокера»."
+          title={t("admin.brokers.emptyTitle")}
+          description={t("admin.brokers.emptyDescription")}
         />
       }
     />
@@ -238,18 +241,28 @@ function BrokersTable({ rows, loading }: { rows: BrokerRecord[]; loading: boolea
 // ===========================================================================
 
 const checkBrokerSchema = z.object({
-  brokerMc: z.string().min(1, "Введите MC"),
+  brokerMc: z.string().min(1, tr("admin.brokers.mcRequired")),
   brokerName: z.string().optional(),
 });
 type CheckBrokerForm = z.infer<typeof checkBrokerSchema>;
 
 function CheckBrokerDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (b: boolean) => void }) {
+  const { t } = useT();
   const qc = useQueryClient();
   const { toast } = useToast();
   const [result, setResult] = useState<BrokerRecord | null>(null);
 
+  const localizedSchema = useMemo(
+    () =>
+      z.object({
+        brokerMc: z.string().min(1, t("admin.brokers.mcRequired")),
+        brokerName: z.string().optional(),
+      }),
+    [t],
+  );
+
   const form = useForm<CheckBrokerForm>({
-    resolver: zodResolver(checkBrokerSchema),
+    resolver: zodResolver(localizedSchema),
     defaultValues: { brokerMc: "", brokerName: "" },
   });
 
@@ -261,7 +274,7 @@ function CheckBrokerDialog({ open, onOpenChange }: { open: boolean; onOpenChange
       setResult(data);
     },
     onError: (err: Error) => {
-      toast({ variant: "destructive", title: "Ошибка проверки", description: err.message });
+      toast({ variant: "destructive", title: t("admin.brokers.checkError"), description: err.message });
     },
   });
 
@@ -316,20 +329,20 @@ function CheckBrokerDialog({ open, onOpenChange }: { open: boolean; onOpenChange
               )}
             </div>
             <DialogFooter>
-              <Button onClick={handleClose}>Готово</Button>
+              <Button onClick={handleClose}>{t("common.success")}</Button>
             </DialogFooter>
           </>
         ) : (
           <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))}>
             <DialogHeader>
-              <DialogTitle>Проверить брокера</DialogTitle>
+              <DialogTitle>{t("admin.brokers.checkBroker")}</DialogTitle>
               <DialogDescription>
-                FMCSA-проверка по MC. Результат сохранится в базе.
+                {t("admin.brokers.checkDialogDescription")}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-1.5">
-                <Label htmlFor="brokerMc">MC брокера</Label>
+                <Label htmlFor="brokerMc">{t("admin.brokers.mcLabel")}</Label>
                 <Input
                   id="brokerMc"
                   placeholder="123456"
@@ -341,21 +354,21 @@ function CheckBrokerDialog({ open, onOpenChange }: { open: boolean; onOpenChange
                 )}
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="brokerName">Имя (опционально)</Label>
+                <Label htmlFor="brokerName">{t("admin.brokers.nameLabel")}</Label>
                 <Input id="brokerName" placeholder="ABC Logistics LLC" {...form.register("brokerName")} />
               </div>
               <Alert>
                 <AlertDescription className="text-xs">
-                  Проверка идёт через FMCSA Safer. Может занять до 10 секунд.
+                  {t("admin.brokers.checkHint")}
                 </AlertDescription>
               </Alert>
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={handleClose}>
-                Отмена
+                {t("common.cancel")}
               </Button>
               <Button type="submit" disabled={mutation.isPending}>
-                {mutation.isPending ? "Проверка..." : "Проверить"}
+                {mutation.isPending ? t("admin.brokers.checking") : t("admin.brokers.check")}
               </Button>
             </DialogFooter>
           </form>

@@ -21,6 +21,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { apiJson } from "@/lib/queryClient";
+import { useT } from "@/lib/i18n";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -67,6 +68,7 @@ interface PlanDto {
 }
 
 export default function BillingStripePage() {
+  const { t } = useT();
   const { toast } = useToast();
   const [location] = useLocation();
   const [busy, setBusy] = useState<string | null>(null);
@@ -111,7 +113,7 @@ export default function BillingStripePage() {
       window.location.href = res.url;
     } catch (err) {
       toast({
-        title: "Не удалось открыть оплату",
+        title: t("admin.billingStripe.checkoutOpenFailed"),
         description: (err as Error).message,
         variant: "destructive",
       });
@@ -126,7 +128,7 @@ export default function BillingStripePage() {
       window.location.href = res.url;
     } catch (err) {
       toast({
-        title: "Не удалось открыть Customer Portal",
+        title: t("admin.billingStripe.portalOpenFailed"),
         description: (err as Error).message,
         variant: "destructive",
       });
@@ -138,7 +140,7 @@ export default function BillingStripePage() {
     clients.length > 1 ? (
       <div className="flex items-center gap-2">
         <label htmlFor="billing-carrier" className="text-xs font-medium text-muted-foreground">
-          Перевозчик
+          {t("admin.billingStripe.carrier")}
         </label>
         <select
           id="billing-carrier"
@@ -146,7 +148,7 @@ export default function BillingStripePage() {
           onChange={(e) => setSelectedClientId(e.target.value || null)}
           className="h-9 rounded-md border border-input bg-background px-2 text-sm"
         >
-          <option value="">— выберите —</option>
+          <option value="">{t("admin.billingStripe.selectPlaceholder")}</option>
           {clients.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
@@ -171,7 +173,7 @@ export default function BillingStripePage() {
         {carrierPicker}
         <Card>
           <CardContent className="p-4 text-sm text-muted-foreground">
-            Выберите перевозчика, чтобы посмотреть и изменить его подписку.
+            {t("admin.billingStripe.pickCarrierPrompt")}
           </CardContent>
         </Card>
       </div>
@@ -196,20 +198,19 @@ export default function BillingStripePage() {
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
               <AlertCircle className="h-4 w-4 text-amber-500" />
-              Stripe не настроен
+              {t("admin.billingStripe.notConfiguredTitle")}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             <p>
-              Чтобы принимать оплату через Stripe, добавьте API-ключи в{" "}
+              {t("admin.billingStripe.notConfiguredIntro")}{" "}
               <a href="#/admin/integrations" className="text-primary hover:underline">
-                Settings → Integrations
+                {t("admin.billingStripe.settingsIntegrations")}
               </a>{" "}
-              (раздел "Stripe").
+              {t("admin.billingStripe.notConfiguredSection")}
             </p>
             <p className="text-xs">
-              Нужен Secret key (sk_test_... или sk_live_...) + Webhook signing
-              secret (whsec_...). После настройки этой страницы тут появятся планы.
+              {t("admin.billingStripe.notConfiguredKeys")}
             </p>
           </CardContent>
         </Card>
@@ -240,7 +241,7 @@ export default function BillingStripePage() {
           <CardContent className="flex items-center gap-3 p-4">
             <CheckCircle2 className="h-5 w-5 text-emerald-600" />
             <p className="text-sm">
-              Оплата прошла. Подписка активна; статус обновится через несколько секунд.
+              {t("admin.billingStripe.checkoutSuccess")}
             </p>
           </CardContent>
         </Card>
@@ -249,7 +250,7 @@ export default function BillingStripePage() {
         <Card className="border-amber-300/40 bg-amber-50/30 dark:bg-amber-950/10">
           <CardContent className="flex items-center gap-3 p-4">
             <AlertCircle className="h-5 w-5 text-amber-600" />
-            <p className="text-sm">Оплата отменена. Ничего не списано.</p>
+            <p className="text-sm">{t("admin.billingStripe.checkoutCanceled")}</p>
           </CardContent>
         </Card>
       )}
@@ -260,10 +261,10 @@ export default function BillingStripePage() {
           <div>
             <CardTitle className="text-base flex items-center gap-2">
               <CreditCard className="h-4 w-4" />
-              Текущий план
+              {t("admin.billingStripe.currentPlan")}
             </CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
-              {status.planLabel ?? "Trial"}
+              {status.planLabel ?? t("admin.billingStripe.trial")}
             </p>
           </div>
           <BillingStatusBadge billingStatus={status.billingStatus} />
@@ -271,18 +272,18 @@ export default function BillingStripePage() {
         <CardContent className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
             <Stat
-              label="Ставка"
+              label={t("admin.billingStripe.rate")}
               value={`$${((status.monthlyCents ?? 0) / 100).toFixed(0)}/mo`}
             />
             {trialDaysLeft != null && status.billingStatus === "trial" && (
               <Stat
-                label="Триал до"
-                value={`${trialDaysLeft} дн.`}
+                label={t("admin.billingStripe.trialUntil")}
+                value={t("admin.billingStripe.daysLeft", { count: trialDaysLeft })}
                 hint={status.trialEndsAt ? new Date(status.trialEndsAt).toLocaleDateString() : ""}
               />
             )}
             <Stat
-              label="Driver seats"
+              label={t("admin.billingStripe.driverSeats")}
               value={`${status.seats?.driverSeatCount ?? 0} / ${
                 status.seats?.includedDriverSeats === 999
                   ? "∞"
@@ -295,7 +296,7 @@ export default function BillingStripePage() {
               }
             />
             <Stat
-              label="Dispatcher seats"
+              label={t("admin.billingStripe.dispatcherSeats")}
               value={`${status.seats?.dispatcherSeatCount ?? 0} / ${
                 status.seats?.includedDispatcherSeats === 999
                   ? "∞"
@@ -317,7 +318,7 @@ export default function BillingStripePage() {
               ) : (
                 <ExternalLink className="h-3.5 w-3.5" />
               )}
-              Manage in Stripe Portal
+              {t("admin.billingStripe.manageInStripePortal")}
             </Button>
           )}
         </CardContent>
@@ -325,7 +326,7 @@ export default function BillingStripePage() {
 
       {/* Available upgrade plans */}
       <div>
-        <h2 className="mb-3 text-base font-semibold">Доступные планы</h2>
+        <h2 className="mb-3 text-base font-semibold">{t("admin.billingStripe.availablePlans")}</h2>
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
           {availablePlans.map((p) => {
             const isCurrent = p.tier === status.planTier;
@@ -339,7 +340,7 @@ export default function BillingStripePage() {
               >
                 <div className="flex items-baseline justify-between">
                   <h3 className="text-sm font-semibold">{p.label}</h3>
-                  {isCurrent && <Badge variant="secondary" className="text-[10px]">Текущий</Badge>}
+                  {isCurrent && <Badge variant="secondary" className="text-[10px]">{t("admin.billingStripe.currentBadge")}</Badge>}
                 </div>
                 <div className="mt-2 flex items-baseline gap-1">
                   <span className="text-2xl font-bold">${(p.monthlyCents / 100).toFixed(0)}</span>
@@ -349,25 +350,27 @@ export default function BillingStripePage() {
                   <li className="flex items-start gap-1.5">
                     <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-emerald-500" />
                     <span>
-                      {p.includedDriverSeats === 999 ? "∞" : p.includedDriverSeats} driver seats
+                      {t("admin.billingStripe.driverSeatsCount", {
+                        count: p.includedDriverSeats === 999 ? "∞" : p.includedDriverSeats,
+                      })}
                     </span>
                   </li>
                   {p.features?.carrierSafetyProfile && (
                     <li className="flex items-start gap-1.5">
                       <Sparkles className="mt-0.5 h-3 w-3 flex-shrink-0 text-amber-500" />
-                      <span>Carrier Safety Profile</span>
+                      <span>{t("admin.billingStripe.carrierSafetyProfile")}</span>
                     </li>
                   )}
                   {p.features?.counterpartyVettingPremium && (
                     <li className="flex items-start gap-1.5">
                       <Sparkles className="mt-0.5 h-3 w-3 flex-shrink-0 text-amber-500" />
-                      <span>Premium broker vetting</span>
+                      <span>{t("admin.billingStripe.premiumBrokerVetting")}</span>
                     </li>
                   )}
                   {p.features?.apiAccess && (
                     <li className="flex items-start gap-1.5">
                       <Sparkles className="mt-0.5 h-3 w-3 flex-shrink-0 text-amber-500" />
-                      <span>API access + webhooks</span>
+                      <span>{t("admin.billingStripe.apiAccessWebhooks")}</span>
                     </li>
                   )}
                 </ul>
@@ -382,9 +385,9 @@ export default function BillingStripePage() {
                     {busy === p.tier ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : isUpgrade ? (
-                      "Upgrade"
+                      t("admin.billingStripe.upgrade")
                     ) : (
-                      "Downgrade"
+                      t("admin.billingStripe.downgrade")
                     )}
                   </Button>
                 )}
@@ -414,12 +417,13 @@ function BillingStatusBadge({
 }: {
   billingStatus?: "trial" | "active" | "past_due" | "canceled";
 }) {
+  const { t } = useT();
   if (!billingStatus) return null;
   const map = {
-    trial: { label: "Trial", className: "bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/20" },
-    active: { label: "Active", className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
-    past_due: { label: "Past due", className: "bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-500/20" },
-    canceled: { label: "Canceled", className: "bg-muted text-muted-foreground border-border" },
+    trial: { label: t("admin.billingStripe.statusTrial"), className: "bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/20" },
+    active: { label: t("admin.billingStripe.statusActive"), className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
+    past_due: { label: t("admin.billingStripe.statusPastDue"), className: "bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-500/20" },
+    canceled: { label: t("admin.billingStripe.statusCanceled"), className: "bg-muted text-muted-foreground border-border" },
   };
   const c = map[billingStatus];
   return (

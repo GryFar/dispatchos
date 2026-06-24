@@ -159,7 +159,7 @@ export default function LandingPage() {
               onClick={() => setLocation("/signup")}
               className="inline-flex items-center gap-2 rounded-lg bg-[#f59e0b] px-6 py-3 text-base font-semibold text-[#0a0e1a] transition-all hover:bg-[#fbbf24] hover:shadow-[0_0_32px_rgba(245,158,11,0.45)]"
             >
-              Начать бесплатно
+              {t("landing.hero.ctaStart")}
               <ArrowRight className="h-5 w-5" />
             </button>
             <button
@@ -542,10 +542,10 @@ function ContactModal({ onClose }: { onClose: () => void }) {
               >
                 {state.kind === "submitting" ? (
                   <>
-                    <Loader2 className="h-4 w-4 animate-spin" /> Отправляем
+                    <Loader2 className="h-4 w-4 animate-spin" /> {t("common.sending")}
                   </>
                 ) : (
-                  <>Отправить <ArrowRight className="h-4 w-4" /></>
+                  <>{t("common.send")} <ArrowRight className="h-4 w-4" /></>
                 )}
               </button>
             </div>

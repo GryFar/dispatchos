@@ -19,6 +19,7 @@ import { EndpointPending, isEndpointMissing } from "@/components/dispatch/Endpoi
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /**
  * Admin Dashboard.
@@ -33,6 +34,7 @@ import { cn } from "@/lib/utils";
  * по spec.
  */
 export default function DashboardPage() {
+  const { t } = useT();
   const { data, isLoading, error } = useQuery<DashboardStats>({
     queryKey: ["/api/admin/dashboard/stats"],
     queryFn: () => apiJson<DashboardStats>("GET", "/api/admin/dashboard/stats"),
@@ -44,11 +46,11 @@ export default function DashboardPage() {
       <header className="flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            Admin / Дашборд
+            {t("admin.dashboard.breadcrumb")}
           </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Дашборд</h1>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("admin.dashboard.title")}</h1>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            KPI, статус интеграций, состояние системы.
+            {t("admin.dashboard.subtitle")}
           </p>
         </div>
       </header>
@@ -59,12 +61,12 @@ export default function DashboardPage() {
       ) : isEndpointMissing(error) ? (
         <EndpointPending
           endpoint="GET /api/admin/dashboard/stats"
-          description="Агрегатор KPI ещё не реализован. После Phase 3 здесь будут MRR, активные клиенты, грузы за неделю и события за сутки."
+          description={t("admin.dashboard.endpointPending")}
         />
       ) : error ? (
         <Alert variant="destructive">
           <AlertDescription>
-            Не удалось загрузить статистику: {(error as Error).message}
+            {t("admin.dashboard.loadError", { message: (error as Error).message })}
           </AlertDescription>
         </Alert>
       ) : data ? (
@@ -77,9 +79,9 @@ export default function DashboardPage() {
           <Card className="lg:col-span-2 shadow-card">
             <CardContent className="p-5">
               <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-sm font-semibold">Интеграции</h2>
+                <h2 className="text-sm font-semibold">{t("admin.dashboard.integrations")}</h2>
                 <p className="text-xs text-muted-foreground">
-                  Обновлено: {data.audit.lastEventAt ? formatRelativeAgo(data.audit.lastEventAt) : "—"}
+                  {t("admin.dashboard.updatedLabel")}: {data.audit.lastEventAt ? formatRelativeAgo(data.audit.lastEventAt) : "—"}
                 </p>
               </div>
               <ul className="space-y-2">
@@ -106,10 +108,10 @@ export default function DashboardPage() {
                         h.status === "error" && "text-destructive",
                       )}
                     >
-                      {h.status === "ok" ? "OK"
-                        : h.status === "warn" ? "Warn"
-                        : h.status === "missing" ? "Не настроено"
-                        : "Ошибка"}
+                      {h.status === "ok" ? t("admin.dashboard.statusOk")
+                        : h.status === "warn" ? t("admin.dashboard.statusWarn")
+                        : h.status === "missing" ? t("admin.dashboard.statusMissing")
+                        : t("common.error")}
                     </span>
                   </li>
                 ))}
@@ -119,12 +121,12 @@ export default function DashboardPage() {
 
           <Card className="shadow-card">
             <CardContent className="p-5">
-              <h2 className="mb-4 text-sm font-semibold">Система</h2>
+              <h2 className="mb-4 text-sm font-semibold">{t("admin.dashboard.system")}</h2>
               <dl className="space-y-3 text-sm">
-                <SystemRow label="Версия" value={<span className="font-mono">{data.system.version}</span>} />
-                <SystemRow label="Uptime" value={<span className="font-mono">{formatUptime(data.system.uptimeSeconds)}</span>} />
+                <SystemRow label={t("admin.dashboard.version")} value={<span className="font-mono">{data.system.version}</span>} />
+                <SystemRow label={t("admin.dashboard.uptime")} value={<span className="font-mono">{formatUptime(data.system.uptimeSeconds)}</span>} />
                 <SystemRow
-                  label="Размер БД"
+                  label={t("admin.dashboard.dbSize")}
                   value={
                     <span className="font-mono">
                       {data.system.dbSizeBytes != null
@@ -134,7 +136,7 @@ export default function DashboardPage() {
                   }
                 />
                 <SystemRow
-                  label="Последнее событие"
+                  label={t("admin.dashboard.lastEvent")}
                   value={
                     <span title={data.audit.lastEventAt ? formatDateFull(data.audit.lastEventAt) : undefined}>
                       {data.audit.lastEventAt ? formatRelativeAgo(data.audit.lastEventAt) : "—"}
@@ -151,15 +153,16 @@ export default function DashboardPage() {
 }
 
 function KpiGrid({ data }: { data: DashboardStats }) {
+  const { t } = useT();
   const usersTotal = data.users.admins + data.users.dispatchers + data.users.drivers;
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <KpiCard
-        label="MRR"
+        label={t("admin.dashboard.kpiMrr")}
         numericValue={data.mrr.currentUsd}
         formatNumeric={formatMoney}
         value={formatMoney(data.mrr.currentUsd)}
-        helper={`${data.mrr.activeClients} клиентов`}
+        helper={t("admin.dashboard.kpiMrrHelper", { count: data.mrr.activeClients })}
         icon={<DollarSign className="h-5 w-5" />}
         accent="primary"
         trend={data.mrr.trend
@@ -170,7 +173,7 @@ function KpiGrid({ data }: { data: DashboardStats }) {
           : undefined}
       />
       <KpiCard
-        label="Пользователи"
+        label={t("admin.dashboard.kpiUsers")}
         numericValue={usersTotal}
         value={usersTotal}
         helper={`${data.users.admins} admin / ${data.users.dispatchers} disp / ${data.users.drivers} driv`}
@@ -178,7 +181,7 @@ function KpiGrid({ data }: { data: DashboardStats }) {
         accent="chart-2"
       />
       <KpiCard
-        label="Грузы за неделю"
+        label={t("admin.dashboard.kpiLoads")}
         numericValue={data.loads.weekCount}
         value={data.loads.weekCount}
         helper={`${formatMoney(data.loads.weekGrossUsd)} gross`}
@@ -186,13 +189,13 @@ function KpiGrid({ data }: { data: DashboardStats }) {
         accent="primary"
       />
       <KpiCard
-        label="События за 24ч"
+        label={t("admin.dashboard.kpiEvents")}
         numericValue={data.audit.eventsLast24h}
         value={data.audit.eventsLast24h}
         helper={
           data.audit.errorEventsLast24h > 0
-            ? `${data.audit.errorEventsLast24h} ошибок`
-            : "Без ошибок"
+            ? t("admin.dashboard.kpiEventsErrors", { count: data.audit.errorEventsLast24h })
+            : t("admin.dashboard.kpiEventsNoErrors")
         }
         icon={<History className="h-5 w-5" />}
         accent={data.audit.errorEventsLast24h > 0 ? "warning" : "muted"}

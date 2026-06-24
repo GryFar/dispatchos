@@ -7,6 +7,7 @@ import { formatDateFull } from "@/lib/format";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useT } from "@/lib/i18n";
 
 /**
  * Backup page — экспорт БД одним кликом.
@@ -17,6 +18,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
  *   - redacted=false → полный дамп (для миграции на другой инстанс)
  */
 export default function BackupPage() {
+  const { t } = useT();
   const [downloading, setDownloading] = useState<"redacted" | "full" | null>(null);
   const { toast } = useToast();
 
@@ -44,11 +46,11 @@ export default function BackupPage() {
       dl.click();
       document.body.removeChild(dl);
       URL.revokeObjectURL(dl.href);
-      toast({ title: "Backup скачан", description: dl.download });
+      toast({ title: t("admin.backup.downloaded"), description: dl.download });
     } catch (err) {
       toast({
         variant: "destructive",
-        title: "Ошибка экспорта",
+        title: t("admin.backup.exportError"),
         description: (err as Error).message,
       });
     } finally {
@@ -64,7 +66,7 @@ export default function BackupPage() {
         </p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight">Backup</h1>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          Экспорт всей БД в JSON. Скачайте файл и сохраните в безопасном месте.
+          {t("admin.backup.subtitle")}
         </p>
       </header>
 
@@ -76,10 +78,9 @@ export default function BackupPage() {
                 <ShieldCheck className="h-5 w-5" />
               </div>
               <div className="min-w-0">
-                <h2 className="text-sm font-semibold">Безопасный экспорт</h2>
+                <h2 className="text-sm font-semibold">{t("admin.backup.safeExportTitle")}</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Пароли, TOTP-секреты, OAuth-токены замаскированы. Безопасно отправить
-                  партнёру или сохранить в Google Drive.
+                  {t("admin.backup.safeExportDesc")}
                 </p>
               </div>
             </div>
@@ -89,7 +90,7 @@ export default function BackupPage() {
               disabled={downloading !== null}
             >
               <Download className="h-4 w-4" />
-              {downloading === "redacted" ? "Скачивание..." : "Скачать redacted backup"}
+              {downloading === "redacted" ? t("admin.backup.downloading") : t("admin.backup.downloadRedacted")}
             </Button>
           </CardContent>
         </Card>
@@ -101,10 +102,9 @@ export default function BackupPage() {
                 <ShieldAlert className="h-5 w-5" />
               </div>
               <div className="min-w-0">
-                <h2 className="text-sm font-semibold">Полный экспорт</h2>
+                <h2 className="text-sm font-semibold">{t("admin.backup.fullExportTitle")}</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Содержит password hashes, TOTP secrets, OAuth tokens. Хранить ТОЛЬКО
-                  в зашифрованном виде (1Password, Bitwarden, encrypted disk).
+                  {t("admin.backup.fullExportDesc")}
                 </p>
               </div>
             </div>
@@ -115,7 +115,7 @@ export default function BackupPage() {
               disabled={downloading !== null}
             >
               <Download className="h-4 w-4" />
-              {downloading === "full" ? "Скачивание..." : "Скачать полный backup"}
+              {downloading === "full" ? t("admin.backup.downloading") : t("admin.backup.downloadFull")}
             </Button>
           </CardContent>
         </Card>
@@ -124,21 +124,19 @@ export default function BackupPage() {
       <Alert>
         <Database className="h-4 w-4" />
         <AlertDescription className="text-xs">
-          <strong>Рекомендация:</strong> делайте redacted backup еженедельно перед миграциями
-          или крупными изменениями. Полный backup — только когда планируете перенос на другой
-          сервер.
+          <strong>{t("admin.backup.recommendationLabel")}</strong> {t("admin.backup.recommendationBody")}
         </AlertDescription>
       </Alert>
 
       {systemQuery.data && (
         <Card className="shadow-card">
           <CardContent className="p-5">
-            <h3 className="mb-3 text-sm font-semibold">Состояние системы</h3>
+            <h3 className="mb-3 text-sm font-semibold">{t("admin.backup.systemStatus")}</h3>
             <dl className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               {systemQuery.data.version && (
                 <div>
                   <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                    Версия
+                    {t("admin.backup.version")}
                   </dt>
                   <dd className="font-mono text-sm">{systemQuery.data.version}</dd>
                 </div>
@@ -155,7 +153,7 @@ export default function BackupPage() {
               )}
               <div>
                 <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Текущее время
+                  {t("admin.backup.currentTime")}
                 </dt>
                 <dd className="text-sm">{formatDateFull(new Date())}</dd>
               </div>

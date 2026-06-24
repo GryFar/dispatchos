@@ -96,7 +96,7 @@ export default function DriverProfilePage() {
       if (phone.trim().length === 0) {
         toast({
           title: t("common.error"),
-          description: "Phone cannot be cleared in P0 — replace with a new number instead.",
+          description: t("driver.profile.phoneCannotBeCleared"),
         });
         return;
       }
@@ -171,7 +171,7 @@ export default function DriverProfilePage() {
             <div>
               <Label htmlFor="email" className="text-xs">
                 {t("common.email")}{" "}
-                <span className="text-muted-foreground">(admin-only)</span>
+                <span className="text-muted-foreground">{t("driver.profile.adminOnly")}</span>
               </Label>
               <div className="relative mt-1">
                 <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
