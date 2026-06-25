@@ -59,5 +59,24 @@ function assert(name: string, cond: boolean, detail?: string) {
   assert("flat client fallback reads fields", lines.length === 1 && lines[0].expiresAt === "2026-01-15");
 }
 
+// Non-empty but unparseable date ("TBD") is skipped, not treated as a deadline.
+// Otherwise daysBetween() would return 0 and fire a spurious "expires TODAY" alert.
+{
+  const lines = readRenewalsFromClient({ payload: { ucrExpiresAt: "TBD", irpExpiresAt: "2026-09-30" } });
+  assert("garbage ucr skipped, valid irp kept", lines.length === 1 && lines[0].kind === "irp");
+}
+
+// Out-of-range date pieces ("2026-13-40") are rejected.
+{
+  const lines = readRenewalsFromClient({ payload: { ucrExpiresAt: "2026-13-40" } });
+  assert("out-of-range date rejected", lines.length === 0);
+}
+
+// A full datetime string is accepted via the YYYY-MM-DD prefix.
+{
+  const lines = readRenewalsFromClient({ payload: { ucrExpiresAt: "2026-09-30T00:00:00.000Z" } });
+  assert("datetime prefix accepted", lines.length === 1 && lines[0].kind === "ucr");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

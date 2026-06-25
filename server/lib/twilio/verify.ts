@@ -45,6 +45,28 @@ export type LineType = "mobile" | "landline" | "voip" | "unknown";
 type VerifyResult = { ok: boolean; sid?: string; error?: string };
 type CheckResult  = { ok: boolean; status?: string; error?: string };
 
+// Twilio error code for "email channel not configured on this Verify Service"
+const TWILIO_EMAIL_NOT_CONFIGURED_CODE = 60220;
+
+/**
+ * Map a caught Twilio SDK error to an OPAQUE, non-leaking error code.
+ *
+ * Twilio SDK error messages routinely embed the submitted phone/email, the
+ * Verify Service SID, internal error codes and a "More info" URL. Those must
+ * never reach the HTTP response body (routes forward result.error verbatim to
+ * unauthenticated signup clients). We log the full detail server-side and
+ * return a fixed code: the one channel-config code callers branch on, or a
+ * generic 'twilio_error' for everything else.
+ */
+function twilioErrorCode(e: any, context: string): string {
+  // Log full detail server-side only (code + message), never to the client.
+  console.error(`[twilio.verify] ${context} failed`, e?.code, e?.message);
+  if (e?.code === TWILIO_EMAIL_NOT_CONFIGURED_CODE) {
+    return "email_channel_not_configured";
+  }
+  return "twilio_error";
+}
+
 // ---------------------------------------------------------------------------
 // SMS channel
 // ---------------------------------------------------------------------------
@@ -62,7 +84,7 @@ export async function sendVerificationCode(phoneE164: string): Promise<VerifyRes
       .verifications.create({ to: phoneE164, channel: "sms" });
     return { ok: true, sid: v.sid };
   } catch (e: any) {
-    return { ok: false, error: e?.message ?? "twilio_error" };
+    return { ok: false, error: twilioErrorCode(e, "sendVerificationCode") };
   }
 }
 
@@ -79,16 +101,13 @@ export async function checkVerificationCode(
       .verificationChecks.create({ to: phoneE164, code });
     return { ok: v.status === "approved", status: v.status };
   } catch (e: any) {
-    return { ok: false, error: e?.message ?? "twilio_error" };
+    return { ok: false, error: twilioErrorCode(e, "checkVerificationCode") };
   }
 }
 
 // ---------------------------------------------------------------------------
 // Email channel
 // ---------------------------------------------------------------------------
-
-// Twilio error code for "email channel not configured on this Verify Service"
-const TWILIO_EMAIL_NOT_CONFIGURED_CODE = 60220;
 
 /**
  * Send a 6-digit email verification code via Twilio Verify (email channel).
@@ -106,11 +125,8 @@ export async function sendEmailVerificationCode(email: string): Promise<VerifyRe
       .verifications.create({ to: email, channel: "email" });
     return { ok: true, sid: v.sid };
   } catch (e: any) {
-    // 60220 = Email integration not configured on the Verify Service
-    if (e?.code === TWILIO_EMAIL_NOT_CONFIGURED_CODE) {
-      return { ok: false, error: "email_channel_not_configured" };
-    }
-    return { ok: false, error: e?.message ?? "twilio_error" };
+    // 60220 maps to 'email_channel_not_configured'; all else to opaque code.
+    return { ok: false, error: twilioErrorCode(e, "sendEmailVerificationCode") };
   }
 }
 
@@ -127,10 +143,7 @@ export async function checkEmailVerificationCode(
       .verificationChecks.create({ to: email, code });
     return { ok: v.status === "approved", status: v.status };
   } catch (e: any) {
-    if (e?.code === TWILIO_EMAIL_NOT_CONFIGURED_CODE) {
-      return { ok: false, error: "email_channel_not_configured" };
-    }
-    return { ok: false, error: e?.message ?? "twilio_error" };
+    return { ok: false, error: twilioErrorCode(e, "checkEmailVerificationCode") };
   }
 }
 

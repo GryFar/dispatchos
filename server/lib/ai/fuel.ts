@@ -86,6 +86,13 @@ interface FuelCacheEntry {
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 let cache: FuelCacheEntry | null = null;
 
+// Plausibility window ($/gal) for an EIA-refreshed retail diesel price. A value
+// outside this range almost certainly indicates a unit error (cents vs dollars,
+// e.g. 368 vs 3.68), a decimal typo, or a partial/stale payload. Such values are
+// rejected so they can't poison the 24h cache and corrupt load economics.
+const EIA_MIN_USD_PER_GAL = 1.5;
+const EIA_MAX_USD_PER_GAL = 9.0;
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -243,7 +250,12 @@ export async function refreshFromEia(apiKey?: string, fetchImpl?: typeof fetch):
       if (!r.ok) continue;
       const data = (await r.json()) as { response?: { data?: Array<{ value: number }> } };
       const latest = data.response?.data?.[0]?.value;
-      if (typeof latest === "number" && Number.isFinite(latest) && latest > 0) {
+      if (
+        typeof latest === "number" &&
+        Number.isFinite(latest) &&
+        latest >= EIA_MIN_USD_PER_GAL &&
+        latest <= EIA_MAX_USD_PER_GAL
+      ) {
         if (Math.abs(updated[padd] - latest) > 0.01) {
           changes.push({ padd, before: updated[padd], after: latest });
           updated[padd] = latest;

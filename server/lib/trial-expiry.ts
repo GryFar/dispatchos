@@ -183,6 +183,7 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
             )}</pre>`,
           });
           if (r.ok) sent.push("email");
+          else if (r.error) errors.push(`email: ${r.error}`);
         } catch (err) {
           errors.push(`email: ${(err as Error).message}`);
         }
@@ -232,6 +233,7 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
           )}</pre>`,
         });
         if (r.ok) sent.push("email");
+        else if (r.error) errors.push(`email: ${r.error}`);
       } catch (err) {
         errors.push(`email: ${(err as Error).message}`);
       }

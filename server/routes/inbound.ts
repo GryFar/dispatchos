@@ -94,6 +94,12 @@ function requireInboundSecret(req: Request, res: Response): boolean {
   const header = req.headers["x-inbound-secret"];
   const provided = Array.isArray(header) ? header[0] : header;
   if (typeof provided !== "string" || !timingSafeEqual(provided, expected)) {
+    // Log failed secret attempts so brute-force grinding against the static
+    // inbound secret is visible to alerting. Never log the provided value —
+    // only the source IP and whether a header was present at all.
+    console.warn(
+      `[inbound] rejected request: bad x-inbound-secret (present=${typeof provided === "string"}) from ${req.ip ?? "unknown"}`,
+    );
     res.status(401).json({ message: "Unauthorized" });
     return false;
   }

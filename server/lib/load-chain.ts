@@ -159,7 +159,10 @@ export function planLoadChain(
     }
   }
 
-  if (bestEnd === -1) {
+  // A net-negative best chain is worse than running nothing: every feasible
+  // candidate loses money once deadhead + operating cost is netted against the
+  // rate. Surface the empty chain (recommend no load) rather than a loss-maker.
+  if (bestEnd === -1 || bestVal <= 0) {
     return {
       legs: [], totalRate: 0, totalLoadedMiles: 0, totalDeadheadMiles: 0,
       netValue: 0, utilization: 0,

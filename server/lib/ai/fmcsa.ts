@@ -317,7 +317,15 @@ export function parseMobileApiResponse(mcNumber: string, raw: unknown): FmcsaCar
     else if (statusCode === "P") operatingStatus = "PENDING";
 
     const authority = {
-      carrier: pickString(carrier, "carrierOperation")?.toLowerCase().includes("carrier") ?? false,
+      // Motor-carrier (trucking) authority. FMCSA grants this via common/contract
+      // authority, exposed as letter status codes ("A" active, "I" inactive, "N"
+      // none) on commonAuthorityStatus / contractAuthorityStatus. The
+      // `carrierOperation` field is NOT an authority flag — in the real mobile API
+      // it is a nested object describing interstate/intrastate operation, so
+      // pickString returns undefined and the old read was always false. We keep a
+      // free-text `carrierOperation` fallback (string fixtures emit e.g.
+      // "Interstate Carrier") for older shapes.
+      carrier: hasCarrierAuthority(carrier),
       // FMCSA mobile API returns letter status codes ("A" active, "I" inactive,
       // "N" none) for *AuthorityStatus fields — NOT numbers. Reading them with a
       // numeric coercion turned every "A" into NaN and silently classified real
@@ -336,7 +344,7 @@ export function parseMobileApiResponse(mcNumber: string, raw: unknown): FmcsaCar
     else if (safetyRatingRaw === "C") safetyRating = "CONDITIONAL";
     else if (safetyRatingRaw === "U") safetyRating = "UNSATISFACTORY";
 
-    return {
+    const built = {
       mcNumber: normalizeMcNumber(mcNumber) ?? mcNumber,
       dotNumber: pickString(carrier, "dotNumber") ?? undefined,
       legalName,
@@ -357,6 +365,13 @@ export function parseMobileApiResponse(mcNumber: string, raw: unknown): FmcsaCar
       drivers: pickNumber(carrier, "totalDrivers") ?? undefined,
       fetchedAt: new Date().toISOString(),
     };
+
+    // Gate the hand-built object through the exported schema so drift between
+    // this manual mapping and the contract (out-of-enum status, non-numeric
+    // age, etc.) is caught at runtime instead of passing through untrusted.
+    const result = fmcsaCarrierSchema.safeParse(built);
+    if (!result.success) continue;
+    return result.data;
   }
   return null;
 }
@@ -393,6 +408,32 @@ function hasActiveAuthority(
     return legacy !== "I" && legacy !== "N" && legacy !== "NONE" && legacy !== "INACTIVE";
   }
   return false;
+}
+
+/**
+ * Decide whether a record has active motor-carrier (trucking) authority.
+ *
+ * FMCSA grants carrier authority as common and/or contract authority, exposed as
+ * single-letter status codes ("A" active) on `commonAuthorityStatus` /
+ * `contractAuthorityStatus`. We treat either being active as carrier authority.
+ *
+ * `carrierOperation` is NOT an authority field — in the real mobile API it is a
+ * nested object ({ carrierOperationCode, carrierOperationDesc }) describing
+ * interstate/intrastate operation, so it is only consulted as a free-text
+ * fallback for older string-shaped fixtures (e.g. "Interstate Carrier").
+ */
+function hasCarrierAuthority(obj: Record<string, unknown>): boolean {
+  if (
+    hasActiveAuthority(obj, "commonAuthorityStatus", "commonAuthority") ||
+    hasActiveAuthority(obj, "contractAuthorityStatus", "contractAuthority")
+  ) {
+    return true;
+  }
+  // Free-text fallback: some fixtures/older shapes emit carrierOperation as a
+  // string like "Interstate Carrier". The nested-object shape from the live API
+  // returns undefined here and is correctly handled by the status codes above.
+  const op = pickString(obj, "carrierOperation");
+  return op ? op.toLowerCase().includes("carrier") : false;
 }
 
 function pickNumber(obj: Record<string, unknown>, key: string): number | undefined {

@@ -33,6 +33,10 @@ const allowedUploadExtensions = new Set([".pdf", ".jpg", ".jpeg", ".png", ".txt"
 const allowedUploadMime = new Set([
   "application/pdf",
   "image/jpeg",
+  // "image/jpg" is non-standard but widely emitted (some Android WebViews,
+  // older camera apps, certain HTTP libraries) for .jpg files. The extension
+  // whitelist is the real gate per the V2-13 comment, so accepting it is safe.
+  "image/jpg",
   "image/png",
   "text/plain",
   "text/csv",

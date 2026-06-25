@@ -64,6 +64,26 @@ interface RenewalLine {
 }
 
 /**
+ * True only when `value` begins with a real calendar date in strict
+ * YYYY-MM-DD form (datetimes are accepted via the prefix). Guards against
+ * non-date-but-truthy field values like "TBD": `daysBetween` returns 0 for
+ * those, which would otherwise collide with the `0` ("expires TODAY") alert
+ * threshold and fire a spurious alert. We require an exact round-trip so
+ * out-of-range pieces ("2026-13-40") are rejected too.
+ */
+function hasValidIsoDatePrefix(value: string): boolean {
+  const datePart = value.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return false;
+  const [y, m, d] = datePart.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return (
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() === m - 1 &&
+    dt.getUTCDate() === d
+  );
+}
+
+/**
  * Read the two renewal dates from a client's payload. Returns at most two
  * lines (one per kind) — only those with a non-empty ISO date are included.
  *
@@ -81,14 +101,23 @@ export function readRenewalsFromClient(
     irpBaseJurisdiction?: string;
   };
   const lines: RenewalLine[] = [];
-  if (typeof payload.ucrExpiresAt === "string" && payload.ucrExpiresAt) {
+  // A non-empty but unparseable value (e.g. "TBD") must NOT be treated as a
+  // deadline: daysBetween() would return 0 for it and fire a false
+  // "expires TODAY" alert. Skip lines whose date does not parse.
+  if (
+    typeof payload.ucrExpiresAt === "string" &&
+    hasValidIsoDatePrefix(payload.ucrExpiresAt)
+  ) {
     lines.push({
       kind: "ucr",
       expiresAt: payload.ucrExpiresAt,
       baseStateOrJurisdiction: payload.ucrBaseState,
     });
   }
-  if (typeof payload.irpExpiresAt === "string" && payload.irpExpiresAt) {
+  if (
+    typeof payload.irpExpiresAt === "string" &&
+    hasValidIsoDatePrefix(payload.irpExpiresAt)
+  ) {
     lines.push({
       kind: "irp",
       expiresAt: payload.irpExpiresAt,
@@ -257,19 +286,26 @@ export async function runComplianceRenewalsCheck(): Promise<ComplianceAlertOutco
       }
 
       if (sent.length > 0) {
-        storage.recordComplianceAlertSent({
-          clientId: client.id,
-          kind: line.kind,
-          expiresAt: line.expiresAt,
-          daysBefore: threshold,
-          channels: sent,
-        });
-        storage.audit("compliance.renewal_alert", "client", client.id, {
-          kind: line.kind,
-          expiresAt: line.expiresAt,
-          daysBefore: threshold,
-          channels: sent,
-        });
+        // Guard the SQLite writes: a busy/locked/constraint throw here must not
+        // abort the whole pass and skip every remaining client. Collect the
+        // error into this outcome and carry on.
+        try {
+          storage.recordComplianceAlertSent({
+            clientId: client.id,
+            kind: line.kind,
+            expiresAt: line.expiresAt,
+            daysBefore: threshold,
+            channels: sent,
+          });
+          storage.audit("compliance.renewal_alert", "client", client.id, {
+            kind: line.kind,
+            expiresAt: line.expiresAt,
+            daysBefore: threshold,
+            channels: sent,
+          });
+        } catch (err) {
+          errors.push(`persist: ${(err as Error).message}`);
+        }
       }
 
       outcomes.push({

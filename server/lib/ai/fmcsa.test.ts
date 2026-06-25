@@ -224,6 +224,70 @@ function assert(name: string, cond: boolean, detail?: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Mobile API parsing — carrier authority.
+// Real mobile API: carrierOperation is a nested object (interstate/intrastate),
+// NOT a carrier-authority flag. Carrier authority comes from common/contract
+// authority status codes. Legacy string fixtures emit carrierOperation as text.
+// ---------------------------------------------------------------------------
+{
+  // Live shape: carrierOperation nested object + active common authority.
+  const liveCarrier = parseMobileApiResponse("MC-700", {
+    content: [{
+      carrier: {
+        legalName: "Real Motor Carrier LLC",
+        allowedToOperate: "Y",
+        carrierOperation: { carrierOperationCode: "A", carrierOperationDesc: "Interstate" },
+        commonAuthorityStatus: "A",
+      },
+    }],
+  });
+  assert("parse: common authority 'A' → carrier true", liveCarrier?.authority.carrier === true);
+  assert("parse: nested carrierOperation does not falsely set broker",
+    liveCarrier?.authority.broker === false);
+
+  // Contract authority alone also grants carrier authority.
+  const contractCarrier = parseMobileApiResponse("MC-701", {
+    content: [{
+      carrier: { legalName: "Contract Carrier LLC", allowedToOperate: "Y", contractAuthorityStatus: "A" },
+    }],
+  });
+  assert("parse: contract authority 'A' → carrier true", contractCarrier?.authority.carrier === true);
+
+  // No carrier authority codes → carrier false.
+  const noCarrier = parseMobileApiResponse("MC-702", {
+    content: [{
+      carrier: { legalName: "Broker Only LLC", allowedToOperate: "Y", brokerAuthorityStatus: "A" },
+    }],
+  });
+  assert("parse: no common/contract authority → carrier false", noCarrier?.authority.carrier === false);
+
+  // Legacy string fixture: carrierOperation as text still detects carrier.
+  const legacyCarrier = parseMobileApiResponse("MC-703", {
+    content: [{
+      carrier: { legalName: "Legacy Carrier LLC", allowedToOperate: "Y", carrierOperation: "Interstate Carrier" },
+    }],
+  });
+  assert("parse: legacy carrierOperation string 'Interstate Carrier' → carrier true",
+    legacyCarrier?.authority.carrier === true);
+}
+
+// ---------------------------------------------------------------------------
+// Mobile API parsing — schema validation gate.
+// The hand-built object must satisfy fmcsaCarrierSchema; a candidate that would
+// produce an out-of-contract record is skipped rather than returned.
+// ---------------------------------------------------------------------------
+{
+  // Valid record still returns and is schema-shaped.
+  const valid = parseMobileApiResponse("MC-800", {
+    content: [{
+      carrier: { legalName: "Schema OK LLC", allowedToOperate: "Y", brokerAuthorityStatus: "A" },
+    }],
+  });
+  assert("parse: schema-valid record returned", valid !== null && valid.legalName === "Schema OK LLC");
+  assert("parse: returned record has fetchedAt string", typeof valid?.fetchedAt === "string");
+}
+
+// ---------------------------------------------------------------------------
 // Mobile API parsing — BMC-84 bond filing flows into the surety guard.
 // A broker with no bond on file must now be penalised (was dead code before).
 // ---------------------------------------------------------------------------

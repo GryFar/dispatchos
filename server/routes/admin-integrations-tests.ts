@@ -91,13 +91,19 @@ async function testFmcsa(): Promise<TestResult> {
 async function testTelegramBot(): Promise<TestResult> {
   const token = getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN");
   if (!token) return mkSkip("TELEGRAM_DRIVER_BOT_TOKEN not set");
+  // Route both calls through timedFetch so they share the 8s AbortController
+  // cap — a stalled api.telegram.org must not hang the admin request forever.
   const start = Date.now();
   try {
-    const [meRes, whRes] = await Promise.all([
-      fetch(`https://api.telegram.org/bot${token}/getMe`),
-      fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`),
+    const [meOut, whOut] = await Promise.all([
+      timedFetch(`https://api.telegram.org/bot${token}/getMe`),
+      timedFetch(`https://api.telegram.org/bot${token}/getWebhookInfo`),
     ]);
     const ms = Date.now() - start;
+    if (meOut.err || !meOut.res) return mkFail(`network: ${meOut.err?.message ?? "no response"}`, ms);
+    if (whOut.err || !whOut.res) return mkFail(`network: ${whOut.err?.message ?? "no response"}`, ms);
+    const meRes = meOut.res;
+    const whRes = whOut.res;
     if (!meRes.ok) return mkFail(`getMe HTTP ${meRes.status}`, ms);
     const me = (await meRes.json()) as { ok: boolean; result?: { username?: string } };
     const wh = (await whRes.json()) as {

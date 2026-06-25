@@ -55,6 +55,14 @@ export interface IntegrationDescriptor {
   notes?: string;
   /** URL with setup instructions (Stripe-style «get your key from…»). */
   docsUrl?: string;
+  /**
+   * Forced operational mode for connectors that are NOT actually wired up even
+   * when their env vars are present (e.g. running on a local fallback or still
+   * a sandbox stub). When set, this overrides the env-derived "ready"/"active"
+   * result so the UI never shows a green badge for an unimplemented connector.
+   * "needs_config" (missing env vars) still wins so the admin sees what to fill.
+   */
+  mode?: "local_folder_mode" | "sandbox" | "local_endpoint_ready" | "error";
 }
 
 /**
@@ -148,6 +156,7 @@ export const INTEGRATIONS: IntegrationDescriptor[] = [
     ],
     activityEvents: ["drive.local_folders_created"],
     notes: "Currently running in local_folder_mode",
+    mode: "local_folder_mode",
     docsUrl: "https://console.cloud.google.com/apis/credentials",
   },
   {
@@ -161,6 +170,7 @@ export const INTEGRATIONS: IntegrationDescriptor[] = [
       { envVar: "TWILIO_PHONE_NUMBER", label: "Phone number", type: "text", placeholder: "+15551234567", help: "E.164 формат" },
     ],
     notes: "Not wired yet — sandbox",
+    mode: "sandbox",
     docsUrl: "https://console.twilio.com/",
   },
   {
@@ -257,9 +267,14 @@ export function getEnrichedIntegrationStatus(): {
       lastEventAt = summary.lastAt;
     }
 
-    // Upgrade ready → active if we've seen activity
+    // Upgrade ready → active if we've seen activity, then apply any forced mode
+    // (e.g. sandbox / local_folder_mode) so an unimplemented connector never
+    // shows ready/active just because its env vars happen to be present.
+    // needs_config still wins so the admin sees what to fill in.
     const status: IntegrationStatus =
-      baseStatus === "ready" && eventCount > 0 ? "active" : baseStatus;
+      baseStatus === "ready"
+        ? (desc.mode ?? (eventCount > 0 ? "active" : "ready"))
+        : baseStatus;
 
     // Build per-var meta + source info for the UI. If no envVarMeta was
     // declared, synthesize a sensible default (treat as secret).
@@ -309,7 +324,11 @@ export function getLegacyIntegrationStatus(): {
   return {
     generatedAt: new Date().toISOString(),
     integrations: INTEGRATIONS.map((desc) => {
-      const { status, missing } = envStatus(desc.key, desc.envVars);
+      const { status: baseStatus, missing } = envStatus(desc.key, desc.envVars);
+      // Forced mode (sandbox / local_folder_mode) overrides a ready result so
+      // an unimplemented connector isn't reported as working; needs_config wins.
+      const status: IntegrationStatus =
+        baseStatus === "ready" ? (desc.mode ?? "ready") : baseStatus;
       return { key: desc.key, label: desc.label, status, missing };
     }),
   };

@@ -114,13 +114,24 @@ export function registerBrokerTrustRoutes(app: Express): void {
 
       const body = reportSignalSchema.parse(req.body);
 
-      // If a loadId is given, try to inherit clientId from the load.
+      // If a loadId is given, try to inherit clientId from the load — but only
+      // when the load is actually visible to the caller. storage.getLoad is a
+      // bare SELECT by primary key with no ownership scoping, so without a
+      // visibility check a dispatcher could pass any loadId and inherit a
+      // foreign tenant's clientId (cross-tenant probing/association). Admins
+      // have full visibility by role; dispatchers are scoped to loads under
+      // their assigned clients (mirrors GET /api/dispatch/loads/:id).
       let clientId: string | null = null;
       if (body.loadId) {
-        const load = storage.getLoad?.(body.loadId) as
-          | { clientId?: string | null }
-          | undefined;
-        clientId = load?.clientId ?? null;
+        const visible =
+          actor.role === "admin" ||
+          storage.loadIsVisibleToDispatcher(body.loadId, actor.id);
+        if (visible) {
+          const load = storage.getLoad?.(body.loadId) as
+            | { clientId?: string | null }
+            | undefined;
+          clientId = load?.clientId ?? null;
+        }
       }
 
       const id = storage.recordBrokerTrustSignal({

@@ -17,7 +17,7 @@
 import { fetchWithTimeout } from "./fetch-timeout";
 import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
-import { sendEmail } from "./email";
+import { sendEmail, escapeHtml } from "./email";
 import { daysBetween } from "./date-utils";
 import { pickAlertThreshold } from "./alert-thresholds";
 import { resolveOwnerEmail } from "./owner-email";
@@ -41,6 +41,30 @@ const TYPE_LABEL: Record<string, string> = {
   auto_liability: "Auto liability",
   general_liability: "General liability",
 };
+
+/**
+ * True only when `value` begins with a real YYYY-MM-DD calendar date (extra
+ * time/zone suffix allowed). We must validate before calling daysBetween():
+ * daysBetween returns 0 for any unparseable string, which collides with the
+ * "expires today" threshold (0) and would fire a false 🔴 СЕГОДНЯ alert for a
+ * garbage value like "TBD".
+ */
+function isValidExpiryDate(value: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!m) return false;
+  const [, ys, ms, ds] = m;
+  const y = Number(ys);
+  const mo = Number(ms);
+  const d = Number(ds);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  // Round-trip through Date.UTC to reject impossible days (e.g. 2026-02-30).
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return (
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() === mo - 1 &&
+    dt.getUTCDate() === d
+  );
+}
 
 function buildHeadline(insuranceLabel: string, daysBefore: number): string {
   if (daysBefore > 0) {
@@ -92,13 +116,20 @@ async function notify(opts: {
     }
   }
 
-  // Email (owner).
+  // Email (owner). Escape every tenant-supplied value (carrier name, id,
+  // expiry) before interpolating into the HTML body — these come from the
+  // client record and would otherwise allow HTML/markup injection into the
+  // owner's alert email.
   if (opts.ownerEmail) {
+    const safeName = escapeHtml(opts.clientName);
+    const safeId = escapeHtml(opts.clientId);
+    const safeExpiresAt = escapeHtml(opts.expiresAt);
+    const safeHeadline = escapeHtml(headline);
     const html =
-      `<p><strong>${headline}</strong></p>` +
-      `<p>Carrier: ${opts.clientName} (${opts.clientId})<br>` +
-      `Дата истечения: <strong>${opts.expiresAt}</strong></p>` +
-      `<p>Обновите документ в DispatchOS → Клиенты → ${opts.clientName} → Профиль. Пока страховка просрочена — брокеры откажутся диспатчить грузы этому carrier'у.</p>`;
+      `<p><strong>${safeHeadline}</strong></p>` +
+      `<p>Carrier: ${safeName} (${safeId})<br>` +
+      `Дата истечения: <strong>${safeExpiresAt}</strong></p>` +
+      `<p>Обновите документ в DispatchOS → Клиенты → ${safeName} → Профиль. Пока страховка просрочена — брокеры откажутся диспатчить грузы этому carrier'у.</p>`;
     const result = await sendEmail({
       to: opts.ownerEmail,
       subject: headline,
@@ -150,6 +181,17 @@ export async function runInsuranceCheck(
         | string
         | undefined;
       if (!expiresAt) continue;
+
+      // Guard against unparseable values ("TBD", whitespace, free text): without
+      // this, daysBetween() returns 0 for them, which pickAlertThreshold maps to
+      // the "expires today" milestone and fires a spurious 🔴 СЕГОДНЯ alert.
+      if (!isValidExpiryDate(expiresAt)) {
+        console.warn(
+          `[insurance-monitor] skipping unparseable ${f} for client ${client.id}:`,
+          expiresAt,
+        );
+        continue;
+      }
 
       const daysUntil = daysBetween(todayIso, expiresAt);
       const threshold = pickAlertThreshold(daysUntil, ALERT_THRESHOLDS);
