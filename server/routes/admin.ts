@@ -2368,6 +2368,19 @@ export function registerAdminRoutes(app: Express): void {
 
     const merged: Client = { ...existing, ...patch, id: existing.id };
 
+    // Clear semantics: the merge above is purely additive, so a patch can only
+    // ADD/overwrite keys, never remove one — making it impossible to clear an
+    // optional field (e.g. switch a client's pay mode to none, or cpm<->pct).
+    // Treat an explicit `null` in the patch as "clear this field": drop the key
+    // from `merged` so it becomes absent rather than persisting the stale value.
+    const clearedFields: string[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null) {
+        delete (merged as Record<string, unknown>)[k];
+        clearedFields.push(k);
+      }
+    }
+
     const parsed = clientSchema.safeParse(merged);
     if (!parsed.success) {
       return res.status(400).json({
@@ -2382,6 +2395,7 @@ export function registerAdminRoutes(app: Express): void {
     storage.audit("client.profile_patched", "client", saved.id, {
       patchedFields: Object.keys(patch),
       ...(droppedFields.length ? { rejectedProtectedFields: droppedFields } : {}),
+      ...(clearedFields.length ? { clearedFields } : {}),
     });
 
     return res.json(saved);

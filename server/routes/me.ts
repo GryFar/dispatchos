@@ -40,7 +40,7 @@ import {
   type DriverDashboard,
   type LoadFull,
 } from "@shared/schema";
-import { enrichLoadSync } from "../lib/ai/enrich";
+import { enrichLoadBestEffort } from "../lib/ai/enrich";
 import { parseReceipt } from "../lib/ai/receipt-ocr";
 import { parseLimit } from "../lib/query";
 import { getCurrentUser, requireRole, requireActiveBilling } from "../auth";
@@ -1131,8 +1131,8 @@ export function registerMeRoutes(app: Express): void {
 
       const body = selfDispatchLoadSchema.parse(req.body);
 
-      // Build a full InsertLoad. brokerScore/fraudRisk will be filled by
-      // enrichLoadSync; loadedMiles is approximated as 0 (planner phase later).
+      // Build a full InsertLoad. brokerScore/fraudRisk default to neutral
+      // (see below); loadedMiles is approximated as 0 (planner phase later).
       const rawLoad = {
         source: "self_dispatch",
         originCity: body.originCity,
@@ -1165,7 +1165,15 @@ export function registerMeRoutes(app: Express): void {
         bookedAt: new Date().toISOString().slice(0, 10),
       };
 
-      const enriched = enrichLoadSync(rawLoad);
+      // enrichLoadBestEffort always recomputes marketQuality (lane benchmark).
+      // The neutral brokerScore/fraudRisk above are only overwritten when the
+      // driver supplied a real brokerMc AND FMCSA_WEB_KEY is configured — in
+      // that case FMCSA verification of the third-party broker is strictly
+      // better than the neutral guess (double-brokering defense). With no MC
+      // (the common self-dispatch case) or no key, the neutral values stand and
+      // there is no network call. The FMCSA lookup is timeout-bounded and never
+      // blocks or fails the request.
+      const enriched = await enrichLoadBestEffort(rawLoad);
       const load = storage.upsertLoad(enriched as any);
 
       storage.audit("driver.self_dispatch_load_created", "load", load.id, {

@@ -105,7 +105,11 @@ export function makeBrokerEmailAdapter(opts: {
       const dg = geocodeCityState(parsed.destination?.city, parsed.destination?.state);
       return {
         sourceId: row.id,
-        sourceExternalId: String(raw.ingestId ?? raw.messageId ?? parsed.reference ?? ""),
+        // Prefer the email's stable Message-ID (or broker reference) over the
+        // per-row ingestId so the downstream load dedup (loads_source_external_uq)
+        // keys on the stable message identity — a re-ingest of the same email
+        // under a new ingestId then maps back to the same load instead of a dup.
+        sourceExternalId: String(raw.messageId ?? parsed.reference ?? raw.ingestId ?? ""),
         clientId: row.clientId,
         source: opts.source,
         originCity: parsed.origin?.city ?? "",
