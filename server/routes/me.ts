@@ -1084,19 +1084,38 @@ export function registerMeRoutes(app: Express): void {
   // derived from the session user, ensuring tenant isolation.
   // ===========================================================================
 
-  const selfDispatchLoadSchema = z.object({
-    originCity: z.string().min(1),
-    originState: z.string().min(2).max(2),
-    destinationCity: z.string().min(1),
-    destinationState: z.string().min(2).max(2),
-    rate: z.number().positive().max(1_000_000),
-    pickupAt: z.string(),
-    deliveryAt: z.string(),
-    equipment: equipmentSchema,
-    brokerName: z.string().default("Self-dispatch"),
-    brokerMc: z.string().default(""),
-    notes: z.string().optional(),
-  });
+  // A parseable calendar instant. We deliberately DON'T use z.string().datetime()
+  // here: the driver UI submits a <input type="datetime-local"> value
+  // ("2026-06-25T14:30" — no seconds, no offset) which RFC-3339 .datetime()
+  // rejects, 400-ing legitimate submissions. new Date() accepts that form, so we
+  // validate parseability via the round-trip instead. This still rejects empty /
+  // garbage strings that would otherwise flow into deriveLoadStatus, buildTodayStop
+  // and the pickupAt-descending sorts as NaN/invalid instants.
+  const isParseableInstant = (s: string) => Number.isFinite(new Date(s).getTime());
+  const selfDispatchLoadSchema = z
+    .object({
+      originCity: z.string().min(1),
+      originState: z.string().min(2).max(2),
+      destinationCity: z.string().min(1),
+      destinationState: z.string().min(2).max(2),
+      rate: z.number().positive().max(1_000_000),
+      pickupAt: z.string().refine(isParseableInstant, {
+        message: "pickupAt must be a valid date/time",
+      }),
+      deliveryAt: z.string().refine(isParseableInstant, {
+        message: "deliveryAt must be a valid date/time",
+      }),
+      equipment: equipmentSchema,
+      brokerName: z.string().default("Self-dispatch"),
+      brokerMc: z.string().default(""),
+      notes: z.string().optional(),
+    })
+    // Delivery must not precede pickup — a reversed/equal window produces
+    // nonsensical durations in feasibility/buffer math downstream.
+    .refine(
+      (v) => new Date(v.deliveryAt).getTime() >= new Date(v.pickupAt).getTime(),
+      { message: "deliveryAt must be on or after pickupAt", path: ["deliveryAt"] },
+    );
 
   app.post(
     "/api/me/loads",
@@ -1149,7 +1168,18 @@ export function registerMeRoutes(app: Express): void {
         deliveryAt: body.deliveryAt,
         equipment: body.equipment,
         brokerName: body.brokerName,
-        brokerMc: body.brokerMc,
+        // Cross-tenant broker-trust poisoning guard: a self-dispatch load has no
+        // verified third-party broker relationship, yet storage.upsertLoad's auto
+        // write-path appends a positive 'load_booked' signal to the GLOBAL,
+        // cross-tenant broker_trust_signals table whenever brokerMc is non-empty.
+        // A free-text brokerMc here lets an owner-operator fabricate booking
+        // volume / positive-signal counts against ANY competitor's MC (poisoning
+        // the shared broker profile read by GET /api/broker-trust/:mc and /top).
+        // Force it empty so self-dispatch never emits third-party trust signals;
+        // this also short-circuits the FMCSA lookup in enrichLoadBestEffort (which
+        // no-ops on an empty brokerMc), matching the common keyless self-dispatch
+        // case. The display brokerName ("Self-dispatch" by default) is unaffected.
+        brokerMc: "",
         // M2: a self-dispatched load has NO third-party broker vetting — claiming
         // a perfect score / zero fraud poisons the broker-trust & lane analytics.
         // Use neutral/unknown values so self-dispatch can't skew the scoring.

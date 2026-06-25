@@ -87,10 +87,17 @@ async function tgSend(
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      console.error(`[tg-bot] sendMessage failed: ${res.status} ${body.slice(0, 200)}`);
+      console.error(
+        `[tg-bot] sendMessage failed: ${res.status} ${redactToken(body.slice(0, 200), botToken)}`,
+      );
     }
   } catch (err) {
-    console.error("[tg-bot] sendMessage threw:", err);
+    // SECURITY (audit M): the request URL embeds the bot token — the webhook's
+    // only auth secret. fetch/undici error objects can carry the URL on their
+    // message/cause, so never log the raw error verbatim; serialize and scrub
+    // the token out of every sink.
+    const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    console.error("[tg-bot] sendMessage threw:", redactToken(detail, botToken));
   }
 }
 
@@ -141,6 +148,36 @@ To link this chat to your driver account, send me your <b>invite code</b> (e.g. 
 If you don't have one yet, ask your dispatcher.`;
 
 // -----------------------------------------------------------------------------
+// Per-chat rate limiting
+// -----------------------------------------------------------------------------
+//
+// The webhook acks 200 immediately and runs handleUpdate async, so there is no
+// backpressure to Telegram. Each update can trigger DB writes (updateClientLocation
+// on /loc, audit() on every command, appendBrokerTrustSignal on /no, createApprovalTask
+// on /nego). Without a cap a single linked (or hijacked) chat can flood location
+// updates, broker-trust signals, and approval tasks. In-memory per-chat token
+// budget, mirroring aiRateCheck in cockpit.ts. Over-limit updates are dropped
+// silently (no reply) so we don't amplify the flood with outbound sends.
+const TG_MAX_PER_MIN = 30;
+const TG_WINDOW_MS = 60 * 1000;
+interface ChatBudget {
+  count: number;
+  windowStart: number;
+}
+const chatBudgets = new Map<string, ChatBudget>();
+function chatRateCheck(chatId: string): boolean {
+  const now = Date.now();
+  const b = chatBudgets.get(chatId);
+  if (!b || now - b.windowStart > TG_WINDOW_MS) {
+    chatBudgets.set(chatId, { count: 1, windowStart: now });
+    return true;
+  }
+  if (b.count >= TG_MAX_PER_MIN) return false;
+  b.count++;
+  return true;
+}
+
+// -----------------------------------------------------------------------------
 // Main handler — runs after path-token auth passes.
 // -----------------------------------------------------------------------------
 
@@ -149,6 +186,12 @@ async function handleUpdate(botToken: string, update: TgUpdate): Promise<void> {
   if (!msg) return;
 
   const chatId = String(msg.chat.id);
+
+  // Per-chat flood control. Drop over-limit updates before any DB write or
+  // outbound send. We don't reply (that would defeat the point of the cap and
+  // could amplify a flood); legitimate driver usage is well under the cap.
+  if (!chatRateCheck(chatId)) return;
+
   const text = msg.text ?? "";
   const cmd = parseCommand(text);
   const user = storage.getUserByTelegramChatId(chatId);
@@ -178,6 +221,15 @@ async function handleUpdate(botToken: string, update: TgUpdate): Promise<void> {
     const invite = storage.getInvite(candidate);
     if (!invite) {
       await tgSend(botToken, chatId, "❌ Invite code not found. Double-check and try again, or contact dispatch.");
+      return;
+    }
+
+    // SECURITY (audit M): enforce the invite TTL (and admin soft-revoke, which
+    // stamps expiresAt = now()) at the bot before walking the user toward any
+    // link. An unparseable/missing expiry is treated as expired (fail closed).
+    const expiresMs = Date.parse(invite.expiresAt);
+    if (!Number.isFinite(expiresMs) || expiresMs <= Date.now()) {
+      await tgSend(botToken, chatId, "⌛ This invite has expired. Ask dispatch for a fresh one.");
       return;
     }
 
@@ -541,6 +593,14 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) =>
     c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;",
   );
+}
+
+// Scrub the bot token from any string before it reaches a log sink. The token
+// is the webhook's only authenticator; an error message or response body that
+// echoes the sendMessage URL would otherwise leak it verbatim.
+function redactToken(s: string, token: string): string {
+  if (!s || !token) return s;
+  return s.split(token).join("***");
 }
 
 // -----------------------------------------------------------------------------

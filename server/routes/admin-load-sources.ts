@@ -83,6 +83,14 @@ export function registerAdminLoadSourcesRoutes(
     if (body.status !== undefined && !VALID_STATUSES.has(body.status)) {
       return res.status(400).json({ message: `Invalid status: ${body.status}` });
     }
+    // Mirror PATCH's guard: a non-numeric pollIntervalMin (e.g. "abc") otherwise
+    // survives createLoadSource's clamp as NaN and silently disables polling.
+    if (
+      body.pollIntervalMin !== undefined &&
+      (typeof body.pollIntervalMin !== "number" || !Number.isFinite(body.pollIntervalMin))
+    ) {
+      return res.status(400).json({ message: "pollIntervalMin must be a number" });
+    }
 
     let encEnc: string | null = null;
     let encIv: string | null = null;
@@ -116,6 +124,7 @@ export function registerAdminLoadSourcesRoutes(
       adapterKey: body.adapterKey,
       clientId: body.clientId,
       label: body.label,
+      actorUserId: getCurrentUser(req)?.id,
     });
     return res.status(201).json({ loadSource: redact(created) });
   });
@@ -158,6 +167,7 @@ export function registerAdminLoadSourcesRoutes(
     const updated = storage.updateLoadSource(id, patch);
     storage.audit("load_source.updated", "load_source", id, {
       fields: Object.keys(patch),
+      actorUserId: getCurrentUser(req)?.id,
     });
     return res.json({ loadSource: redact(updated) });
   });
@@ -168,7 +178,9 @@ export function registerAdminLoadSourcesRoutes(
     const existing = storage.getLoadSource(id);
     if (!existing) return res.status(404).json({ message: "Not found" });
     storage.updateLoadSource(id, { status: "paused" });
-    storage.audit("load_source.deleted", "load_source", id, {});
+    storage.audit("load_source.deleted", "load_source", id, {
+      actorUserId: getCurrentUser(req)?.id,
+    });
     return res.json({ ok: true });
   });
 
@@ -194,12 +206,12 @@ export function registerAdminLoadSourcesRoutes(
       await adapter.authenticate(rowForAdapter);
       const sample = await adapter.fetchLoads(rowForAdapter, 1);
       const ms = Date.now() - t0;
-      storage.audit("load_source.tested", "load_source", id, { ok: true, ms, sample: sample[0] ?? null });
+      storage.audit("load_source.tested", "load_source", id, { ok: true, ms, sample: sample[0] ?? null, actorUserId: getCurrentUser(req)?.id });
       return res.json({ ok: true, latencyMs: ms, sample: sample[0] ?? null });
     } catch (err) {
       const ms = Date.now() - t0;
       const msg = err instanceof Error ? err.message : String(err);
-      storage.audit("load_source.tested", "load_source", id, { ok: false, ms, error: msg });
+      storage.audit("load_source.tested", "load_source", id, { ok: false, ms, error: msg, actorUserId: getCurrentUser(req)?.id });
       return res.status(200).json({ ok: false, latencyMs: ms, error: msg });
     }
   });

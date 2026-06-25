@@ -143,7 +143,21 @@ app.use("/api", (req, res, next) => {
   // to Referer for legacy clients. If both missing AND not a browser (curl/
   // server-to-server), we let it through — the session cookie wouldn't ship
   // from a non-browser origin anyway.
-  const candidate = typeof origin === "string" ? origin : typeof referer === "string" ? new URL(referer).origin : null;
+  //
+  // The Referer parse is wrapped: new URL(malformed) throws a TypeError
+  // synchronously, which would surface as an uncaught 500 (and Sentry noise)
+  // for a request as cheap as `Referer: %%%` with no Origin. A parse failure
+  // is treated as "no candidate" (i.e. fall through to the cookie check).
+  let candidate: string | null = null;
+  if (typeof origin === "string") {
+    candidate = origin;
+  } else if (typeof referer === "string") {
+    try {
+      candidate = new URL(referer).origin;
+    } catch {
+      candidate = null;
+    }
+  }
 
   // No origin header at all + no session cookie = treat as legit server-side or curl.
   // No origin + session cookie present = suspicious (browser dropped Origin); reject.
@@ -409,7 +423,17 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+      // Redact secrets that live in the URL path itself before logging. The
+      // Telegram webhook is /api/telegram/webhook/<bot-token>, where the token
+      // is the ONLY authenticator. The body-redaction list below only scrubs
+      // the JSON body, never the path — so without this the live bot token is
+      // written to stdout/journald verbatim on every inbound update (full bot
+      // takeover for anyone with log read access). Scrub the token segment.
+      const safePath = path.replace(
+        /(\/api\/telegram\/webhook\/)[^/]+/,
+        "$1<redacted>",
+      );
+      let logLine = `${req.method} ${safePath} ${res.statusCode} in ${duration}ms`;
       // Only dump the response body (even redacted) in NON-prod. The deny-list
       // below is top-level and non-recursive, so in production it would still
       // leak nested PII — driver phone/email, GPS pings/tracks, broker contacts —

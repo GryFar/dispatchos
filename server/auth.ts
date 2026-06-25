@@ -313,11 +313,17 @@ export function billingBlockReason(
     // Prefer the actual failed-payment date (stamped by the Stripe webhook on
     // invoice.payment_failed). Fall back to trialEndsAt only for legacy records
     // that pre-date pastDueSince — we can't reconstruct the failure date for those.
-    const ref = client.pastDueSince
-      ? new Date(client.pastDueSince).getTime()
-      : client.trialEndsAt
-        ? new Date(client.trialEndsAt).getTime()
-        : Date.now();
+    //
+    // Fail CLOSED when no parseable failure date exists. A bare truthy check
+    // (`pastDueSince ? ...`) accepted unparseable strings, yielding getTime()===NaN
+    // and `NaN > 7 === false`, so the grace never expired; an absent date fell
+    // through to Date.now(), giving past≈0 and resetting the 7-day window on every
+    // request. Both let a past_due carrier write indefinitely. When the failure
+    // date is unknown/unparseable we treat the grace as already exhausted so the
+    // read-only block engages instead of being silently bypassed.
+    const refRaw = client.pastDueSince ?? client.trialEndsAt;
+    const ref = refRaw != null ? new Date(refRaw).getTime() : NaN;
+    if (!Number.isFinite(ref)) return "past_due";
     const past = (Date.now() - ref) / (24 * 3600 * 1000);
     if (past > PAST_DUE_GRACE_DAYS) return "past_due";
   }
@@ -348,7 +354,21 @@ export function requireActiveBilling(
       req.body && typeof req.body === "object" && typeof (req.body as { clientId?: unknown }).clientId === "string"
         ? (req.body as { clientId: string }).clientId
         : null;
-    clientId = q ?? bodyClientId;
+    const requested = q ?? bodyClientId;
+    // Tenant-scope dispatchers the same way resolveCallerClientId (billing.ts)
+    // does: a dispatcher may only name a carrier they are actively assigned to.
+    // getClient does no scoping, so honoring a raw request value let a dispatcher
+    // read ANY carrier's billing status (cross-tenant IDOR) and, by naming a
+    // healthy carrier, slip a foreign id past this gate. An unassigned id is
+    // treated as no carrier context (resolved to null) rather than read.
+    if (requested && user.role === "dispatcher") {
+      const isAssigned = storage
+        .listAssignmentsForDispatcher(user.id)
+        .some((a) => a.clientId === requested);
+      clientId = isAssigned ? requested : null;
+    } else {
+      clientId = requested;
+    }
   }
   if (!clientId) return next(); // No carrier context — let through (bootstrap/onboarding)
 
