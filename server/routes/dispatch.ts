@@ -28,7 +28,7 @@ import {
   type LoadFull,
   loadFullSchema,
 } from "@shared/schema";
-import { getCurrentUser, requireRole } from "../auth";
+import { getCurrentUser, requireRole, billingBlockReason } from "../auth";
 import { storage } from "../storage";
 import { parseLimit } from "../lib/query";
 // Nominal car-hauler slot counts per equipment type. NOT live capacity —
@@ -101,11 +101,11 @@ function buildNameMaps(loads: Array<{ clientId?: string; driverId?: string | nul
   const driverIds = Array.from(
     new Set(loads.map((l) => l.driverId).filter((id): id is string => Boolean(id))),
   );
+  // Targeted name lookup for just these ids instead of scanning the entire
+  // clients table on every board render. getClientNamesByIds already honors
+  // the soft-delete filter listClients() applied, and returns {} for [].
   const clientNames = new Map<string, string>(
-    storage
-      .listClients()
-      .filter((c) => clientIds.includes(c.id))
-      .map((c) => [c.id, c.name]),
+    Object.entries(storage.getClientNamesByIds(clientIds)),
   );
   const driverNames = new Map<string, string>();
   for (const driverId of driverIds) {
@@ -424,7 +424,8 @@ export function registerDispatchRoutes(app: Express): void {
       }
 
       // Resolve client equipment once → nominal capacity for all its drivers.
-      const client = storage.listClients().find((c) => c.id === clientId);
+      // Indexed point-read instead of a full clients-table scan + JS find.
+      const client = storage.getClient(clientId);
       const nominalCapacity =
         client && NOMINAL_CAPACITY_BY_EQUIPMENT[client.equipment] !== undefined
           ? NOMINAL_CAPACITY_BY_EQUIPMENT[client.equipment]
@@ -438,13 +439,13 @@ export function registerDispatchRoutes(app: Express): void {
         .listUsers({ role: "driver" })
         .filter((u) => u.linkedClientId === clientId && !u.blocked)
         .map((u) => {
-          // Active (booked) loads → currentLoad + count. Loads come back with
-          // full payload at runtime, so bookedAt is present despite the narrow
-          // static type.
-          const driverLoads = storage.listLoadsForDriver(u.id, { limit: 200 }).items;
-          const bookedLoads = driverLoads.filter(
-            (l) => Boolean((l as any).driverId && (l as any).bookedAt),
-          );
+          // Active (booked) loads → currentLoad + count. Use the dedicated
+          // helper which applies ACTIVE_LOAD_SQL (booked_at IS NOT NULL AND
+          // status NOT IN completed/cancelled AND deliveredAt IS NULL) — so
+          // delivered/cancelled loads with a stale booked_at are excluded and
+          // there's no 200-row cap dropping older still-active loads. Rows are
+          // already scoped to this driver and ordered booked_at DESC.
+          const bookedLoads = storage.listActiveBookedLoadsForDriver(u.id);
           const activeLoadsCount = bookedLoads.length;
           const cur = bookedLoads[0];
           const currentLoad = cur
@@ -580,6 +581,28 @@ export function registerDispatchRoutes(app: Express): void {
         if (driver.linkedClientId !== loadClientId) {
           return res.status(400).json({
             message: "Driver is not linked to this load's client",
+          });
+        }
+
+        // Billing gate (only on the re-book/assign path — unassign stays open so
+        // an expired carrier can still clear a truck). An expired/canceled/
+        // past-due-beyond-grace carrier must not be able to keep booking new
+        // capacity. Same terminal/grace logic as requireActiveBilling, via the
+        // shared billingBlockReason helper (one source of truth).
+        const loadClient = storage.getClient(loadClientId) as
+          | (Record<string, unknown> & {
+              billingStatus?: string;
+              trialEndsAt?: string;
+              pastDueSince?: string;
+            })
+          | undefined;
+        const blockReason = billingBlockReason(loadClient);
+        if (blockReason) {
+          return res.status(402).json({
+            message:
+              "Аккаунт перевозчика в режиме только для чтения (подписка истекла, отменена или просрочена). Продлите на /admin/billing, чтобы назначать водителей.",
+            code: "billing_inactive",
+            billingStatus: blockReason,
           });
         }
       }

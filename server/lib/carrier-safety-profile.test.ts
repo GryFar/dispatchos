@@ -19,9 +19,8 @@ delete process.env.FMCSA_WEB_KEY;
 delete process.env.FMCSA_API_URL;
 
 const { storage } = await import("../storage");
-const { buildCarrierSafetyProfile, renderCarrierSafetyProfileMarkdown } = await import(
-  "./carrier-safety-profile"
-);
+const { buildCarrierSafetyProfile, renderCarrierSafetyProfileMarkdown, fmcsaCacheKey } =
+  await import("./carrier-safety-profile");
 
 let pass = 0;
 let fail = 0;
@@ -116,6 +115,23 @@ function mkClient(overrides: Record<string, unknown>): string {
 {
   const p = await buildCarrierSafetyProfile(`nope-${rnd()}`);
   assert("unknown client -> null", p === null);
+}
+
+// --- FMCSA cache key isolates by web key (Audit: no cross-credential bleed) -
+{
+  const sameMcKeyA = fmcsaCacheKey("123456", "web-key-A");
+  const sameMcKeyB = fmcsaCacheKey("123456", "web-key-B");
+  assert("same MC + different web key -> different cache key", sameMcKeyA !== sameMcKeyB);
+  assert(
+    "cache key is deterministic for identical inputs",
+    fmcsaCacheKey("123456", "web-key-A") === sameMcKeyA,
+  );
+  assert(
+    "different MC + same web key -> different cache key",
+    fmcsaCacheKey("654321", "web-key-A") !== sameMcKeyA,
+  );
+  // The raw web key must never appear in the cache key (it is hashed).
+  assert("cache key does not leak the raw web key", !sameMcKeyA.includes("web-key-A"));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

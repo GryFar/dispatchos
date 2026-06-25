@@ -38,9 +38,33 @@ const allowedUploadMime = new Set([
   "text/csv",
 ]);
 
+// Resolve the per-file size cap defensively. `Number(x || 10)` only guards
+// falsy values; a truthy-but-non-numeric env (e.g. "10mb", "abc") yields NaN,
+// and busboy's `size > limits.fileSize` comparison against NaN is always false,
+// silently disabling the cap entirely (unbounded-upload DoS). Require a finite
+// positive number and otherwise fall back to the 10 MB default.
+const DEFAULT_UPLOAD_MAX_MB = 10;
+const rawUploadMaxMb = process.env.DISPATCHOS_UPLOAD_MAX_MB;
+const parsedUploadMaxMb = Number(rawUploadMaxMb);
+const uploadMaxMb =
+  Number.isFinite(parsedUploadMaxMb) && parsedUploadMaxMb > 0
+    ? parsedUploadMaxMb
+    : DEFAULT_UPLOAD_MAX_MB;
+if (
+  rawUploadMaxMb !== undefined &&
+  rawUploadMaxMb !== "" &&
+  uploadMaxMb !== parsedUploadMaxMb
+) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[upload] Ignoring invalid DISPATCHOS_UPLOAD_MAX_MB=${JSON.stringify(rawUploadMaxMb)}; ` +
+      `falling back to ${DEFAULT_UPLOAD_MAX_MB} MB.`,
+  );
+}
+
 export const upload = multer({
   dest: uploadsRoot,
-  limits: { fileSize: Number(process.env.DISPATCHOS_UPLOAD_MAX_MB || 10) * 1024 * 1024 },
+  limits: { fileSize: uploadMaxMb * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const extension = path.extname(file.originalname).toLowerCase();
     if (!allowedUploadExtensions.has(extension)) {

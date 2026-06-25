@@ -83,14 +83,28 @@ const US_STATE_BBOX: Record<string, [number, number, number, number]> = {
   DC: [38.79, 38.99, -77.12, -76.91],
 };
 
-/** Returns 2-letter state code for (lat, lng), or null if not in any US bbox. */
+/**
+ * Returns 2-letter state code for (lat, lng), or null if not in any US bbox.
+ *
+ * Bounding boxes overlap (e.g. DC sits fully inside MD; the Four-Corners and
+ * Northeast states share edges/corners), so a naive first-match would attribute
+ * a point to whichever box happens to be declared first. To make attribution
+ * order-independent we collect EVERY containing box and return the smallest
+ * (most-specific) one — the nested/narrower jurisdiction wins (DC over MD).
+ */
 export function lookupState(lat: number, lng: number): string | null {
+  let best: string | null = null;
+  let bestArea = Infinity;
   for (const [code, [minLat, maxLat, minLng, maxLng]] of Object.entries(US_STATE_BBOX)) {
     if (lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng) {
-      return code;
+      const area = (maxLat - minLat) * (maxLng - minLng);
+      if (area < bestArea) {
+        bestArea = area;
+        best = code;
+      }
     }
   }
-  return null;
+  return best;
 }
 
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {

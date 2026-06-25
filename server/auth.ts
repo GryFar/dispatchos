@@ -277,6 +277,53 @@ export const requireAuth = requireRole.any();
 // document export-then-leave, etc.).
 const PAST_DUE_GRACE_DAYS = 7;
 
+// billingBlockReason — pure terminal/grace evaluation shared by
+// requireActiveBilling (the middleware) and per-route gates (e.g. the
+// dispatcher reassign handler). ONE source of truth for "is this carrier in a
+// read-only billing state?". Returns the blocking reason or null when writes
+// are still allowed.
+//
+//  - 'expired' / 'canceled': terminal states — block immediately.
+//  - 'past_due': block only AFTER the PAST_DUE_GRACE_DAYS grace window measured
+//    from the most recent failed invoice (pastDueSince), falling back to
+//    trialEndsAt for legacy records that pre-date pastDueSince.
+//
+// Any other status (active/trialing/undefined) is allowed → null.
+export function billingBlockReason(
+  client:
+    | (Record<string, unknown> & {
+        billingStatus?: string;
+        trialEndsAt?: string;
+        pastDueSince?: string;
+      })
+    | null
+    | undefined,
+): "expired" | "canceled" | "past_due" | null {
+  if (!client) return null;
+  const status = client.billingStatus;
+  // 'canceled' (stamped by the Stripe webhook on customer.subscription.deleted /
+  // deriveSubscriptionUpdates) is a terminal blocking state, identical to
+  // 'expired' for access purposes — nothing else normalizes it, so a canceled
+  // carrier would otherwise keep full write access indefinitely.
+  if (status === "expired") return "expired";
+  if (status === "canceled") return "canceled";
+  if (status === "past_due") {
+    // Grace period: allow PAST_DUE_GRACE_DAYS after the most recent failed
+    // invoice, then treat as expired.
+    // Prefer the actual failed-payment date (stamped by the Stripe webhook on
+    // invoice.payment_failed). Fall back to trialEndsAt only for legacy records
+    // that pre-date pastDueSince — we can't reconstruct the failure date for those.
+    const ref = client.pastDueSince
+      ? new Date(client.pastDueSince).getTime()
+      : client.trialEndsAt
+        ? new Date(client.trialEndsAt).getTime()
+        : Date.now();
+    const past = (Date.now() - ref) / (24 * 3600 * 1000);
+    if (past > PAST_DUE_GRACE_DAYS) return "past_due";
+  }
+  return null;
+}
+
 export function requireActiveBilling(
   req: import("express").Request,
   res: import("express").Response,
@@ -315,33 +362,23 @@ export function requireActiveBilling(
     | undefined;
   if (!client) return next();
 
-  const status = client.billingStatus;
-  if (status === "expired") {
+  const reason = billingBlockReason(client);
+  // 'expired' / 'canceled' share one message; 'past_due' (after grace) gets the
+  // overdue-payment message. Keeping the exact wording/billingStatus payload
+  // preserves the middleware's external behavior.
+  if (reason === "expired" || reason === "canceled") {
     return res.status(402).json({
       message:
         "Аккаунт в режиме только для чтения (пробный период истёк или подписка отменена). Продлите на /admin/billing.",
-      billingStatus: "expired",
+      billingStatus: reason,
     });
   }
-  if (status === "past_due") {
-    // Grace period: allow PAST_DUE_GRACE_DAYS after the most recent failed
-    // invoice, then treat as expired.
-    // Prefer the actual failed-payment date (stamped by the Stripe webhook on
-    // invoice.payment_failed). Fall back to trialEndsAt only for legacy records
-    // that pre-date pastDueSince — we can't reconstruct the failure date for those.
-    const ref = client.pastDueSince
-      ? new Date(client.pastDueSince).getTime()
-      : client.trialEndsAt
-        ? new Date(client.trialEndsAt).getTime()
-        : Date.now();
-    const past = (Date.now() - ref) / (24 * 3600 * 1000);
-    if (past > PAST_DUE_GRACE_DAYS) {
-      return res.status(402).json({
-        message:
-          "Оплата просрочена более 7 дней. Аккаунт только для чтения. Обновите карту на /admin/billing.",
-        billingStatus: "past_due",
-      });
-    }
+  if (reason === "past_due") {
+    return res.status(402).json({
+      message:
+        "Оплата просрочена более 7 дней. Аккаунт только для чтения. Обновите карту на /admin/billing.",
+      billingStatus: "past_due",
+    });
   }
   next();
 }

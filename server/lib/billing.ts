@@ -71,6 +71,24 @@ export function roundCents(value: number): number {
   return centsToDollars(dollarsToCents(value));
 }
 
+/**
+ * A booked load is excluded from revenue when its lifecycle status is
+ * cancelled. `bookedAt` is never cleared on cancel (it is the revenue-window
+ * key), so cancelling only stamps `status` in the JSON payload — meaning a
+ * booked-then-cancelled load otherwise stays in grossBooked and is charged the
+ * 3% fee on revenue that never happened. Delivered/completed loads ARE
+ * billable, so only the cancelled aliases are filtered here.
+ *
+ * `status` is not on the read `Load` type (it lives in the payload JSON and is
+ * surfaced at runtime by parsePayloads), so we read it through a narrow cast.
+ * This mirrors the ACTIVE_LOAD_SQL exclusion list in storage.ts and is
+ * defense-in-depth alongside the storage-layer query filter.
+ */
+function isCancelledLoad(load: Load): boolean {
+  const status = (load as { status?: unknown }).status;
+  return status === "cancelled" || status === "canceled";
+}
+
 export interface BreakdownLoad {
   loadId: string;
   rate: number;          // USD float — display field
@@ -116,7 +134,13 @@ export function computeInvoiceForWeek(
   weekStart: string,
   weekEnd: string,
 ): InvoiceCalculation {
-  const loads: Load[] = storage.listBookedLoadsForClientWeek(clientId, weekStart, weekEnd);
+  // listBookedLoadsForClientWeek filters by booked_at window only (no status
+  // predicate), and booked_at is never cleared on cancel — so drop cancelled
+  // loads here before any money is summed. Delivered/completed loads remain
+  // billable; only cancelled/canceled are excluded.
+  const loads: Load[] = storage
+    .listBookedLoadsForClientWeek(clientId, weekStart, weekEnd)
+    .filter((load) => !isCancelledLoad(load));
 
   // Sum in cents to avoid float accumulation drift.
   const grossBookedCents = loads.reduce(

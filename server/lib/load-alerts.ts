@@ -115,6 +115,36 @@ export interface NotifyResult {
  *  permanent falsy → caller releases the claim so the next poll retries. */
 type SendResult = { ok: boolean; error?: string; permanent?: boolean };
 
+/**
+ * Bounded in-process retry around a send. Transient failures (429/5xx/network/
+ * timeout — `permanent` falsy) are retried a couple of times with short backoff
+ * before giving up. This matters because the only caller (cron's
+ * pushMatchedLoadAlerts) re-scores ONLY freshly-inserted loads, so a re-polled
+ * load never reappears and the deps.release retry path is never re-driven. An
+ * immediate same-invocation retry recovers a transient Telegram blip so the
+ * alert isn't silently lost. A permanent failure (bot blocked / chat gone) is
+ * returned immediately — retrying it is pointless. Never throws (send must not).
+ */
+const SEND_MAX_ATTEMPTS = 3;
+const SEND_RETRY_BASE_MS = 250;
+
+async function sendWithRetry(
+  send: (chatId: string, text: string) => Promise<SendResult>,
+  chatId: string,
+  text: string,
+): Promise<SendResult> {
+  let last: SendResult = { ok: false, error: "unknown" };
+  for (let attempt = 1; attempt <= SEND_MAX_ATTEMPTS; attempt += 1) {
+    last = await send(chatId, text);
+    if (last.ok || last.permanent) return last;
+    if (attempt < SEND_MAX_ATTEMPTS) {
+      // Linear backoff (250ms, 500ms). Small enough to stay within a cron pass.
+      await new Promise((r) => setTimeout(r, SEND_RETRY_BASE_MS * attempt));
+    }
+  }
+  return last;
+}
+
 const realFetchSend =
   (token: string | null) =>
   async (chatId: string, text: string): Promise<SendResult> => {
@@ -191,7 +221,7 @@ export async function notifyMatchedLoad(
       result.skipped += 1;
       continue;
     }
-    const sendRes = await deps.send(r.chatId, text);
+    const sendRes = await sendWithRetry(deps.send, r.chatId, text);
     if (sendRes.ok) {
       result.sent += 1;
     } else {
@@ -283,7 +313,7 @@ export async function notifyMatchedLoadsBatch(
       fresh.length === 1
         ? formatMatchedLoadMessage(client, fresh[0]!)
         : formatMatchedLoadsBatchMessage(client, fresh);
-    const sendRes = await deps.send(r.chatId, text);
+    const sendRes = await sendWithRetry(deps.send, r.chatId, text);
     if (sendRes.ok) result.sent += 1;
     else {
       result.errors.push(`send ${r.chatId}: ${sendRes.error ?? "unknown"}`);
@@ -374,7 +404,11 @@ export async function notifyPickupReminder(
     return "error";
   }
   if (!fresh) return "skipped";
-  const res = await deps.send(chatId, formatPickupReminderMessage(load, pickupAtIso, nowMs));
+  const res = await sendWithRetry(
+    deps.send,
+    chatId,
+    formatPickupReminderMessage(load, pickupAtIso, nowMs),
+  );
   if (res.ok) return "sent";
   // Transient failure: release so the next poll retries. Permanent: keep claim.
   if (!res.permanent) deps.release?.(load.id, driverId, pickupAtIso);

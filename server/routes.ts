@@ -74,6 +74,7 @@ import {
   lookupLineType,
 } from "./lib/twilio/verify";
 import crypto from "node:crypto";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -638,7 +639,12 @@ function buildDispatchBoard(clientId?: string): DispatchBoard {
   const loads = storage.listLoads();
   const selectedClient = clients.find((client) => client.id === clientId) ?? clients[0];
   const scoredLoads = loads
-    .map((load) => scoreLoadForClient(selectedClient, load))
+    // persist=false: this is a read path (GET /api/dispatch-board). Passing true
+    // here fired 2 synchronous SQLite writes per load (recordLaneObservation +
+    // upsertLoadScore) on the single better-sqlite3 writer on every render,
+    // serializing concurrent requests and inflating lane_history. Only the
+    // cron/poller path should persist scores.
+    .map((load) => scoreLoadForClient(selectedClient, load, false))
     .filter((load): load is ScoredLoad => Boolean(load))
     .sort((a, b) => b.dispatchScore - a.dispatchScore);
 
@@ -995,7 +1001,9 @@ function buildWeeklyReport(clientId: string) {
   const loads = storage
     .listLoads()
     .filter((load) => load.equipment === client.equipment)
-    .map((load) => scoreLoadForClient(client, load))
+    // persist=false: weekly report is a read path; scoring many loads here must
+    // not fire per-load synchronous SQLite writes (see buildDispatchBoard).
+    .map((load) => scoreLoadForClient(client, load, false))
     .filter((load): load is ScoredLoad => Boolean(load))
     .sort((a, b) => b.dispatchScore - a.dispatchScore)
     .slice(0, 10);
@@ -1056,11 +1064,20 @@ function parseEmailToLoad(input: { from: string; subject: string; body: string }
     };
   }
 
-  // Generic fallback (v1.2.7 legacy) — unchanged from the original.
-  const text = `${input.subject}\n${input.body}`;
+  // Generic fallback (v1.2.7 legacy).
+  // ReDoS hardening: the lane matcher's city group used to be the greedy,
+  // unbounded `([A-Za-z .]+)` followed by `,?\s` — on a long all-letter run with
+  // no trailing lane it backtracks super-linearly and freezes the single-threaded
+  // event loop. The body is only schema-bounded (64 KB), which is still far too
+  // large to run a catastrophic regex over synchronously. Two-layer fix:
+  //   1) cap the text the matchers see to the first 8 KB — broker lanes/rates sit
+  //      at the very top of the email, so this never loses a real match; and
+  //   2) bound each city group to {1,40} chars and make it non-greedy, removing
+  //      the catastrophic-backtracking shape entirely.
+  const text = `${input.subject}\n${input.body}`.slice(0, 8 * 1024);
   const rate = Number(text.match(/\$?\s?(\d{3,5})(?:\s|$)/)?.[1] || 0);
   const miles = Number(text.match(/(\d{2,5})\s?(?:mi|miles)/i)?.[1] || 0);
-  const lane = text.match(/([A-Za-z .]+),?\s([A-Z]{2})\s*(?:-|→|to)\s*([A-Za-z .]+),?\s([A-Z]{2})/i);
+  const lane = text.match(/([A-Za-z .]{1,40}?),?\s([A-Z]{2})\s*(?:-|→|to)\s*([A-Za-z .]{1,40}?),?\s([A-Z]{2})/i);
   return {
     possibleLoad: Boolean(rate && miles && lane),
     source: "generic" as const,
@@ -1772,7 +1789,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       if (!owner) {
-        storage.releaseMcForUser(user.id); // drop a previously-claimed (mistyped) MC
+        // TOCTOU fix: getMcRegistryOwner above is a non-atomic read — two
+        // concurrent PATCHes for the same unclaimed MC both see owner==undefined.
+        // claimMc is the atomic arbiter (INSERT OR IGNORE), so we MUST inspect
+        // its result and 409 the loser instead of proceeding under an MC it
+        // doesn't own. We also claim BEFORE releasing any prior MC: if the claim
+        // loses the race we must not have already wiped the user's existing
+        // (valid) docket via releaseMcForUser.
+        const claim = storage.claimMc(normalized, user.id);
+        if (!claim.ok) {
+          storage.audit("onboarding.mc_claim_conflict", "user", user.id, { mc: normalized });
+          return res.status(409).json({
+            message: "Этот MC# уже привязан к другому аккаунту. Если это ошибка — свяжитесь с поддержкой.",
+            code: "mc_already_claimed",
+          });
+        }
+        // Drop any OTHER previously-claimed (mistyped) MC rows for this user now
+        // that the new claim is confirmed. releaseMcForUser deletes all of the
+        // user's rows, so re-claim the just-won normalized MC to keep it.
+        storage.releaseMcForUser(user.id);
         storage.claimMc(normalized, user.id);
         storage.audit("onboarding.mc_claimed", "user", user.id, { mc: normalized });
       }
@@ -1821,10 +1856,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Provision the carrier. If it fails, do NOT mark onboarding complete.
       if (!user.linkedClientId) {
         const d = (body.data ?? {}) as { companyName?: string; planTier?: string };
+        // Anti mass-assignment: data is an unvalidated bag (updateOnboardingProgressSchema
+        // types it as z.record(string, unknown)). A self-serve owner-operator could
+        // POST planTier:'enterprise' and get the full enterprise entitlement free.
+        // Whitelist the client-supplied tier: accept it ONLY when it names a real
+        // plan whose persona matches the resolved persona AND it is not a free
+        // trial tier. Anything else (unknown tier, cross-persona, 'trial') is
+        // dropped so provisioning falls back to the safe persona default; the paid
+        // tier is set authoritatively by the Stripe webhook after checkout.
+        const { PLANS } = await import("./lib/plans");
+        const requestedTier = d.planTier;
+        const safeTier =
+          requestedTier &&
+          PLANS[requestedTier] &&
+          PLANS[requestedTier].persona === dPersona &&
+          requestedTier !== "trial"
+            ? requestedTier
+            : undefined;
+        if (requestedTier && !safeTier) {
+          storage.audit("onboarding.plan_tier_rejected", "user", user.id, {
+            requestedTier,
+            persona: dPersona,
+          });
+        }
         const result = storage.provisionCarrierFromOnboarding(user.id, {
           persona: dPersona,
           companyName: d.companyName,
-          planTier: d.planTier,
+          planTier: safeTier,
         });
         if (!("id" in result) && result.skipped !== "already_linked") {
           storage.audit("onboarding.provision_failed", "user", user.id, {
@@ -2226,7 +2284,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/email/ingest", requireRole("admin", "dispatcher"), (req, res) => {
+  // Cross-tenant containment: email_ingest has NO clientId column, so
+  // listEmailIngest returns the globally newest rows across ALL carriers
+  // (raw from/subject/body + parsed rate/lane/broker). A 'dispatcher' is a
+  // low-trust, potentially cross-carrier role, so exposing every tenant's
+  // inbound broker offers to them leaks commercial relationships. Restrict the
+  // READ to admin only — matching /api/brokers and /api/documents — until a
+  // clientId column lands for true per-tenant scoping. The POST ingest path
+  // (which only writes the caller's own forwarded email) stays dispatcher-allowed.
+  app.get("/api/email/ingest", requireRole("admin"), (req, res) => {
     // parseLimit guards against ?limit=abc -> NaN -> SQLite LIMIT NaN (returns
     // every row / unbounded read).
     const limit = Math.min(parseLimit(req.query.limit) ?? 50, 200);
@@ -2390,6 +2456,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const VERIFY_COOLDOWN_MS   = 60_000;
   const VERIFY_MAX_PER_24H   = 5;
   const VERIFY_WINDOW_24H_MS = 24 * 60 * 60 * 1_000;
+  const VERIFY_BUCKETS_MAX   = 50_000;
 
   interface VerifyBucket { lastSentAt: number; count24h: number; windowStart: number }
   const verifyBuckets = new Map<string, VerifyBucket>();
@@ -2398,6 +2465,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const now = Date.now();
     let b = verifyBuckets.get(key);
     if (!b) {
+      // Bound the Map so an attacker rotating target phones/emails can't grow
+      // it without bound (memory-exhaustion DoS). Sweep stale 24h entries first,
+      // then refuse rather than exceed the hard cap.
+      if (verifyBuckets.size >= VERIFY_BUCKETS_MAX) {
+        const stale: string[] = [];
+        verifyBuckets.forEach((v, k) => { if (now - v.windowStart > VERIFY_WINDOW_24H_MS) stale.push(k); });
+        stale.forEach((k) => verifyBuckets.delete(k));
+        if (verifyBuckets.size >= VERIFY_BUCKETS_MAX) {
+          return { allowed: false, cooldownSec: 60 };
+        }
+      }
       verifyBuckets.set(key, { lastSentAt: now, count24h: 1, windowStart: now });
       return { allowed: true, cooldownSec: 0 };
     }
@@ -2417,23 +2495,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return { allowed: true, cooldownSec: 0 };
   }
 
+  // Refund ONLY the 24h quota on a provider-side failure (bad line type, SMS/email
+  // send error) — NOT the 60s cooldown. The previous version set lastSentAt=0,
+  // which made verifyRateCheck's `remaining = COOLDOWN - (now - lastSentAt)` go
+  // negative => allowed=true immediately, fully clearing the cooldown on EVERY
+  // failed send. That let an attacker pin lastSentAt at 0 and hammer the paid
+  // Twilio lookup/SMS with no per-key throttle. Leaving lastSentAt at its
+  // post-send value keeps the 60s cooldown intact while still refunding the
+  // 24h count so a transient provider error doesn't burn the daily allowance.
   function undoVerifyRateBucket(key: string) {
     const b = verifyBuckets.get(key);
-    if (b) { b.count24h = Math.max(0, b.count24h - 1); b.lastSentAt = 0; }
+    if (b) { b.count24h = Math.max(0, b.count24h - 1); }
   }
 
   const E164_RE = /^\+\d{8,15}$/;
 
+  // ---------------------------------------------------------------------------
+  // SMS-pumping / toll-fraud defense for the UNAUTHENTICATED send-code routes.
+  // ---------------------------------------------------------------------------
+  // The per-target verifyRateCheck bucket only throttles repeats to the SAME
+  // phone/email; an attacker rotating target numbers gets one paid Twilio
+  // lookup + SMS per distinct number with no aggregate cap. Add two controls in
+  // front of the per-target bucket:
+  //   1) a per-IP express-rate-limit (keyed via ipKeyGenerator so IPv6 clients
+  //      can't mint unlimited keys by varying the address suffix), and
+  //   2) a service-wide global send counter (fixed 1-minute window) so a
+  //      botnet spread across many IPs still can't run up an unbounded bill.
+  // Both are env-tunable. The per-IP limiter is mounted as route middleware; the
+  // global cap is checked inside each handler right before the paid call.
+  const sendCodeIpLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: Number(process.env.DISPATCHOS_SEND_CODE_IP_PER_MIN || 5),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip || "unknown"),
+    message: { ok: false, error: "rate_limited" },
+  });
+
+  const SEND_CODE_GLOBAL_PER_MIN = Number(process.env.DISPATCHOS_SEND_CODE_GLOBAL_PER_MIN || 60);
+  let sendCodeGlobalWindowStart = Date.now();
+  let sendCodeGlobalCount = 0;
+  function globalSendAllowed(): boolean {
+    const now = Date.now();
+    if (now - sendCodeGlobalWindowStart > 60_000) {
+      sendCodeGlobalWindowStart = now;
+      sendCodeGlobalCount = 0;
+    }
+    if (sendCodeGlobalCount >= SEND_CODE_GLOBAL_PER_MIN) return false;
+    sendCodeGlobalCount++;
+    return true;
+  }
+
   // -------------------------------------------------------------------------
   // POST /api/auth/phone/send-code — send SMS verification code
   // -------------------------------------------------------------------------
-  app.post("/api/auth/phone/send-code", async (req, res) => {
+  app.post("/api/auth/phone/send-code", sendCodeIpLimiter, async (req, res) => {
     if (!TWILIO_VERIFY_CONFIGURED) {
       return res.status(503).json({ ok: false, error: "twilio_not_configured" });
     }
     const phone = String((req.body as { phone?: unknown })?.phone ?? "").trim();
     if (!E164_RE.test(phone)) {
       return res.status(400).json({ ok: false, error: "invalid_phone" });
+    }
+    if (!globalSendAllowed()) {
+      return res.status(429).json({ ok: false, error: "rate_limited" });
     }
     const { allowed, cooldownSec } = verifyRateCheck(phone);
     if (!allowed) {
@@ -2500,13 +2625,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // If absent, Twilio returns error 60220 → we return 503 email_channel_not_configured.
   // Frontend shows "verify later" banner instead of hard-blocking signup.
   // -------------------------------------------------------------------------
-  app.post("/api/auth/email/send-code", async (req, res) => {
+  app.post("/api/auth/email/send-code", sendCodeIpLimiter, async (req, res) => {
     if (!TWILIO_VERIFY_CONFIGURED) {
       return res.status(503).json({ ok: false, error: "twilio_not_configured" });
     }
     const email = String((req.body as { email?: unknown })?.email ?? "").trim().toLowerCase();
     if (!email || !email.includes("@")) {
       return res.status(400).json({ ok: false, error: "invalid_email" });
+    }
+    if (!globalSendAllowed()) {
+      return res.status(429).json({ ok: false, error: "rate_limited" });
     }
     const { allowed, cooldownSec } = verifyRateCheck(`email:${email}`);
     if (!allowed) {

@@ -34,6 +34,13 @@ eq("Miami FL", lookupState(25.95, -80.20), "FL");
 eq("mid-Atlantic ocean -> null", lookupState(30.0, -45.0), null);
 eq("Antarctica -> null", lookupState(-70.0, 0.0), null);
 
+// Overlap resolution: DC's bbox sits fully inside MD's. The point must be
+// attributed to the smaller/more-specific box (DC), independent of the order
+// the boxes are declared in.
+eq("Washington DC (inside MD bbox) -> DC", lookupState(38.90, -77.04), "DC");
+// A Maryland point well outside DC's box still resolves to MD.
+eq("Baltimore MD -> MD", lookupState(39.29, -76.61), "MD");
+
 // ---------------------------------------------------------------------------
 // renderIftaCsv — structure + numbers + unattributed footer
 // ---------------------------------------------------------------------------

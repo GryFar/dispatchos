@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { LogOut, User as UserIcon, Mail, Phone, Save } from "lucide-react";
 import type { UpdateDriverProfileInput, UserPublic } from "@shared/schema";
 import { apiJson, ApiError } from "@/lib/queryClient";
-import { useAuth, refreshAuth } from "@/lib/use-auth";
+import { useAuth, clearAuthCache } from "@/lib/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -65,7 +65,7 @@ export default function DriverProfilePage() {
   const logout = useMutation({
     mutationFn: () => apiJson<{ ok: true }>("POST", "/api/auth/logout"),
     onSuccess: async () => {
-      await refreshAuth();
+      await clearAuthCache();
       setLocation("~/login");
     },
     onError: (err) => {

@@ -139,23 +139,31 @@ export function registerMeTotpRoutes(app: Express): void {
       }
 
       // Audit High #11/#12 — verifyTotp returns the accepted counter or null.
-      // For initial setup minCounter=null (no replay history yet); we seed it
-      // with the counter we just accepted so future logins reject replays.
+      // For setup/rotation minCounter=null: `pending` is a BRAND-NEW secret with
+      // its own (empty) replay history, independent of the old secret's counter.
       const acceptedCounter = verifyTotp(pending, body.token);
       if (acceptedCounter === null) {
         return res.status(401).json({ message: "Invalid 2FA token" });
       }
 
-      // Replay guard: claim the counter atomically BEFORE persisting the
-      // secret. setLastUsedTotpCounter returns false if this counter was
-      // already used (a replayed code or a concurrent confirm), so reject it —
-      // mirrors the login and confirm-signup paths, which already check this.
+      // Persist the new secret AND reset last_used_totp_counter to NULL in one
+      // atomic write. On a ROTATION the user just authenticated with the OLD
+      // secret, so last_used_totp_counter is already at/above the current
+      // time-window; without this reset the new secret's first code (same
+      // window) would fail the setLastUsedTotpCounter replay gate below and 401,
+      // making rotation impossible. Clearing it re-bases replay protection on
+      // the new secret's own history.
+      const installed = storage.installTotpSecret(user.id, pending, user.id);
+      if (!installed) return res.status(404).json({ message: "User not found" });
+
+      // Replay guard, now against the freshly-reset (NULL) baseline: seed the
+      // counter we just accepted so future logins reject replays. If a
+      // concurrent confirm already seeded this same counter for the new secret,
+      // setLastUsedTotpCounter returns false — reject as a replay (mirrors the
+      // login and confirm-signup paths).
       if (!storage.setLastUsedTotpCounter(user.id, acceptedCounter)) {
         return res.status(401).json({ message: "Invalid 2FA token" });
       }
-
-      const updated = storage.updateUser(user.id, { totpSecret: pending }, user.id);
-      if (!updated) return res.status(404).json({ message: "User not found" });
       // CRITICAL: stamp totp_confirmed_at. The login gate rejects any user with
       // a secret but no confirmation (code: "totp_setup_required"). updateUser
       // does NOT touch totp_confirmed_at, so without this the user who just

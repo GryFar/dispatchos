@@ -268,7 +268,11 @@ function ProfileTab({ client }: { client: Client }) {
     irpBaseJurisdiction: (client as any).irpBaseJurisdiction ?? "",
   });
 
-  // Reset form when client refetches (e.g. after save)
+  // Reset the form only when we navigate to a DIFFERENT client, not on every
+  // background/window-focus refetch of the same client — otherwise a refetch
+  // returns a fresh `client` object reference and silently wipes unsaved edits.
+  // (Depending on the whole `client` object re-ran this on every refetch.)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     setForm({
       name: client.name,
@@ -309,7 +313,7 @@ function ProfileTab({ client }: { client: Client }) {
       irpExpiresAt: (client as any).irpExpiresAt ?? "",
       irpBaseJurisdiction: (client as any).irpBaseJurisdiction ?? "",
     });
-  }, [client]);
+  }, [client.id]);
 
   const mutation = useMutation({
     mutationFn: (patch: Partial<Client>) =>
@@ -353,6 +357,9 @@ function ProfileTab({ client }: { client: Client }) {
     // Smart-matching fields — отправляем ТОЛЬКО заполненные
     if (form.equipmentTypes.length > 0) patch.equipmentTypes = form.equipmentTypes;
     if (form.avgMpg !== "") patch.avgMpg = Number(form.avgMpg);
+    // maxGvwLbs is a HARD load filter server-side (routes.ts) — must be
+    // persisted when set, otherwise admin edits are silently dropped.
+    if (form.maxGvwLbs !== "") patch.maxGvwLbs = Number(form.maxGvwLbs);
     if (form.payMode === "cpm" && form.payCentsPerMile !== "") {
       patch.payCentsPerMile = Number(form.payCentsPerMile);
     }

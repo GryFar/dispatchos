@@ -106,7 +106,7 @@ const { storage } = await import("../storage");
 
 const ld = storage.upsertLoad({ ...validLoad, id: undefined } as any);
 storage.reassignLoadDriver(ld.id, null, "drv_guard"); // assign   -> driverId + bookedAt set
-storage.reassignLoadDriver(ld.id, "drv_guard", null); // unassign -> json('null') for both
+storage.reassignLoadDriver(ld.id, "drv_guard", null); // unassign -> driverId json('null'); bookedAt PRESERVED (audit fix)
 
 const raw = storage.getLoad(ld.id);
 if (!raw) {
@@ -114,7 +114,14 @@ if (!raw) {
 } else {
   const anyRaw = raw as Record<string, unknown>;
   assert("persisted payload driverId is null after unassign", anyRaw.driverId === null);
-  assert("persisted payload bookedAt is null after unassign", anyRaw.bookedAt === null);
+  // AUDIT FIX: booked_at is the immutable billing-week key — it MUST survive an
+  // unassign. Clearing it on unassign dropped an already-booked load out of the
+  // billing window (listBookedLoadsForClientWeek / ACTIVE_LOAD_SQL gate on
+  // booked_at IS NOT NULL), undercharging the carrier. So it is preserved, not nulled.
+  assert(
+    "persisted payload bookedAt is PRESERVED after unassign (billing-week key)",
+    typeof anyRaw.bookedAt === "string" && anyRaw.bookedAt.length > 0,
+  );
   const parsed = loadFullSchema.safeParse(raw);
   assert(
     "loadFullSchema accepts the null-injected persisted payload (no 400)",

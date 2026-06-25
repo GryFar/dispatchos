@@ -126,7 +126,18 @@ export function registerCronRoutes(app: Express): void {
     if (!requireCronSecret(req, res)) return;
 
     const sources = storage.listLoadSourcesDueForPoll();
-    const results = await Promise.allSettled(sources.map(async (src) => {
+
+    type PollResult =
+      | { id: string; ok: true; loadsFound: number; loadsNew: number; alertsSent: number }
+      | { id: string; ok: false; error: string; skipped?: true };
+
+    const pollSource = async (src: (typeof sources)[number]): Promise<PollResult> => {
+      // Atomic lease: bump last_polled_at NOW iff the row is still due, so two
+      // overlapping cron runs can't both poll (and double-alert) the same
+      // source. The loser of the race skips without any network I/O.
+      if (!storage.leaseLoadSourceForPoll(src.id)) {
+        return { id: src.id, ok: false, error: "skipped_not_leased", skipped: true };
+      }
       const t0 = Date.now();
       const adapter = getAdapter(src.adapterKey);
       if (!adapter) {
@@ -180,12 +191,33 @@ export function registerCronRoutes(app: Express): void {
         });
         return { id: src.id, ok: false, error: msg };
       }
-    }));
+    };
+
+    // Bound fan-out: each source runs authenticate + fetchLoads + alert pushes,
+    // so polling every due source at once can exhaust sockets / hit vendor
+    // rate limits. Process sources through a small fixed-size worker pool.
+    const CONCURRENCY = Math.max(
+      1,
+      Number(process.env.DISPATCHOS_LOAD_SOURCE_CONCURRENCY) || 4,
+    );
+    const results: PollResult[] = new Array(sources.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const i = cursor++;
+        if (i >= sources.length) return;
+        results[i] = await pollSource(sources[i]);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, sources.length) }, () => worker()),
+    );
 
     return res.json({
       ok: true,
       polled: sources.length,
-      results: results.map((r) => r.status === "fulfilled" ? r.value : { ok: false, error: String(r.reason) }),
+      leased: results.filter((r) => !(r.ok === false && r.skipped)).length,
+      results,
     });
   });
 

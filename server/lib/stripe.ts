@@ -45,6 +45,15 @@ export function stripeClient(): Stripe | null {
   return _stripe;
 }
 
+/**
+ * Test-only seam: inject (or clear) the memoized Stripe client so unit tests can
+ * exercise the webhook state machine without real network calls. Pass null to
+ * reset back to lazy initialization. Not used by production code paths.
+ */
+export function __setStripeClientForTest(stub: Stripe | null): void {
+  _stripe = stub;
+}
+
 /** Was Stripe configured at any source (DB or env)? Cheap check. */
 export function isStripeConfigured(): boolean {
   return Boolean(
@@ -181,7 +190,7 @@ export async function createPortalSession(
  * 2025+ API: invoice.parent.subscription_details.subscription.
  * We probe both — cast as `any` because the TS types pin to the new shape.
  */
-function extractSubscriptionId(invoice: Stripe.Invoice): string | null {
+export function extractSubscriptionId(invoice: Stripe.Invoice): string | null {
   const legacy = (invoice as unknown as { subscription?: string | { id: string } }).subscription;
   if (legacy) return typeof legacy === "string" ? legacy : legacy.id;
   const parent = (invoice as unknown as {
@@ -218,6 +227,13 @@ export function constructWebhookEvent(
  * status/trial/tier — all derived from the authoritative subscription object,
  * never hardcoded. `trialEndsAt` is left undefined (not cleared) when the sub
  * has no trial. planTier is set only when resolvable from the paid price.
+ *
+ * pastDueSince is kept consistent with the invoice.payment_failed producer so
+ * the 7-day grace clock (consumed by requireActiveBilling) is never lost: a
+ * subscription.updated that lands in past_due BEFORE/WITHOUT a payment_failed
+ * stamps the grace start here (first-failure-only — an already-past_due client
+ * keeps its original date so retries don't reset the clock), and a return to
+ * active/trial clears it.
  */
 export function deriveSubscriptionUpdates(
   sub: Stripe.Subscription,
@@ -243,6 +259,20 @@ export function deriveSubscriptionUpdates(
     trialEndsAt: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : undefined,
   };
   if (resolvedTier) updates.planTier = resolvedTier;
+
+  const prev = client as { billingStatus?: string; pastDueSince?: string };
+  if (billingStatus === "past_due") {
+    // Only stamp on the FIRST transition into past_due — keep the original date
+    // if the carrier was already past_due so the grace window isn't reset.
+    updates.pastDueSince =
+      prev.billingStatus === "past_due" && prev.pastDueSince
+        ? prev.pastDueSince
+        : new Date().toISOString();
+  } else if (billingStatus === "active" || billingStatus === "trial") {
+    // Recovered (or trialing again) — clear the failure marker so a future
+    // past_due gets a fresh grace window.
+    updates.pastDueSince = undefined;
+  }
   return updates;
 }
 
@@ -291,12 +321,17 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
             `[stripe] checkout.session.completed: retrieve ${subId} failed:`,
             (err as Error).message,
           );
+          // Do NOT fabricate a 14-day trial on a transient retrieve failure: a
+          // customer who paid immediately (no trial) would be handed a free
+          // window. Persist only the durable linkage (customer/subscription id +
+          // the tier the checkout was for) and leave billingStatus/trialEndsAt
+          // untouched — the authoritative customer.subscription.created/updated
+          // event (which Stripe also emits for this checkout) is the source of
+          // truth for status/trial and will set them correctly.
           updates = {
             stripeCustomerId,
             stripeSubscriptionId: subId,
             planTier: tier,
-            billingStatus: "trial",
-            trialEndsAt: new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString(),
           };
         }
       } else {
@@ -310,8 +345,17 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
           trialEndsAt: new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString(),
         };
       }
+      // Re-read the client AFTER the await: upsertClient overwrites the whole
+      // payload, so spreading the pre-await snapshot would silently revert any
+      // concurrent mutation (admin archive, location ping, a racing
+      // subscription.* event) committed while we were awaiting the network
+      // retrieve. Also bail if it was archived in that window — don't resurrect.
+      const fresh = storage.getClient(clientId) as
+        | (Record<string, unknown> & { deletedAt?: string | null })
+        | undefined;
+      if (!fresh || fresh.deletedAt) return { handled: false, clientId };
       storage.upsertClient({
-        ...(client as unknown as Parameters<typeof storage.upsertClient>[0]),
+        ...(fresh as unknown as Parameters<typeof storage.upsertClient>[0]),
         ...updates,
       } as Parameters<typeof storage.upsertClient>[0]);
       storage.audit("billing.subscription_started", "client", clientId, {

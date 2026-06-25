@@ -28,6 +28,21 @@ export interface SendEmailResult {
 const DEFAULT_FROM = "DispatchOS <noreply@talk.dispatchos.co>";
 const DEFAULT_REPLY_TO = "dispatch@dispatchos.co";
 
+/**
+ * Escape a string for safe interpolation into HTML text or a double/single
+ * quoted attribute value. Neutralises markup ("<", ">"), attribute breakout
+ * (the quote chars) and entity injection ("&"). Use on EVERY dynamic value
+ * placed into an outbound HTML email body.
+ */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
   // Read via integration-config so admins can override the Fly secret
   // from the UI without redeploying.
@@ -95,26 +110,35 @@ export async function sendInviteEmail(input: InviteEmailInput): Promise<SendEmai
   });
 
   const subject = t.subject.replace("{role}", roleName);
+
+  // Escape every dynamic value before interpolating into the HTML body to
+  // prevent HTML injection / stored-XSS (inviterName is user-controlled, and
+  // signupUrl carries an external host + query string). The plain-text body
+  // below uses the raw values intentionally.
+  const inviterHtml = escapeHtml(inviter);
+  const roleNameHtml = escapeHtml(roleName);
+  const subjectHtml = escapeHtml(subject);
+  const signupUrlHtml = escapeHtml(input.signupUrl);
   const html = `<!doctype html>
 <html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${subject}</title></head>
+<title>${subjectHtml}</title></head>
 <body style="margin:0;padding:0;background:#f7f6f2;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#28251D;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
     <tr><td align="center" style="padding:40px 16px;">
       <table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;border-radius:12px;border:1px solid #D4D1CA;overflow:hidden;">
         <tr><td style="padding:32px 32px 8px;">
           <div style="font-size:13px;letter-spacing:1px;color:#7A7974;text-transform:uppercase;">DispatchOS</div>
-          <h1 style="margin:16px 0 0;font-size:24px;line-height:1.3;color:#28251D;">${t.heading.replace("{role}", roleName)}</h1>
+          <h1 style="margin:16px 0 0;font-size:24px;line-height:1.3;color:#28251D;">${t.heading.replace("{role}", roleNameHtml)}</h1>
         </td></tr>
         <tr><td style="padding:24px 32px 8px;font-size:15px;line-height:1.6;color:#28251D;">
-          <p style="margin:0 0 16px;">${t.greeting.replace("{inviter}", inviter)}</p>
-          <p style="margin:0 0 24px;">${t.body.replace("{role}", roleName)}</p>
+          <p style="margin:0 0 16px;">${t.greeting.replace("{inviter}", inviterHtml)}</p>
+          <p style="margin:0 0 24px;">${t.body.replace("{role}", roleNameHtml)}</p>
           <p style="margin:0 0 32px;">
-            <a href="${input.signupUrl}" style="display:inline-block;background:#01696F;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:15px;">${t.cta}</a>
+            <a href="${signupUrlHtml}" style="display:inline-block;background:#01696F;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:15px;">${t.cta}</a>
           </p>
           <p style="margin:0 0 8px;font-size:13px;color:#7A7974;">${t.expires.replace("{expires}", expires)}</p>
           <p style="margin:0 0 24px;font-size:13px;color:#7A7974;">${t.fallback}</p>
-          <p style="margin:0;font-size:13px;color:#7A7974;word-break:break-all;"><a href="${input.signupUrl}" style="color:#01696F;">${input.signupUrl}</a></p>
+          <p style="margin:0;font-size:13px;color:#7A7974;word-break:break-all;"><a href="${signupUrlHtml}" style="color:#01696F;">${signupUrlHtml}</a></p>
         </td></tr>
         <tr><td style="padding:24px 32px;border-top:1px solid #D4D1CA;font-size:12px;color:#7A7974;">
           ${t.footer}

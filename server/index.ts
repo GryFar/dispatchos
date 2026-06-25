@@ -58,7 +58,14 @@ if (isProdLike) {
 const sessionSecret =
   sessionSecretFromEnv || "change-this-local-dispatchos-secret-before-production";
 
-if (isVdsMode) {
+// Trust the reverse proxy in ANY behind-proxy deployment, not just VDS mode.
+// On Fly.io (FLY_APP_NAME set, not DISPATCHOS_DEPLOYMENT_MODE=vds) we still sit
+// behind the Fly edge proxy + Cloudflare, so without this app.set, req.ip is the
+// proxy hop IP. That collapses every client into one bucket in the auth limiters
+// (which key on req.ip) and makes req.secure unreliable for secure-cookie
+// issuance. Gate on isProdLike so all production-like deployments enable it.
+// Must run before session + rate-limit middleware below.
+if (isProdLike) {
   app.set("trust proxy", Number(process.env.DISPATCHOS_TRUST_PROXY || 1));
 }
 

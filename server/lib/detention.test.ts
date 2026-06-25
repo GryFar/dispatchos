@@ -7,11 +7,16 @@
 //   - Delivery detention
 //   - Quarter-hour ceiling
 //   - Custom freeHours + ratePerHourCents
-//   - Multiple checkins of the same kind — latest wins
+//   - Multiple ARRIVAL checkins — earliest wins (completion — latest wins)
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeDetentionForLoad, totalDetentionCents, billableDetentionCents } from "./detention";
+import {
+  computeDetentionForLoad,
+  totalDetentionCents,
+  previewDetentionCents,
+  billableDetentionCents,
+} from "./detention";
 import type { LoadCheckin } from "@shared/schema";
 
 function ck(
@@ -137,7 +142,7 @@ test("custom freeHours and rate per client", () => {
   assert.equal(events[0]!.amountCents, 10_000);
 });
 
-test("multiple pickup_arrived checkins — latest wins", () => {
+test("multiple pickup_arrived checkins — EARLIEST arrival wins (no understatement)", () => {
   const events = computeDetentionForLoad({
     load: { id: "L1" },
     checkins: [
@@ -146,8 +151,12 @@ test("multiple pickup_arrived checkins — latest wins", () => {
       ck("loaded", "2026-05-26T11:00:00Z"),
     ],
   });
-  // Latest pickup_arrived = 08:00, loaded at 11:00 → 3h total, 1h billable
-  assert.equal(events[0]!.billableHours, 1);
+  // Detention must measure from the FIRST on-site arrival (05:00), not a
+  // later re-recorded one. 05:00→11:00 = 6h total, 4h billable after 2h free.
+  // Using the latest arrival (08:00) would have understated this to 1h.
+  assert.equal(events[0]!.arrivedAt, "2026-05-26T05:00:00Z");
+  assert.equal(events[0]!.totalHours, 6);
+  assert.equal(events[0]!.billableHours, 4);
 });
 
 // --- GPS corroboration (revenue-leak fix: 1 ping is enough) -----------------
@@ -196,4 +205,39 @@ test("no gpsPings supplied → legacy 'auto' source still billable", () => {
   assert.equal(events[0]!.source, "auto");
   assert.equal(events[0]!.pingCount, undefined);
   assert.ok(billableDetentionCents(events) > 0);
+});
+
+test("multiple delivery_arrived checkins — EARLIEST arrival wins", () => {
+  const events = computeDetentionForLoad({
+    load: { id: "L1" },
+    checkins: [
+      ck("delivery_arrived", "2026-05-27T10:00:00Z", "old"),
+      ck("delivery_arrived", "2026-05-27T13:00:00Z", "new"),
+      ck("delivered", "2026-05-27T17:00:00Z"),
+    ],
+  });
+  // 10:00→17:00 = 7h total, 5h billable after 2h free (latest-arrival bug
+  // would have measured 13:00→17:00 = 4h total, only 2h billable).
+  assert.equal(events[0]!.leg, "delivery");
+  assert.equal(events[0]!.arrivedAt, "2026-05-27T10:00:00Z");
+  assert.equal(events[0]!.totalHours, 7);
+  assert.equal(events[0]!.billableHours, 5);
+});
+
+// --- Non-bill-safe preview vs bill-safe total -------------------------------
+test("previewDetentionCents includes unverified/estimated; billable excludes them", () => {
+  // One unverified pickup leg (GPS far away) — preview counts it, billing must not.
+  const events = computeDetentionForLoad({
+    load: PICKUP_LOAD,
+    checkins: onSiteCheckins,
+    gpsPings: [{ lat: 40.7128, lng: -74.006, capturedAt: "2026-05-26T10:00:00Z" }],
+  });
+  assert.equal(events[0]!.source, "unverified");
+  assert.ok(events[0]!.amountCents > 0);
+  // Preview surface shows the gross opportunity...
+  assert.equal(previewDetentionCents(events), events[0]!.amountCents);
+  // ...but the bill-safe path excludes the unverified amount.
+  assert.equal(billableDetentionCents(events), 0);
+  // totalDetentionCents is a deprecated alias of previewDetentionCents.
+  assert.equal(totalDetentionCents(events), previewDetentionCents(events));
 });

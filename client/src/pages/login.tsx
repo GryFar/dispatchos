@@ -8,7 +8,7 @@ import { AlertCircle, AlertTriangle, CheckCircle2, Copy, Loader2, ShieldCheck, T
 import { QRCodeSVG } from "qrcode.react";
 import type { LoginResponse, TotpResumeSetupResponse } from "@shared/schema";
 import { ApiError, apiJson } from "@/lib/queryClient";
-import { refreshAuth, useAuth } from "@/lib/use-auth";
+import { clearAuthCache, refreshAuth, useAuth } from "@/lib/use-auth";
 import { defaultRouteForRole } from "@/components/role-gate";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -96,7 +96,9 @@ export default function LoginPage() {
         password: values.password,
         token: values.token || undefined,
       });
-      await refreshAuth();
+      // Wipe any cached data from a previous session on this tab before routing
+      // the freshly-authenticated user into their (tenant-scoped) views.
+      await clearAuthCache();
       setLocation(redirectTo || data.redirect || defaultRouteForRole(data.role));
     } catch (err) {
       if (err instanceof ApiError) {
