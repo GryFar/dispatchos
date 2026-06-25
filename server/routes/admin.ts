@@ -58,6 +58,7 @@ import { canAddDriver } from "../lib/plans";
 import { upload } from "../upload";
 import { uploadDriverDocumentSchema } from "@shared/schema";
 import { computeInvoiceForWeek } from "../lib/billing";
+import { chargeInvoiceViaStripe } from "../lib/stripe";
 import {
   computeDetentionForLoad,
   totalDetentionCents,
@@ -1173,7 +1174,7 @@ export function registerAdminRoutes(app: Express): void {
   app.post(
     "/api/admin/billing/generate",
     admin,
-    ah((req, res) => {
+    ah(async (req, res) => {
       const body = generateInvoiceSchema.parse(req.body);
       const actor = getCurrentUser(req);
       if (!actor) return res.status(401).json({ message: "Authentication required" });
@@ -1228,7 +1229,115 @@ export function registerAdminRoutes(app: Express): void {
         totalDue: invoice.totalDue,
         createdByAdminId: actor.id,
       });
-      return res.status(201).json(invoice);
+
+      // Attempt to actually collect the success fee via Stripe (one-off invoice,
+      // auto-charged against the carrier's default payment method). The
+      // DispatchOS invoice is ALREADY persisted above — a Stripe failure (no
+      // customer, network, etc.) must NOT lose or fail the invoice. On success we
+      // stamp the Stripe id + move it to 'sent' (awaiting payment); the
+      // invoice.payment_succeeded webhook later flips it to 'paid'. On failure we
+      // leave it as created (draft) so it stays retriable via the charge route.
+      let chargeStatus: string;
+      let finalInvoice = invoice;
+      const charge = await chargeInvoiceViaStripe(invoice);
+      if (charge.ok && charge.stripeInvoiceId) {
+        storage.setInvoiceStripeId(invoice.id, charge.stripeInvoiceId);
+        // Only advance draft → sent; if admin generated as 'sent' already, the
+        // transition is a no-op (updateInvoice returns the row unchanged).
+        if (invoice.status === "draft") {
+          const upd = storage.updateInvoice(invoice.id, { status: "sent" });
+          if ("invoice" in upd) finalInvoice = upd.invoice;
+          else finalInvoice = storage.getInvoice(invoice.id) ?? invoice;
+        } else {
+          finalInvoice = storage.getInvoice(invoice.id) ?? invoice;
+        }
+        chargeStatus = "charged";
+        storage.audit("billing.charge_initiated", "invoice", invoice.id, {
+          invoiceId: invoice.id,
+          clientId: invoice.clientId,
+          stripeInvoiceId: charge.stripeInvoiceId,
+          createdByAdminId: actor.id,
+        });
+      } else {
+        chargeStatus = charge.reason ?? "charge_failed";
+        storage.audit("billing.charge_skipped", "invoice", invoice.id, {
+          invoiceId: invoice.id,
+          clientId: invoice.clientId,
+          reason: chargeStatus,
+          createdByAdminId: actor.id,
+        });
+      }
+
+      return res.status(201).json({ ...finalInvoice, chargeStatus });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/admin/billing/invoices/:id/charge
+  // -------------------------------------------------------------------------
+  //
+  // Retry Stripe collection for an existing invoice that wasn't charged at
+  // generate time (e.g. the carrier had no stripeCustomerId then, or Stripe
+  // errored transiently). Refuses if the invoice is already paid/void or already
+  // carries a stripe_invoice_id (idempotency — never double-charge). On success,
+  // stamps the Stripe id + advances draft → sent.
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/admin/billing/invoices/:id/charge",
+    admin,
+    ah(async (req, res) => {
+      const actor = getCurrentUser(req);
+      if (!actor) return res.status(401).json({ message: "Authentication required" });
+
+      const invoice = storage.getInvoice(String(req.params.id));
+      if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+      if (invoice.status === "paid" || invoice.status === "void") {
+        return res.status(409).json({
+          message: `Invoice is ${invoice.status} and cannot be charged.`,
+          status: invoice.status,
+        });
+      }
+      if (invoice.stripeInvoiceId) {
+        return res.status(409).json({
+          message: "Invoice already has a Stripe charge in progress.",
+          stripeInvoiceId: invoice.stripeInvoiceId,
+        });
+      }
+
+      const charge = await chargeInvoiceViaStripe(invoice);
+      if (!charge.ok || !charge.stripeInvoiceId) {
+        const reason = charge.reason ?? "charge_failed";
+        storage.audit("billing.charge_skipped", "invoice", invoice.id, {
+          invoiceId: invoice.id,
+          clientId: invoice.clientId,
+          reason,
+          retry: true,
+          createdByAdminId: actor.id,
+        });
+        return res.status(502).json({
+          message: "Stripe charge could not be initiated.",
+          chargeStatus: reason,
+          invoice,
+        });
+      }
+
+      storage.setInvoiceStripeId(invoice.id, charge.stripeInvoiceId);
+      let finalInvoice = invoice;
+      if (invoice.status === "draft") {
+        const upd = storage.updateInvoice(invoice.id, { status: "sent" });
+        if ("invoice" in upd) finalInvoice = upd.invoice;
+        else finalInvoice = storage.getInvoice(invoice.id) ?? invoice;
+      } else {
+        finalInvoice = storage.getInvoice(invoice.id) ?? invoice;
+      }
+      storage.audit("billing.charge_initiated", "invoice", invoice.id, {
+        invoiceId: invoice.id,
+        clientId: invoice.clientId,
+        stripeInvoiceId: charge.stripeInvoiceId,
+        retry: true,
+        createdByAdminId: actor.id,
+      });
+      return res.json({ ...finalInvoice, chargeStatus: "charged" });
     }),
   );
 

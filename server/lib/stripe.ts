@@ -27,6 +27,8 @@ import Stripe from "stripe";
 import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
 import { PLANS, stripePriceForTier, tierForStripePrice, planForClient } from "./plans";
+import { dollarsToCents } from "./billing";
+import type { Invoice } from "@shared/schema";
 
 let _stripe: Stripe | null = null;
 
@@ -182,6 +184,100 @@ export async function createPortalSession(
   });
 
   return { url: session.url };
+}
+
+// ---------------------------------------------------------------------------
+// One-off success-fee charging.
+//
+// The weekly success fee (flat $150 + 3% of gross booked) is computed and
+// stored on the DispatchOS invoice but was never actually collected. We charge
+// it as a one-off Stripe invoice against the carrier's saved default payment
+// method: create one invoice item per fee component (in integer cents), open an
+// invoice with collection_method 'charge_automatically' + auto_advance, then
+// finalize so Stripe attempts collection immediately. The invoice.payment_succeeded
+// webhook (below) reconciles the DispatchOS row to 'paid'.
+//
+// Money is integer cents end-to-end: the stored row keeps USD floats, so we
+// re-derive cents at this boundary via dollarsToCents (the same helper billing.ts
+// uses), never multiplying by 100 inline.
+//
+// Every Stripe create call carries a deterministic idempotency key derived from
+// the DispatchOS invoice id, so an admin retry (or a generate that partially ran
+// then re-ran) can NEVER double-charge the carrier.
+// ---------------------------------------------------------------------------
+
+export async function chargeInvoiceViaStripe(
+  invoice: Invoice,
+): Promise<{ ok: boolean; stripeInvoiceId?: string; reason?: string }> {
+  const stripe = stripeClient();
+  if (!stripe) return { ok: false, reason: "stripe_not_configured" };
+
+  const client = storage.getClient(invoice.clientId) as
+    | (Record<string, unknown> & { stripeCustomerId?: string; deletedAt?: string | null })
+    | undefined;
+  if (!client || client.deletedAt) return { ok: false, reason: "client_not_found" };
+  const customer = client.stripeCustomerId;
+  if (!customer) return { ok: false, reason: "no_stripe_customer" };
+
+  // Re-derive integer cents from the stored USD floats at this boundary.
+  const flatFeeCents = dollarsToCents(invoice.flatFee);
+  const percentFeeCents = dollarsToCents(invoice.percentFee);
+
+  try {
+    // Flat platform fee — always present.
+    if (flatFeeCents > 0) {
+      await stripe.invoiceItems.create(
+        {
+          customer,
+          amount: flatFeeCents,
+          currency: "usd",
+          description: `DispatchOS platform fee — week of ${invoice.weekStart}`,
+        },
+        { idempotencyKey: `dos_inv_${invoice.id}_flat` },
+      );
+    }
+    // 3% success fee — skip a zero-amount item (Stripe rejects amount 0 here and
+    // an empty week shouldn't create a noise line).
+    if (percentFeeCents > 0) {
+      await stripe.invoiceItems.create(
+        {
+          customer,
+          amount: percentFeeCents,
+          currency: "usd",
+          description: `DispatchOS 3% success fee — week of ${invoice.weekStart}`,
+        },
+        { idempotencyKey: `dos_inv_${invoice.id}_pct` },
+      );
+    }
+
+    const created = await stripe.invoices.create(
+      {
+        customer,
+        collection_method: "charge_automatically",
+        auto_advance: true,
+        // Sweep the pending invoice items we just created onto this invoice.
+        pending_invoice_items_behavior: "include",
+        metadata: {
+          dispatchosInvoiceId: invoice.id,
+          clientId: invoice.clientId,
+          weekStart: invoice.weekStart,
+        },
+      },
+      { idempotencyKey: `dos_inv_${invoice.id}` },
+    );
+
+    if (!created.id) return { ok: false, reason: "stripe_no_invoice_id" };
+
+    // Finalize so Stripe attempts collection now (auto_advance handles the
+    // charge against the default payment method).
+    await stripe.invoices.finalizeInvoice(created.id);
+
+    return { ok: true, stripeInvoiceId: created.id };
+  } catch (err) {
+    // Never throw — generation/retry must not fail because of Stripe. The caller
+    // leaves the DispatchOS invoice chargeable and audits the reason.
+    return { ok: false, reason: (err as Error).message };
+  }
 }
 
 /**
@@ -417,6 +513,30 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       // Look up clientId via subscription metadata (we set it on creation).
       // Stripe 2025+ API moved invoice.subscription → invoice.parent.subscription_details.subscription.
       const stripe = stripeClient();
+
+      // Success-fee one-off path: if this is one of OUR weekly success-fee
+      // charges, audit the failure so it's visible/retriable, but do NOT change
+      // the DispatchOS invoice status — it stays 'sent'/unpaid and chargeable.
+      const dosInvoiceId = invoice.metadata?.dispatchosInvoiceId;
+      let dosInvoice = dosInvoiceId ? storage.getInvoice(dosInvoiceId) : undefined;
+      if (!dosInvoice && invoice.id) {
+        dosInvoice = storage.findInvoiceByStripeId(invoice.id);
+      }
+      if (dosInvoice) {
+        storage.audit("billing.invoice_payment_failed", "invoice", dosInvoice.id, {
+          dispatchosInvoiceId: dosInvoice.id,
+          clientId: dosInvoice.clientId,
+          stripeInvoiceId: invoice.id,
+          amountDue: invoice.amount_due,
+          status: dosInvoice.status,
+        });
+        return {
+          handled: true,
+          clientId: dosInvoice.clientId,
+          changes: { dispatchosInvoiceId: dosInvoice.id, invoiceStatus: dosInvoice.status },
+        };
+      }
+
       const subId = extractSubscriptionId(invoice);
       if (!stripe || !subId) {
         return { handled: false, clientId: null };
@@ -449,6 +569,44 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
     case "invoice.payment_succeeded": {
       const invoice = event.data.object as Stripe.Invoice;
       const stripe = stripeClient();
+
+      // --- Success-fee reconciliation (one-off invoices have NO subscription) ---
+      // If this Stripe invoice is one of OUR weekly success-fee charges, flip the
+      // linked DispatchOS invoice to 'paid'. Resolve by metadata first (set at
+      // creation), then fall back to the stripe_invoice_id stamped on the row.
+      // This runs BEFORE the subscription gate so subscription-less one-offs still
+      // reconcile. Double-apply is guarded: skip if already paid/void.
+      const dosInvoiceId = invoice.metadata?.dispatchosInvoiceId;
+      let dosInvoice = dosInvoiceId ? storage.getInvoice(dosInvoiceId) : undefined;
+      if (!dosInvoice && invoice.id) {
+        dosInvoice = storage.findInvoiceByStripeId(invoice.id);
+      }
+      if (dosInvoice) {
+        if (dosInvoice.status !== "paid" && dosInvoice.status !== "void") {
+          // Ensure the row carries the Stripe id even if only metadata matched.
+          if (!dosInvoice.stripeInvoiceId && invoice.id) {
+            storage.setInvoiceStripeId(dosInvoice.id, invoice.id);
+          }
+          const result = storage.updateInvoice(dosInvoice.id, { status: "paid" });
+          if ("invoice" in result) dosInvoice = result.invoice;
+        }
+        storage.audit("billing.invoice_paid", "invoice", dosInvoice.id, {
+          dispatchosInvoiceId: dosInvoice.id,
+          clientId: dosInvoice.clientId,
+          stripeInvoiceId: invoice.id,
+          amountPaid: invoice.amount_paid,
+          status: dosInvoice.status,
+        });
+        // Don't treat the success-fee charge as subscription recovery — return
+        // here so we don't also try to retrieve a (non-existent) subscription.
+        return {
+          handled: true,
+          clientId: dosInvoice.clientId,
+          changes: { dispatchosInvoiceId: dosInvoice.id, invoiceStatus: dosInvoice.status },
+        };
+      }
+
+      // --- Subscription invoice path (plan billing recovery) ---
       const subId = extractSubscriptionId(invoice);
       if (!stripe || !subId) {
         return { handled: false, clientId: null };
