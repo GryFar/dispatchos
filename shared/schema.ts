@@ -591,6 +591,9 @@ export const invoiceSchema = z.object({
   sentAt: z.string().optional(),
   paidAt: z.string().optional(),
   notes: z.string().optional(),
+  // Stripe one-off invoice id once we've initiated a charge for this row. Null
+  // until charged; the webhook (invoice.payment_succeeded) reconciles via it.
+  stripeInvoiceId: z.string().optional(),
 });
 
 // ===========================================================================

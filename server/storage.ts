@@ -978,6 +978,24 @@ function ensureClientContactColumns() {
 }
 ensureClientContactColumns();
 
+// Stripe charging: link a DispatchOS invoice row to the one-off Stripe invoice
+// we create at generate/charge time so the invoice.payment_succeeded webhook can
+// flip the row to 'paid'. Nullable — older rows (and rows that never got a charge
+// initiated) simply have it NULL. Same PRAGMA/ALTER pattern as the columns above.
+function ensureInvoiceStripeColumn() {
+  const cols = sqlite.prepare("PRAGMA table_info(invoices)").all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("stripe_invoice_id")) {
+    sqlite.exec("ALTER TABLE invoices ADD COLUMN stripe_invoice_id TEXT");
+  }
+}
+ensureInvoiceStripeColumn();
+// Lookup index for findInvoiceByStripeId (webhook reconciliation). Partial so it
+// only covers rows that actually have a Stripe id.
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS invoices_stripe_invoice_id_idx ON invoices(stripe_invoice_id) WHERE stripe_invoice_id IS NOT NULL",
+);
+
 // ---------------------------------------------------------------------------
 // Phase 6.1 — Broker safety audit snapshots (SCOTUS Montgomery v. Caribe, 2026-05-14)
 // ---------------------------------------------------------------------------
@@ -3318,6 +3336,10 @@ export const storage = {
     notes?: string;
     /** Phase 3 P2: optional initial status (default "draft"). */
     status?: "draft" | "sent";
+    /** Stripe charging: optional one-off Stripe invoice id, if a charge was
+     *  initiated as part of generation. Usually set later via
+     *  setInvoiceStripeId, but accepted here for atomic create+link callers. */
+    stripeInvoiceId?: string;
   }): Invoice {
     const id = makeId("inv");
     // Round the sum to whole cents. billing.ts computes the canonical total in
@@ -3335,8 +3357,9 @@ export const storage = {
         `
         INSERT INTO invoices (
           id, client_id, week_start, week_end, flat_fee, percent_fee,
-          gross_booked, total_due, status, generated_at, sent_at, paid_at, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+          gross_booked, total_due, status, generated_at, sent_at, paid_at, notes,
+          stripe_invoice_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
       `,
       )
       .run(
@@ -3352,6 +3375,7 @@ export const storage = {
         generatedAt,
         sentAt,
         input.notes ?? null,
+        input.stripeInvoiceId ?? null,
       );
     const invoice: Invoice = {
       id,
@@ -3366,6 +3390,7 @@ export const storage = {
       generatedAt,
       sentAt: sentAt ?? undefined,
       notes: input.notes,
+      stripeInvoiceId: input.stripeInvoiceId ?? undefined,
     };
     this.audit("invoice.created", "invoice", id, invoice);
     return invoice;
@@ -3394,6 +3419,7 @@ export const storage = {
       sentAt: row.sent_at ?? undefined,
       paidAt: row.paid_at ?? undefined,
       notes: row.notes ?? undefined,
+      stripeInvoiceId: row.stripe_invoice_id ?? undefined,
     }));
   },
 
@@ -3415,6 +3441,7 @@ export const storage = {
       sentAt: row.sent_at ?? undefined,
       paidAt: row.paid_at ?? undefined,
       notes: row.notes ?? undefined,
+      stripeInvoiceId: row.stripe_invoice_id ?? undefined,
     };
   },
 
@@ -3446,6 +3473,7 @@ export const storage = {
       sentAt: row.sent_at ?? undefined,
       paidAt: row.paid_at ?? undefined,
       notes: row.notes ?? undefined,
+      stripeInvoiceId: row.stripe_invoice_id ?? undefined,
     };
   },
 
@@ -3473,6 +3501,52 @@ export const storage = {
       sentAt: row.sent_at ?? undefined,
       paidAt: row.paid_at ?? undefined,
       notes: row.notes ?? undefined,
+      stripeInvoiceId: row.stripe_invoice_id ?? undefined,
+    };
+  },
+
+  /**
+   * Stripe charging: link a DispatchOS invoice to the one-off Stripe invoice we
+   * created for it. Returns the updated invoice, or undefined if the id is
+   * unknown. Idempotent at the SQL level (UPDATE sets the value either way).
+   */
+  setInvoiceStripeId(invoiceId: string, stripeInvoiceId: string): Invoice | undefined {
+    const res = sqlite
+      .prepare("UPDATE invoices SET stripe_invoice_id = ? WHERE id = ?")
+      .run(stripeInvoiceId, invoiceId);
+    if (res.changes === 0) return undefined;
+    this.audit("invoice.stripe_linked", "invoice", invoiceId, {
+      invoiceId,
+      stripeInvoiceId,
+    });
+    return this.getInvoice(invoiceId);
+  },
+
+  /**
+   * Stripe charging: reverse lookup a DispatchOS invoice by the Stripe invoice
+   * id stamped on it. Used by the invoice.payment_succeeded webhook to flip the
+   * row to 'paid'. Returns undefined when no row carries that Stripe id.
+   */
+  findInvoiceByStripeId(stripeInvoiceId: string): Invoice | undefined {
+    const row = sqlite
+      .prepare("SELECT * FROM invoices WHERE stripe_invoice_id = ? LIMIT 1")
+      .get(stripeInvoiceId) as any;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      clientId: row.client_id,
+      weekStart: row.week_start,
+      weekEnd: row.week_end,
+      flatFee: row.flat_fee,
+      percentFee: row.percent_fee,
+      grossBooked: row.gross_booked,
+      totalDue: row.total_due,
+      status: row.status,
+      generatedAt: row.generated_at,
+      sentAt: row.sent_at ?? undefined,
+      paidAt: row.paid_at ?? undefined,
+      notes: row.notes ?? undefined,
+      stripeInvoiceId: row.stripe_invoice_id ?? undefined,
     };
   },
 
@@ -3542,6 +3616,7 @@ export const storage = {
       sentAt: row.sent_at ?? undefined,
       paidAt: row.paid_at ?? undefined,
       notes: row.notes ?? undefined,
+      stripeInvoiceId: row.stripe_invoice_id ?? undefined,
     }));
     const last = pageRows[pageRows.length - 1];
     const nextCursor = hasMore && last ? encodeCursor(last.generated_at, last.id) : null;
