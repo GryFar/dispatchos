@@ -2342,7 +2342,9 @@ export function registerAdminRoutes(app: Express): void {
         const cheaper = storage.findCheapestDieselNear(
           t.station_lat as number,
           t.station_lng as number,
-          { radiusKm: 8, maxAgeH: 6, limit: 1 },
+          // Anchor the ±6h freshness window at THIS fill-up's time, not now, so
+          // each historical fill-up is compared to prices observed around it.
+          { radiusKm: 8, maxAgeH: 6, limit: 1, anchorIso: t.occurred_at as string },
         )[0];
         if (!cheaper) continue;
         const paid = t.price_per_gallon_cents as number;

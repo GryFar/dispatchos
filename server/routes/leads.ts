@@ -30,11 +30,31 @@ import { canAddDriver } from "../lib/plans";
 const subscribeAttempts = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+// Hard cap on distinct keys held in memory. Without this the Map grows
+// unbounded as an attacker varies the source IP (memory-exhaustion DoS).
+const RATE_LIMIT_MAX_KEYS = 10_000;
+
+// Evict every entry whose window has fully elapsed. Cheap O(n) sweep; n is
+// bounded by RATE_LIMIT_MAX_KEYS so this stays trivial.
+function sweepExpired(now: number): void {
+  const toDelete: string[] = [];
+  subscribeAttempts.forEach((entry, key) => {
+    if (now > entry.resetAt) toDelete.push(key);
+  });
+  toDelete.forEach((k) => subscribeAttempts.delete(k));
+}
 
 function rateLimitOk(ip: string): boolean {
   const now = Date.now();
   const entry = subscribeAttempts.get(ip);
   if (!entry || now > entry.resetAt) {
+    // Sweep stale entries before inserting a new key. If the Map is still at
+    // the hard cap after sweeping (all entries live), reject rather than grow
+    // memory without bound — a live attacker varying IPs cannot exhaust RAM.
+    if (subscribeAttempts.size >= RATE_LIMIT_MAX_KEYS) {
+      sweepExpired(now);
+      if (subscribeAttempts.size >= RATE_LIMIT_MAX_KEYS) return false;
+    }
     subscribeAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
     return true;
   }
@@ -44,9 +64,11 @@ function rateLimitOk(ip: string): boolean {
 }
 
 function clientIp(req: Request): string {
-  const fwd = req.headers["x-forwarded-for"];
-  if (typeof fwd === "string") return fwd.split(",")[0]!.trim();
-  return req.socket.remoteAddress ?? "unknown";
+  // Use Express's req.ip, which honors the configured `trust proxy` hop count
+  // (index.ts: app.set("trust proxy", DISPATCHOS_TRUST_PROXY)) and therefore
+  // resolves to the real client address rather than an attacker-controlled
+  // first X-Forwarded-For token. Falls back to the socket address.
+  return req.ip || req.socket.remoteAddress || "unknown";
 }
 
 // Audit V3-3 — hardened against Host-header injection. We never trust
@@ -231,17 +253,13 @@ export function registerLeadRoutes(app: Express): void {
         }
       }
 
-      // Generate invite via existing Phase 3 mechanism
+      // Transition the lead FIRST (atomic status='pending' guard inside
+      // approveSignupLead). generateInviteCode() is a pure CSPRNG with no DB
+      // side effect, so we can mint the code up front to stamp on the lead and
+      // only persist the invite row once the lead is actually approved. This
+      // avoids orphaning a usable invite when the lead 404s or was already
+      // reviewed by a concurrent reviewer (audit: invite-before-approve).
       const code = generateInviteCode();
-      const invite = storage.createInviteWithCode({
-        code,
-        role: parsed.data.role,
-        email: lead.email,
-        linkedClientId: parsed.data.linkedClientId,
-        ttlHours: 168, // 7 days
-        createdByUserId: reviewer.id,
-      });
-
       const result = storage.approveSignupLead(leadId, code, reviewer.id);
       if ("notFound" in result) {
         return res.status(404).json({ message: "Lead vanished mid-approval" });
@@ -252,6 +270,16 @@ export function registerLeadRoutes(app: Express): void {
           currentStatus: result.alreadyReviewed,
         });
       }
+
+      // Lead is now approved — create the invite via the existing Phase 3 path.
+      const invite = storage.createInviteWithCode({
+        code,
+        role: parsed.data.role,
+        email: lead.email,
+        linkedClientId: parsed.data.linkedClientId,
+        ttlHours: 168, // 7 days
+        createdByUserId: reviewer.id,
+      });
 
       const signupUrl = `${hostFromReq(req)}/#/signup?code=${code}`;
 

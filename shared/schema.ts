@@ -201,13 +201,29 @@ export const insertLoadSchema = loadSchema.partial({ id: true }).extend({
   rate: z.number().nonnegative(),
 });
 
+// INPUT schema for the admin manual location PATCH (routes.ts). We tighten
+// lat/lng HERE rather than on the shared driverLocationSchema, because that
+// read schema is embedded in clientSchema.currentLocation — adding range
+// constraints there would 400 any already-stored client carrying a legacy
+// out-of-range / null-island location (the documented read-trap). Bounding the
+// input path matches the range + null-island guard the GPS-ping seam enforces
+// (track.ts isNullIsland / lat,lng bounds) so manual writes can't slip a bogus
+// coordinate past validation. (Telegram /loc writes still go straight into
+// storage.updateClientLocation and need the same guard enforced there.)
 export const updateLocationSchema = driverLocationSchema.partial({
   updatedAt: true,
   availableAt: true,
 }).extend({
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
   updatedAt: z.string().optional(),
   availableAt: z.string().optional(),
-});
+}).refine(
+  // Reject the "null island" (0,0) — a sentinel for a missing/failed fix, not a
+  // real position anyone dispatches from.
+  (v) => !(Math.abs(v.lat) < 0.01 && Math.abs(v.lng) < 0.01),
+  { message: "lat/lng resolve to null island (0,0)", path: ["lat"] },
+);
 
 // ===========================================================================
 // DOCUMENTS (unchanged from v1.2.7)
@@ -303,12 +319,23 @@ export const telegramCommandSchema = z.object({
   state: z.string().optional(),
 });
 
+// Hard cap on an ingested email body. Sized to comfortably hold what the
+// inbound CF worker forwards — it truncates to 32 KB and appends a short
+// "[...truncated]" marker (~32_801 chars total, see apps/inbound-email worker
+// MAX_BODY_BYTES) — with headroom for the direct admin/dispatcher ingest path.
+// CRITICAL: this also bounds the input the HTML/lane regex parsers run over.
+// The previous 1 MB cap let an attacker feed a ~1 MB '<'-bomb / all-letter body
+// into the synchronous O(n^2) HTML strip + greedy lane regex, freezing the
+// single-threaded event loop (ReDoS). 64 KB cuts that amplification ~16x while
+// never rejecting a worker-forwarded body.
+const EMAIL_BODY_MAX = 64 * 1024; // 65_536
+
 export const emailIngestSchema = z.object({
   // Bounded so a malicious/buggy sender can't write multi-MB blobs into
   // email_ingest (DoS / DB bloat; the parsers also regex over body).
   from: z.string().max(998),
   subject: z.string().max(998),
-  body: z.string().min(5).max(1_000_000),
+  body: z.string().min(5).max(EMAIL_BODY_MAX),
 });
 
 export const driveCreateSchema = z.object({

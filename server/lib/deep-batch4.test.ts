@@ -41,6 +41,55 @@ const rnd = () => Math.random().toString(36).slice(2, 10);
 }
 
 // ---------------------------------------------------------------------------
+// TOTP rotation: installTotpSecret resets last_used_totp_counter to NULL so the
+// new secret's first code (same time-window as the old secret) can be claimed.
+// Regression for "2FA re-enrollment confirm rejected because the replay counter
+// is shared across the old and new secret".
+// ---------------------------------------------------------------------------
+{
+  const u = storage.createUser({
+    email: `totp-rotate-${rnd()}@example.com`,
+    fullName: "R",
+    role: "admin",
+    passwordSalt: "s",
+    passwordHash: "h",
+  });
+  // Simulate the user having authenticated with the OLD secret at counter N:
+  // last_used_totp_counter is now at/above the current time-window counter.
+  const N = Math.floor(Date.now() / 30_000);
+  storage.setLastUsedTotpCounter(u.id, N);
+  // Before the fix, claiming the new secret's first code at counter N would
+  // fail because the column is already at N.
+  assert(
+    "rotation: stale counter blocks new-secret claim (pre-install)",
+    storage.setLastUsedTotpCounter(u.id, N) === false,
+  );
+  // installTotpSecret swaps the secret AND clears the counter atomically.
+  assert(
+    "installTotpSecret returns true for an existing user",
+    storage.installTotpSecret(u.id, "NEWSECRETBASE32AAAA", u.id) === true,
+  );
+  assert(
+    "installTotpSecret cleared last_used_totp_counter to NULL",
+    storage.getLastUsedTotpCounter(u.id) === null,
+  );
+  // Now the new secret's first in-window code at counter N can be claimed.
+  assert(
+    "rotation: new-secret counter N claims cleanly after reset",
+    storage.setLastUsedTotpCounter(u.id, N) === true,
+  );
+  // And a replay of that same counter is still rejected (replay guard intact).
+  assert(
+    "rotation: replay of new-secret counter N is rejected",
+    storage.setLastUsedTotpCounter(u.id, N) === false,
+  );
+  assert(
+    "installTotpSecret returns false for a missing user",
+    storage.installTotpSecret(`missing-${rnd()}`, "X", undefined) === false,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // createInvoice: total_due is exact whole cents, not a re-summed float
 // ---------------------------------------------------------------------------
 {

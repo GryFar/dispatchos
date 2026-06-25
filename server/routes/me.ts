@@ -748,6 +748,14 @@ export function registerMeRoutes(app: Express): void {
         lng: body.lng ?? null,
         notes: body.notes ?? null,
       });
+      // A 'delivered' check-in completes the load: stamp deliveredAt + status so
+      // it leaves the active/billable set (ACTIVE_LOAD_SQL keys off
+      // payload.$.deliveredAt IS NULL). Without this the load stays active and
+      // billable forever. Ownership is already enforced above (loadDriverId ===
+      // user.id), so the driver can only complete their own load.
+      if (body.kind === "delivered") {
+        storage.markLoadDelivered(String(req.params.id));
+      }
       storage.audit("driver.checkin", "load", String(req.params.id), {
         userId: user.id,
         actorUserId: user.id,

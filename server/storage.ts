@@ -2098,6 +2098,34 @@ export const storage = {
   },
 
   /**
+   * Persist a freshly-confirmed TOTP secret and reset the replay counter to NULL
+   * in ONE atomic write. The accepted counter from the OLD secret is meaningless
+   * for a NEW, independent secret: on a 2FA rotation the user has already
+   * authenticated with the old secret, so last_used_totp_counter is already at/
+   * above the current time-window. Leaving it in place would make the new
+   * secret's first code (same window) fail the setLastUsedTotpCounter replay
+   * gate, blocking rotation entirely. Clearing it here re-bases replay protection
+   * on the new secret's own history. Returns true if the user existed.
+   */
+  installTotpSecret(id: string, secret: string, actorUserId?: string): boolean {
+    const existing = this.getUserById(id);
+    if (!existing) return false;
+    const r = sqlite
+      .prepare(
+        "UPDATE users SET totp_secret = ?, last_used_totp_counter = NULL, updated_at = ? WHERE id = ?",
+      )
+      .run(secret, now(), id);
+    if (r.changes > 0) {
+      // Audit parity with updateUser's mutation-path logging (secret redacted).
+      this.audit("user.updated", "user", id, {
+        patch: { totpSecret: undefined },
+        actorUserId,
+      });
+    }
+    return r.changes > 0;
+  },
+
+  /**
    * Bump a user's session epoch — invalidates ALL of their existing sessions.
    * Called on admin password/TOTP reset: getCurrentUser compares the epoch
    * stamped into the session at login against this column and destroys any
@@ -3638,6 +3666,40 @@ export const storage = {
   },
 
   /**
+   * Resolve client display names for a set of ids in ONE query — avoids the
+   * full-table listClients() scan callers used to do just to look up a handful
+   * of names (e.g. the dispatcher board render). Returns { id: name } only for
+   * ids that exist and are NOT soft-deleted (mirrors listClients()'s deletedAt
+   * filter). Unknown/archived ids are simply omitted (callers fall back to the
+   * raw id). Empty input returns {} without touching the DB.
+   *
+   * The clients table stores data as a JSON payload (no flat `name` column), so
+   * we read+parse payload — same pattern as listClients/getClient.
+   */
+  getClientNamesByIds(ids: string[]): Record<string, string> {
+    if (ids.length === 0) return {};
+    // De-dupe to keep the IN list tight and placeholders aligned.
+    const unique = Array.from(new Set(ids));
+    const placeholders = unique.map(() => "?").join(",");
+    const rows = sqlite
+      .prepare(`SELECT id, payload FROM clients WHERE id IN (${placeholders})`)
+      .all(...unique) as Array<{ id: string; payload: string }>;
+    const out: Record<string, string> = {};
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.payload) as { name?: unknown; deletedAt?: unknown };
+        if (parsed.deletedAt) continue; // honor soft-delete, like listClients()
+        if (typeof parsed.name === "string" && parsed.name.length > 0) {
+          out[row.id] = parsed.name;
+        }
+      } catch {
+        // Skip unparseable payloads — caller falls back to the raw id.
+      }
+    }
+    return out;
+  },
+
+  /**
    * Soft-delete a client: stamp deletedAt in the payload. The row is kept for
    * FK integrity (loads.clientId, assignments, driver.linkedClientId) and
    * billing history — mirrors softDeleteUser. Idempotent: archiving an already
@@ -4165,6 +4227,41 @@ export const storage = {
     const load = this.getLoad(loadId);
     if (!load) return { ok: false, conflict: true, actual: null };
     return { ok: true, load };
+  },
+
+  /**
+   * Mark a load as delivered/completed. Stamps payload.$.deliveredAt = now()
+   * and payload.$.status = 'completed' via the same json_set raw-SQL pattern as
+   * reassignLoadDriver, so the column-free delivery state is written atomically.
+   * ACTIVE_LOAD_SQL keys "active/billable" off json_extract(payload,
+   * '$.deliveredAt') IS NULL, so flipping deliveredAt removes the load from the
+   * active/billable set. booked_at is the immutable revenue-window key and is
+   * NEVER cleared here (a delivered load was already billed for its booked
+   * week). Idempotent: re-delivering an already-delivered load is harmless.
+   * Returns the updated Load, or undefined if the load doesn't exist.
+   *
+   * Note: the loads table has no delivered_at mirror column (delivery state
+   * lives only in the JSON payload), so there is no column to update — unlike
+   * driver_id/booked_at which reassignLoadDriver mirrors.
+   */
+  markLoadDelivered(loadId: string): Load | undefined {
+    const timestamp = now();
+    const res = sqlite
+      .prepare(
+        `
+        UPDATE loads SET
+          updated_at = ?,
+          payload    = json_set(
+                         json_set(payload, '$.deliveredAt', ?),
+                         '$.status', 'completed'
+                       )
+        WHERE id = ?
+      `,
+      )
+      .run(timestamp, timestamp, loadId);
+    if (res.changes === 0) return undefined;
+    this.audit("load.delivered", "load", loadId, { deliveredAt: timestamp });
+    return this.getLoad(loadId);
   },
 
   /**
@@ -5340,10 +5437,17 @@ export const storage = {
     return rows.map(rowToFuelTransaction);
   },
 
-  /** Cheapest diesel within `radiusKm` of (lat,lng), observed within `maxAgeH`. */
+  /**
+   * Cheapest diesel within `radiusKm` of (lat,lng), observed within `maxAgeH`
+   * of the anchor time. The anchor defaults to NOW, but pass `anchorIso` to
+   * compare against prices around a SPECIFIC past moment (e.g. when auditing a
+   * historical fill-up — you want the prices that were observed around that
+   * fill-up, not around now). The freshness filter is a TWO-SIDED window:
+   * observed_at BETWEEN anchor - maxAgeH and anchor + maxAgeH.
+   */
   findCheapestDieselNear(
     lat: number, lng: number,
-    opts: { radiusKm?: number; maxAgeH?: number; limit?: number } = {},
+    opts: { radiusKm?: number; maxAgeH?: number; limit?: number; anchorIso?: string } = {},
   ) {
     const radiusKm = opts.radiusKm ?? 8;     // ~5 miles
     const maxAgeH = opts.maxAgeH ?? 48;
@@ -5353,16 +5457,23 @@ export const storage = {
     // equator (looser near poles); good enough for an 8km cone-pull.
     const dLat = radiusKm / 111;
     const dLng = radiusKm / (111 * Math.max(0.1, Math.cos((lat * Math.PI) / 180)));
-    const cutoff = new Date(Date.now() - maxAgeH * 3600 * 1000).toISOString();
+    // Anchor the freshness window at anchorIso (the event being audited) or, by
+    // default, now. A bad anchorIso (NaN) falls back to now so we never feed an
+    // "Invalid Date" into the query.
+    const anchorMs = opts.anchorIso ? new Date(opts.anchorIso).getTime() : Date.now();
+    const anchor = Number.isFinite(anchorMs) ? anchorMs : Date.now();
+    const windowMs = maxAgeH * 3600 * 1000;
+    const lowerBound = new Date(anchor - windowMs).toISOString();
+    const upperBound = new Date(anchor + windowMs).toISOString();
     const rows = sqlite.prepare(`
       SELECT * FROM fuel_price_observations
       WHERE fuel_type = 'diesel'
-        AND observed_at >= ?
+        AND observed_at BETWEEN ? AND ?
         AND station_lat BETWEEN ? AND ?
         AND station_lng BETWEEN ? AND ?
       ORDER BY observed_at DESC
       LIMIT 200
-    `).all(cutoff, lat - dLat, lat + dLat, lng - dLng, lng + dLng) as Array<Record<string, unknown>>;
+    `).all(lowerBound, upperBound, lat - dLat, lat + dLat, lng - dLng, lng + dLng) as Array<Record<string, unknown>>;
     // Refine: haversine distance, dedup by station_place_id (newest wins),
     // sort by price asc.
     const byStation = new Map<string, { row: Record<string, unknown>; distanceKm: number }>();

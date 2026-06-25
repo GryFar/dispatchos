@@ -24,14 +24,31 @@ assert(
   emailIngestSchema.safeParse({ from: "a@b.com", subject: "Load", body: "hello world" }).success,
 );
 
-// Oversized body rejected (DoS guard).
+// Oversized body rejected (DoS / ReDoS guard). The cap was lowered from 1 MB to
+// 64 KB so an attacker can't feed a huge '<'-bomb / all-letter body into the
+// synchronous O(n^2) HTML-strip + greedy lane regex in the email parsers.
+const BODY_MAX = 64 * 1024; // keep in sync with EMAIL_BODY_MAX in shared/schema.ts
 assert(
-  "1MB+1 body rejected",
-  !emailIngestSchema.safeParse({ from: "a@b.com", subject: "x", body: "x".repeat(1_000_001) }).success,
+  "64KB+1 body rejected",
+  !emailIngestSchema.safeParse({ from: "a@b.com", subject: "x", body: "x".repeat(BODY_MAX + 1) }).success,
 );
 assert(
-  "1MB body accepted (at the cap)",
-  emailIngestSchema.safeParse({ from: "a@b.com", subject: "x", body: "x".repeat(1_000_000) }).success,
+  "64KB body accepted (at the cap)",
+  emailIngestSchema.safeParse({ from: "a@b.com", subject: "x", body: "x".repeat(BODY_MAX) }).success,
+);
+assert(
+  "1MB body now rejected (was the old cap)",
+  !emailIngestSchema.safeParse({ from: "a@b.com", subject: "x", body: "x".repeat(1_000_000) }).success,
+);
+// The inbound worker truncates to 32 KB and appends a ~33-char marker; that
+// worker-forwarded body must still pass.
+assert(
+  "worker-truncated body (32KB + marker) accepted",
+  emailIngestSchema.safeParse({
+    from: "a@b.com",
+    subject: "x",
+    body: "x".repeat(32 * 1024) + "\n\n[...truncated by ingest worker]",
+  }).success,
 );
 
 // Oversized from / subject rejected.
