@@ -188,7 +188,22 @@ async function handleUpdate(botToken: string, update: TgUpdate): Promise<void> {
       const consumerId = invite.consumedByUserId;
       if (consumerId) {
         const consumer = storage.getUserById(consumerId);
-        if (consumer?.role === "driver") {
+        // SECURITY (audit C1): a consumed invite code is a shared secret — it is
+        // emailed, shown in the admin UI, and stored in audit payloads. This path
+        // may ONLY perform a FIRST-time link for the driver who consumed it, and
+        // must never OVERWRITE an existing binding; otherwise anyone who learns the
+        // code could rebind the victim's account to their own chat and take over
+        // /loc /yes /no /nego /status. Also require an active (non-blocked) account
+        // and an unexpired invite.
+        const expired = Date.parse(invite.expiresAt) < Date.now();
+        const alreadyLinkedElsewhere =
+          !!consumer?.telegramChatId && consumer.telegramChatId !== chatId;
+        if (
+          consumer?.role === "driver" &&
+          !consumer.blocked &&
+          !expired &&
+          !alreadyLinkedElsewhere
+        ) {
           storage.setUserTelegramChatId(consumer.id, chatId);
           storage.audit("telegram.link", "user", consumer.id, { chatId, via: "consumed_invite_recheck" });
           await tgSend(

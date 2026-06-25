@@ -121,25 +121,40 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
 
     const days = daysUntil(c.trialEndsAt);
 
-    // Expiry transition — only if no Stripe sub OR sub is gone.
+    // Expiry transition — flip to 'expired' once the trial window ends and the
+    // client is NOT on a live subscription.
     if (days <= 0) {
-      // Don't flip to 'expired' if we have an active Stripe sub — webhook
-      // will reconcile that to 'active' shortly.
-      if (c.stripeSubscriptionId) {
-        // Webhook should have flipped status already. Skip; next pass picks
-        // it up if Stripe is silent.
-        continue;
-      }
+      // NOTE: a bare stripeSubscriptionId is NOT proof of a live sub. The
+      // webhook (deriveSubscriptionUpdates) ALWAYS stamps the sub id even when
+      // the subscription is canceled/incomplete/unknown — and for those states
+      // it falls back to the existing billingStatus, which can stay 'trial'. So
+      // a dead checkout leaves 'trial' + a stale sub id behind. Gating skip on
+      // mere id presence would let that client keep write access forever. The
+      // authoritative signal here is billingStatus: a genuinely live sub moves
+      // it to 'active' (or, while still trialing, keeps 'trial' but syncs
+      // trialEndsAt forward — which would make days > 0 and never reach here).
+      // So a client still at billingStatus='trial' with an ended window must be
+      // expired regardless of any leftover sub id.
+      //
       // Re-read FRESH right before the write. `client` is a snapshot from the
       // top of the loop; we've since awaited network I/O for earlier clients,
-      // during which a Stripe webhook may have moved THIS client to active +
-      // set a subscription id. Expiring on the stale snapshot would clobber a
-      // paying customer to read-only. The re-read + write are synchronous (no
-      // await between) so under single-process this fully closes the race.
+      // during which a Stripe webhook may have moved THIS client to active (or
+      // re-synced a live trialing sub forward). Expiring on the stale snapshot
+      // would clobber a paying customer to read-only. The re-read + write are
+      // synchronous (no await between) so under single-process this fully
+      // closes the race.
       const fresh = storage.getClient(c.id) as
-        | (Record<string, unknown> & { billingStatus?: string; stripeSubscriptionId?: string })
+        | (Record<string, unknown> & { billingStatus?: string; trialEndsAt?: string })
         | undefined;
-      if (!fresh || fresh.billingStatus !== "trial" || fresh.stripeSubscriptionId) {
+      // Only the live billingStatus gates the skip — a stale sub id alone does
+      // not. Bail if a webhook already moved this client off 'trial', or if the
+      // fresh trial window now extends into the future (a live trialing sub
+      // re-synced trial_end forward).
+      if (
+        !fresh ||
+        fresh.billingStatus !== "trial" ||
+        (typeof fresh.trialEndsAt === "string" && daysUntil(fresh.trialEndsAt) > 0)
+      ) {
         continue;
       }
       storage.upsertClient({

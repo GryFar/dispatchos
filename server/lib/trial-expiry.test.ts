@@ -2,11 +2,15 @@
 // Run: npx tsx server/lib/trial-expiry.test.ts
 //
 // runTrialExpiryCheck walks trial clients and either:
-//   - flips an ended trial (no active Stripe sub) to billingStatus="expired"
+//   - flips an ended trial (no LIVE Stripe sub) to billingStatus="expired"
 //     (read-only), or
 //   - emits a reminder at exactly 7/3/1 days out (deduped per day).
-// The critical guard: a trial with a Stripe subscription is NOT expired (the
-// webhook reconciles it) — expiring a paying customer would lock them out.
+// The critical guard: a client on a LIVE subscription is NOT expired — but a
+// bare leftover stripeSubscriptionId is NOT proof of a live sub (a canceled/
+// incomplete checkout leaves billingStatus='trial' + a stale id). Liveness is
+// judged by billingStatus and the (re-synced) trial window, NOT id presence:
+//   - billingStatus='trial' + ended window + stale sub id  -> EXPIRED
+//   - live trialing sub (trial window re-synced into the future) -> NOT expired
 //
 // With no Telegram/email configured, sends are no-ops (no network), so the
 // state transitions + outcomes are deterministic.
@@ -59,9 +63,20 @@ function mkClient(id: string, extra: Record<string, unknown>): string {
 
 const sfx = rnd();
 const expiredNoSub = mkClient(`trial-exp-${sfx}`, { billingStatus: "trial", trialEndsAt: "2020-01-01" });
-const expiredWithSub = mkClient(`trial-sub-${sfx}`, {
+// Dead checkout: trial window ended, billingStatus still 'trial', but a stale
+// sub id lingers from a canceled/incomplete subscription. This is NOT a live
+// sub, so it MUST expire (the bug was that the bare id blocked expiry forever).
+const expiredStaleSub = mkClient(`trial-stale-${sfx}`, {
   billingStatus: "trial",
   trialEndsAt: "2020-01-01",
+  stripeSubscriptionId: "sub_dead_123",
+});
+// Genuinely live trialing sub: the webhook re-synced trial_end forward, so the
+// fresh trial window is still in the future (and outside the 7/3/1 reminder
+// window). This client must NOT be expired and must produce no outcome.
+const liveTrialSub = mkClient(`trial-live-${sfx}`, {
+  billingStatus: "trial",
+  trialEndsAt: inDays(10),
   stripeSubscriptionId: "sub_paying_123",
 });
 const remind3 = mkClient(`trial-r3-${sfx}`, { billingStatus: "trial", trialEndsAt: inDays(3) });
@@ -79,10 +94,19 @@ assert(
   "ended trial flips DB billingStatus to expired",
   (storage.getClient(expiredNoSub) as Record<string, unknown>).billingStatus === "expired",
 );
-assert("ended trial WITH Stripe sub -> NOT expired (no outcome)", !byId(expiredWithSub));
+// Stale sub id alone must NOT block expiry — a dead checkout's leftover id is
+// not a live sub, so the ended trial still flips to 'expired'.
+assert("ended trial w/ STALE sub id -> expired outcome", byId(expiredStaleSub)?.kind === "expired");
 assert(
-  "paying customer stays trial (not locked out)",
-  (storage.getClient(expiredWithSub) as Record<string, unknown>).billingStatus === "trial",
+  "ended trial w/ stale sub id flips DB billingStatus to expired",
+  (storage.getClient(expiredStaleSub) as Record<string, unknown>).billingStatus === "expired",
+);
+// A genuinely live trialing sub (trial window re-synced into the future) is
+// left untouched — neither expired nor (being outside 7/3/1) reminded.
+assert("live trialing sub -> NOT expired (no outcome)", !byId(liveTrialSub));
+assert(
+  "live trialing sub stays trial (not locked out)",
+  (storage.getClient(liveTrialSub) as Record<string, unknown>).billingStatus === "trial",
 );
 
 // Reminder path.

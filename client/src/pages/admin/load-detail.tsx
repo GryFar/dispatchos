@@ -422,6 +422,10 @@ function DriverAssignmentCard({
     mutationFn: async (newDriverId: string | null) =>
       apiJson<AdminLoad>("PATCH", `/api/admin/loads/${loadId}/driver`, {
         driverId: newDriverId,
+        // Optimistic-concurrency token: the driver we last saw on this load.
+        // The backend rejects with 409 if someone reassigned it meanwhile
+        // (anti double-book). Required by the server when assigning.
+        expectedDriverId: driverId ?? null,
       }),
     onSuccess: () => {
       toast({ title: t("admin.loadDetail.driverUpdated") });

@@ -1613,8 +1613,11 @@ export const storage = {
   // resolve user from chat in O(1) on every message.
   // -------------------------------------------------------------------------
   getUserByTelegramChatId(chatId: string): UserInternal | undefined {
+    // SECURITY (audit): exclude blocked accounts so a terminated/fraud-flagged
+    // driver loses inbound bot control too. The outbound recipient query already
+    // filters blocked = 0; the inbound command path must match.
     const row = sqlite
-      .prepare("SELECT * FROM users WHERE telegram_chat_id = ? AND deleted_at IS NULL")
+      .prepare("SELECT * FROM users WHERE telegram_chat_id = ? AND deleted_at IS NULL AND blocked = 0")
       .get(chatId) as UserRow | undefined;
     return rowToUserInternal(row);
   },
@@ -3781,13 +3784,35 @@ export const storage = {
     const client = this.getClient(id);
     if (!client) return undefined;
 
+    // Centralized coordinate guard. The GPS-ping seam (routes/track.ts) range-
+    // and null-island-checks its writes, but the admin PATCH .../location route
+    // and the Telegram /loc handler pipe lat/lng straight here, bypassing that
+    // guard. Range-clamp + null-island validation belongs at this single write
+    // chokepoint so a garbage fix (out-of-bounds, or the (0,0) "null island" a
+    // chipset reports with no lock) can never poison the DB and wreck IFTA
+    // bbox / miles-per-state aggregation regardless of which producer wrote it.
+    const loc: Partial<DriverLocation> = { ...location };
+    const lat = (loc as { lat?: number }).lat;
+    const lng = (loc as { lng?: number }).lng;
+    const hasCoords = typeof lat === "number" && typeof lng === "number";
+    const inRange = hasCoords && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+    const isNullIsland = hasCoords && Math.abs(lat) < 0.01 && Math.abs(lng) < 0.01;
+    if (hasCoords && (!inRange || isNullIsland || !Number.isFinite(lat) || !Number.isFinite(lng))) {
+      // Drop the invalid coordinates from this write rather than persisting them
+      // (and rather than throwing — callers treat the result as the updated
+      // client). Any non-coordinate fields in `location` (city/state/source)
+      // still apply.
+      delete (loc as { lat?: number }).lat;
+      delete (loc as { lng?: number }).lng;
+    }
+
     const updated: Client = {
       ...client,
       currentLocation: {
         ...client.currentLocation,
-        ...location,
-        updatedAt: location.updatedAt || now(),
-        availableAt: location.availableAt || client.currentLocation.availableAt,
+        ...loc,
+        updatedAt: loc.updatedAt || now(),
+        availableAt: loc.availableAt || client.currentLocation.availableAt,
       },
     };
     return this.upsertClient(updated);
@@ -3932,11 +3957,17 @@ export const storage = {
     // "2026-06-14T15:30:..." > "2026-06-14" — silently undercharging the
     // invoice. The week is meant to be INCLUSIVE on both ends, so compare the
     // upper bound against the start of the NEXT day instead.
+    // Exclude cancelled loads: booked_at is never cleared on cancel (it is the
+    // revenue-window key), so without this filter a booked-then-cancelled load
+    // is still summed into grossBooked and charged the 3% success fee — a fee on
+    // revenue that never existed. Delivered/completed loads stay billable by
+    // design (they were real, dispatcher-earned bookings).
     const rows = sqlite
       .prepare(
         `SELECT payload FROM loads
          WHERE client_id = ? AND booked_at IS NOT NULL
            AND booked_at >= ? AND booked_at < date(?, '+1 day')
+           AND COALESCE(json_extract(payload, '$.status'), '') NOT IN ('cancelled', 'canceled')
          ORDER BY booked_at ASC`,
       )
       .all(clientId, weekStart, weekEnd) as Array<{ payload: string }>;
@@ -4050,8 +4081,11 @@ export const storage = {
    * patched in the SAME transaction via json_set so the column and payload can
    * never diverge.
    *
-   * expectedDriverId / newDriverId: null means "unassigned". booked_at is set
-   * when assigning, cleared when unassigning, matching the existing mirror.
+   * expectedDriverId / newDriverId: null means "unassigned". booked_at is the
+   * revenue-recognition marker: stamped ONCE on the first booking and then
+   * IMMUTABLE — a later swap never re-stamps it (avoids a double success fee in
+   * a later week) and an unassign never NULLs it (avoids dropping an already-
+   * booked load out of the billing window).
    */
   reassignLoadDriver(
     loadId: string,
@@ -4061,35 +4095,54 @@ export const storage = {
   ): { ok: true; load: Load } | { ok: false; conflict: true; actual: string | null } {
     const ALREADY = "__LOAD_REASSIGN_CONFLICT__";
     const timestamp = now();
-    // bookedAt is a date-only "YYYY-MM-DD" value by convention (billing week
-    // boundaries + dateOnlySchema both require it; a full ISO timestamp fails
-    // loadFullSchema and 400s every dispatcher/driver load view). `timestamp`
-    // is full ISO, so slice to the calendar date.
-    const bookedAt = newDriverId ? timestamp.slice(0, 10) : null;
     const txn = sqlite.transaction(() => {
+      // booked_at is the revenue-recognition marker and the billing-week key, so
+      // it must be IMMUTABLE once set: stamp it ONLY on the first transition to
+      // booked (existing booked_at IS NULL && a driver is being assigned). On a
+      // driver SWAP we must not re-stamp it (that would migrate an already-billed
+      // load into a later invoice week → double 3% success fee); on UNASSIGN we
+      // must not NULL it (that would drop an already-booked load out of the
+      // billing window → undercharge). In both of those cases we leave the
+      // booked_at column and payload.$.bookedAt untouched.
+      const existing = sqlite
+        .prepare("SELECT booked_at FROM loads WHERE id = ?")
+        .get(loadId) as { booked_at: string | null } | undefined;
+      const stampBooked = newDriverId !== null && (existing?.booked_at ?? null) === null;
+      // bookedAt is a date-only "YYYY-MM-DD" value by convention (billing week
+      // boundaries + dateOnlySchema both require it; a full ISO timestamp fails
+      // loadFullSchema and 400s every dispatcher/driver load view). `timestamp`
+      // is full ISO, so slice to the calendar date.
+      const bookedAt = stampBooked ? timestamp.slice(0, 10) : null;
       // Guard on the driver_id column. `IS` (not `=`) so NULL compares correctly
       // — `driver_id = NULL` is never true in SQL, but `driver_id IS NULL` is.
+      // The booked_at column + payload.$.bookedAt are only written when stamping
+      // a fresh booking; otherwise they're omitted from the SET so the existing
+      // value survives the reassign.
       const res = sqlite
         .prepare(
           `
           UPDATE loads SET
             driver_id  = ?,
-            booked_at  = ?,
+            ${stampBooked ? "booked_at  = ?," : ""}
             updated_at = ?,
-            payload    = json_set(
-                           json_set(payload, '$.driverId', ${newDriverId === null ? "json('null')" : "?"}),
-                           '$.bookedAt', ${bookedAt === null ? "json('null')" : "?"}
-                         )
+            payload    = ${
+              stampBooked
+                ? `json_set(
+                     json_set(payload, '$.driverId', ${newDriverId === null ? "json('null')" : "?"}),
+                     '$.bookedAt', ?
+                   )`
+                : `json_set(payload, '$.driverId', ${newDriverId === null ? "json('null')" : "?"})`
+            }
           WHERE id = ? AND driver_id IS ?
         `,
         )
         .run(
           ...[
             newDriverId,
-            bookedAt,
+            ...(stampBooked ? [bookedAt] : []),
             timestamp,
             ...(newDriverId === null ? [] : [newDriverId]),
-            ...(bookedAt === null ? [] : [bookedAt]),
+            ...(stampBooked ? [bookedAt] : []),
             loadId,
             expectedDriverId,
           ],
@@ -4459,10 +4512,15 @@ export const storage = {
     // midnight on the last day (the timestamp sorts lexically after the bare
     // date). Use `< date(weekEnd,'+1 day')` to include the whole last day —
     // same fix as listBookedLoadsForClientWeek.
+    // Exclude cancelled loads from revenue: booked_at survives a cancellation
+    // (it's the billing-week key), so without this filter a booked-then-cancelled
+    // load keeps incurring the 3% success fee on revenue that never existed.
+    // Delivered/completed loads remain billable by design.
     const rows = sqlite
       .prepare(
         `SELECT payload FROM loads
-         WHERE booked_at IS NOT NULL AND booked_at >= ? AND booked_at < date(?, '+1 day')`,
+         WHERE booked_at IS NOT NULL AND booked_at >= ? AND booked_at < date(?, '+1 day')
+           AND COALESCE(json_extract(payload, '$.status'), '') NOT IN ('cancelled', 'canceled')`,
       )
       .all(weekStart, weekEnd) as Array<{ payload: string }>;
     let sum = 0;
@@ -5110,10 +5168,29 @@ export const storage = {
       ORDER BY captured_at ASC
     `).all(userId, sinceIso) as Array<{ lat: number; lng: number; captured_at: string }>;
     if (pings.length < 2) return 0;
+    // Movement plausibility filters so stationary GPS jitter and teleport noise
+    // don't inflate a legal (IFTA) tax mileage figure:
+    //   - MIN_STEP_KM: ignore sub-50m steps — a parked truck's GPS drifts a few
+    //     meters between pings, which would otherwise accumulate phantom miles.
+    //   - MAX_STEP_KM: ignore single jumps > 200km (driver flew / GPS glitch).
+    //   - MAX_SPEED_KMH: ignore steps whose implied speed exceeds 200 km/h given
+    //     the captured_at delta (a teleport between two close-in-time pings).
+    const MIN_STEP_KM = 0.05;
+    const MAX_STEP_KM = 200;
+    const MAX_SPEED_KMH = 200;
     let km = 0;
     for (let i = 1; i < pings.length; i++) {
       const step = haversineKm(pings[i - 1].lat, pings[i - 1].lng, pings[i].lat, pings[i].lng);
-      if (step <= 200) km += step;
+      if (step < MIN_STEP_KM || step > MAX_STEP_KM) continue;
+      const dtMs = Date.parse(pings[i].captured_at) - Date.parse(pings[i - 1].captured_at);
+      // When timestamps are usable, reject physically-impossible speeds; when
+      // they're missing/non-monotonic (dtMs <= 0 or NaN) fall back to the
+      // distance caps above rather than dropping the step.
+      if (Number.isFinite(dtMs) && dtMs > 0) {
+        const speedKmh = step / (dtMs / 3_600_000);
+        if (speedKmh > MAX_SPEED_KMH) continue;
+      }
+      km += step;
     }
     return km * 0.621371;
   },
@@ -5490,18 +5567,39 @@ export const storage = {
     // path's job, gated on a webkey).
     const base = ensureScoreableSourceLoad(input.payload);
     const existing = sqlite.prepare(
-      "SELECT id FROM loads WHERE source_id = ? AND source_external_id = ?",
-    ).get(input.sourceId, input.sourceExternalId) as { id: string } | undefined;
+      "SELECT id, payload, booked_at, driver_id FROM loads WHERE source_id = ? AND source_external_id = ?",
+    ).get(input.sourceId, input.sourceExternalId) as
+      | { id: string; payload: string; booked_at: string | null; driver_id: string | null }
+      | undefined;
     if (existing) {
-      // Persist the row id INTO the payload — NormalizedLoad carries no id, and
-      // the read paths (getLoad/listLoads) return the payload verbatim, so
-      // without this source loads come back id-less (breaks UI deep-links and
-      // alert dedup keyed on load id).
+      // Re-poll MUST NOT wipe booking state. The fresh adapter payload (`base`)
+      // is a re-normalization of the upstream feed — it carries no
+      // driverId/bookedAt/status/deliveredAt/negotiated rate. A blind
+      // `payload = base` overwrite therefore erased an already-booked load's
+      // assignment + revenue marker while the dedicated booked_at/driver_id
+      // mirror columns (not in this UPDATE's SET) survived — a column-vs-payload
+      // split-brain that re-bills at the feed rate and flips the load back to
+      // 'available' in driver/dispatcher views. Merge the fresh feed fields OVER
+      // the stored payload, then re-assert the booking-critical fields from the
+      // existing payload so they always win.
+      let prev: Record<string, unknown> = {};
+      try { prev = JSON.parse(existing.payload) as Record<string, unknown>; } catch { /* corrupt → treat as empty */ }
+      const isBooked = existing.booked_at !== null || existing.driver_id !== null;
+      const merged: Record<string, unknown> = { ...base };
+      if (isBooked) {
+        // Booked load: the booking + negotiated rate are authoritative; never let
+        // a feed re-poll move them. (rate is preserved only here, so an UNBOOKED
+        // load still gets fresh feed pricing on re-poll.)
+        for (const f of ["bookedAt", "driverId", "clientId", "status", "deliveredAt", "delivered_at", "rate"]) {
+          if (prev[f] !== undefined) merged[f] = prev[f];
+        }
+      }
+      merged.id = existing.id;
       sqlite.prepare(`
         UPDATE loads
         SET payload = ?, updated_at = ?
         WHERE id = ?
-      `).run(JSON.stringify({ ...base, id: existing.id }), now(), existing.id);
+      `).run(JSON.stringify(merged), now(), existing.id);
       return { id: existing.id, inserted: false };
     }
     const id = makeId("load");

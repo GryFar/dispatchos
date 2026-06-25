@@ -146,6 +146,27 @@ function publicBaseUrl(req: Request): string {
 }
 
 /**
+ * Inclusive day-span between two YYYY-MM-DD strings (e.g. 2026-06-08 →
+ * 2026-06-14 = 6). Both inputs are assumed already validated as date-only by
+ * dateOnlySchema, so Date.UTC parsing is exact and DST-free.
+ */
+function inclusiveDaySpan(weekStart: string, weekEnd: string): number {
+  const [sy, sm, sd] = weekStart.split("-").map(Number);
+  const [ey, em, ed] = weekEnd.split("-").map(Number);
+  const startMs = Date.UTC(sy, sm - 1, sd);
+  const endMs = Date.UTC(ey, em - 1, ed);
+  return Math.round((endMs - startMs) / (24 * 60 * 60 * 1000));
+}
+
+// A billing window is a single inclusive 7-day week: weekStart..weekEnd must
+// span exactly 6 calendar days. Without this clamp an admin could set
+// weekStart=2026-01-01,weekEnd=2026-12-31 and sweep a full year of booked
+// loads into one invoice's 3% percentFee base (fee inflation). The overlap
+// guard (findOverlappingInvoice) stops double-billing the SAME load across two
+// invoices but does NOT bound the span of a single oversized window.
+const BILLING_WEEK_SPAN_DAYS = 6;
+
+/**
  * Build the signup URL we hand to the admin. Frontend uses wouter's hash
  * router (see client/src/App.tsx → `useHashLocation`), so the path lives
  * after `#/`. The `?code=` query is read by client/src/pages/signup.tsx.
@@ -1104,6 +1125,11 @@ export function registerAdminRoutes(app: Express): void {
       if (body.weekStart > body.weekEnd) {
         return res.status(400).json({ message: "weekStart must be <= weekEnd" });
       }
+      if (inclusiveDaySpan(body.weekStart, body.weekEnd) !== BILLING_WEEK_SPAN_DAYS) {
+        return res.status(400).json({
+          message: "Billing window must be exactly one 7-day week (weekStart..weekEnd spanning 6 days)",
+        });
+      }
 
       const client = storage.getClient(body.clientId);
       // getClient resolves soft-deleted (archived) clients by design; reject
@@ -1161,6 +1187,11 @@ export function registerAdminRoutes(app: Express): void {
       }
       if (body.weekStart > body.weekEnd) {
         return res.status(400).json({ message: "weekStart must be <= weekEnd" });
+      }
+      if (inclusiveDaySpan(body.weekStart, body.weekEnd) !== BILLING_WEEK_SPAN_DAYS) {
+        return res.status(400).json({
+          message: "Billing window must be exactly one 7-day week (weekStart..weekEnd spanning 6 days)",
+        });
       }
 
       const client = storage.getClient(body.clientId);
@@ -1780,18 +1811,22 @@ export function registerAdminRoutes(app: Express): void {
   // PATCH /api/dispatch/loads/:id but without the
   // `loadIsVisibleToDispatcher` guard — admins have full visibility by role.
   //
-  // Body: { driverId: string | null }
+  // Body: { driverId: string | null, expectedDriverId?: string | null }
   //   - null      → unassign the driver from this load
   //   - <userId>  → assign; driver must (a) exist, (b) have role='driver',
   //                 (c) not be blocked, (d) be linked to the same client as
   //                 the load.
+  //   - expectedDriverId → optimistic-concurrency token; REQUIRED when
+  //                 assigning (driverId != null). The atomic reassign rejects
+  //                 the write with 409 if the load moved since the client read
+  //                 it (anti double-book). Optional for an idempotent unassign.
   // -------------------------------------------------------------------------
   app.patch("/api/admin/loads/:id/driver", admin, (req, res) => {
     const actor = getCurrentUser(req);
     if (!actor) return res.status(401).json({ message: "Authentication required" });
 
     const id = String(req.params.id);
-    const body = (req.body ?? {}) as { driverId?: unknown };
+    const body = (req.body ?? {}) as { driverId?: unknown; expectedDriverId?: unknown };
 
     // Inline validation — keep parity with dispatcher PATCH but without
     // pulling another zod schema into shared/.
@@ -1805,6 +1840,25 @@ export function registerAdminRoutes(app: Express): void {
         message: "Validation failed",
         issues: [{ path: ["driverId"], message: "driverId must be a string or null" }],
       });
+    }
+
+    // Optimistic-concurrency token — the driverId the client saw when it opened
+    // the reassign dialog (mirror of the dispatcher PATCH). Optional and
+    // string|null only.
+    let expectedDriverIdProvided = false;
+    let expectedDriverIdInput: string | null = null;
+    if (body.expectedDriverId !== undefined) {
+      expectedDriverIdProvided = true;
+      if (body.expectedDriverId === null) {
+        expectedDriverIdInput = null;
+      } else if (typeof body.expectedDriverId === "string" && body.expectedDriverId.length > 0) {
+        expectedDriverIdInput = body.expectedDriverId;
+      } else {
+        return res.status(400).json({
+          message: "Validation failed",
+          issues: [{ path: ["expectedDriverId"], message: "expectedDriverId must be a string or null" }],
+        });
+      }
     }
 
     const rawLoad = storage.getLoad(id);
@@ -1836,20 +1890,47 @@ export function registerAdminRoutes(app: Express): void {
       }
     }
 
-    const previousDriverId = rawLoad.driverId ?? null;
-    const updated = storage.upsertLoad({
-      ...load,
-      driverId: driverId ?? undefined,
-    } as Parameters<typeof storage.upsertLoad>[0]);
+    // Anti double-book (Корень #1): ASSIGNING requires the optimistic-
+    // concurrency token, else two concurrent admin reassigns both read
+    // driver_id=null and the second silently clobbers the first (TOCTOU). The
+    // UI sends it; unassign (driverId=null) is idempotent so it stays optional.
+    if (driverId !== null && !expectedDriverIdProvided) {
+      return res.status(400).json({
+        message: "expectedDriverId is required when assigning a driver (optimistic concurrency).",
+        code: "expected_driver_id_required",
+      });
+    }
 
-    storage.audit("load.driver_reassigned", "load", id, {
+    // For an unassign with no token, fall back to the current value (single-
+    // actor clear, no concurrent writer = no conflict). reassignLoadDriver
+    // writes driver_id AND booked_at in lockstep (date on assign, null on
+    // unassign) inside one transaction, so the booked-at billing marker can
+    // never diverge from driver_id — and the column guard returns a 409 on a
+    // lost update instead of last-writer-wins via upsertLoad.
+    const expected = expectedDriverIdProvided
+      ? expectedDriverIdInput
+      : (storage.getLoadDriverId(id) ?? null);
+
+    const result = storage.reassignLoadDriver(id, expected, driverId, actor.id);
+    if (!result.ok) {
+      return res.status(409).json({
+        message:
+          "This load was reassigned by someone else. Refresh to see the current driver.",
+        code: "reassign_conflict",
+        actualDriverId: result.actual,
+      });
+    }
+
+    // reassignLoadDriver already emits a generic load.driver_reassigned audit;
+    // add an admin-context marker for filtering.
+    storage.audit("load.driver_reassigned.admin", "load", id, {
       actorUserId: actor.id,
       via: "admin",
-      from: previousDriverId,
+      from: expected,
       to: driverId,
     });
 
-    return res.json(updated);
+    return res.json(result.load);
   });
 
   // -------------------------------------------------------------------------

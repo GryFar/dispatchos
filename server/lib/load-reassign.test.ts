@@ -42,14 +42,29 @@ assert("stale reassign conflicts", r2.ok === false && "conflict" in r2);
 assert("conflict reports actual = A", !r2.ok && r2.actual === driverA.id);
 assert("driver_id still A (not overwritten)", storage.getLoadDriverId(load.id) === driverA.id);
 
+const bookedBeforeSwap = (storage.getLoad(load.id) as any).bookedAt;
 const r3 = storage.reassignLoadDriver(load.id, driverA.id, driverB.id);
 assert("correct-expected reassign ok", r3.ok === true);
 assert("driver_id now B", storage.getLoadDriverId(load.id) === driverB.id);
+// A driver SWAP must NOT re-stamp booked_at — re-stamping would migrate an
+// already-billed load into a later invoice week and double-charge the 3% fee.
+assert(
+  "swap preserves original bookedAt (no re-stamp → no double success fee)",
+  (storage.getLoad(load.id) as any).bookedAt === bookedBeforeSwap,
+);
 
+const bookedBeforeUnassign = (storage.getLoad(load.id) as any).bookedAt;
 const r4 = storage.reassignLoadDriver(load.id, driverB.id, null);
 assert("unassign ok", r4.ok === true);
 assert("driver_id cleared", storage.getLoadDriverId(load.id) === null);
-assert("payload bookedAt cleared", (storage.getLoad(load.id) as any).bookedAt == null);
+// booked_at is the revenue-recognition marker: once set on the first booking it
+// is IMMUTABLE — an unassign must NOT clear it (clearing it would drop an
+// already-booked load out of the billing window and undercharge the carrier).
+assert(
+  "payload bookedAt preserved on unassign (revenue marker is immutable)",
+  (storage.getLoad(load.id) as any).bookedAt === bookedBeforeUnassign &&
+    typeof bookedBeforeUnassign === "string",
+);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

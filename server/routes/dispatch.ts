@@ -424,7 +424,8 @@ export function registerDispatchRoutes(app: Express): void {
       }
 
       // Resolve client equipment once → nominal capacity for all its drivers.
-      const client = storage.listClients().find((c) => c.id === clientId);
+      // Indexed point-read instead of a full clients-table scan + JS find.
+      const client = storage.getClient(clientId);
       const nominalCapacity =
         client && NOMINAL_CAPACITY_BY_EQUIPMENT[client.equipment] !== undefined
           ? NOMINAL_CAPACITY_BY_EQUIPMENT[client.equipment]
@@ -438,13 +439,13 @@ export function registerDispatchRoutes(app: Express): void {
         .listUsers({ role: "driver" })
         .filter((u) => u.linkedClientId === clientId && !u.blocked)
         .map((u) => {
-          // Active (booked) loads → currentLoad + count. Loads come back with
-          // full payload at runtime, so bookedAt is present despite the narrow
-          // static type.
-          const driverLoads = storage.listLoadsForDriver(u.id, { limit: 200 }).items;
-          const bookedLoads = driverLoads.filter(
-            (l) => Boolean((l as any).driverId && (l as any).bookedAt),
-          );
+          // Active (booked) loads → currentLoad + count. Use the dedicated
+          // helper which applies ACTIVE_LOAD_SQL (booked_at IS NOT NULL AND
+          // status NOT IN completed/cancelled AND deliveredAt IS NULL) — so
+          // delivered/cancelled loads with a stale booked_at are excluded and
+          // there's no 200-row cap dropping older still-active loads. Rows are
+          // already scoped to this driver and ordered booked_at DESC.
+          const bookedLoads = storage.listActiveBookedLoadsForDriver(u.id);
           const activeLoadsCount = bookedLoads.length;
           const cur = bookedLoads[0];
           const currentLoad = cur

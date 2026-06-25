@@ -86,6 +86,18 @@ const active = mkClient({ billingStatus: "active", trialEndsAt: iso(150) });
 const r4 = run(active.id);
 assert("active carrier passes", r4.status === null, `got status=${r4.status}`);
 
+// 4b. Expired carrier is blocked read-only.
+const expired = mkClient({ billingStatus: "expired", trialEndsAt: iso(1) });
+const r4b = run(expired.id);
+assert("expired carrier -> 402", r4b.status === 402, `got status=${r4b.status}`);
+assert("402 reports expired", r4b.body?.billingStatus === "expired");
+
+// 4c. Canceled carrier is blocked read-only (terminal status, treated like expired).
+const canceled = mkClient({ billingStatus: "canceled", trialEndsAt: iso(1) });
+const r4c = run(canceled.id);
+assert("canceled carrier -> 402", r4c.status === 402, `got status=${r4c.status}`);
+assert("402 reports canceled", r4c.body?.billingStatus === "canceled");
+
 // 5. pastDueSince survives the payload round-trip.
 const stored = storage.getClient(recent.id) as any;
 assert("pastDueSince persisted in payload", typeof stored.pastDueSince === "string");

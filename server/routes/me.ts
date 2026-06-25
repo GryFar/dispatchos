@@ -43,7 +43,7 @@ import {
 import { enrichLoadSync } from "../lib/ai/enrich";
 import { parseReceipt } from "../lib/ai/receipt-ocr";
 import { parseLimit } from "../lib/query";
-import { getCurrentUser, requireRole } from "../auth";
+import { getCurrentUser, requireRole, requireActiveBilling } from "../auth";
 import { storage, uploadsRoot } from "../storage";
 import { upload } from "../upload";
 import { todayInState } from "../lib/us-state-tz";
@@ -151,13 +151,90 @@ function buildTodayStop(
   // "Today" must be computed in the pickup/delivery local time, not UTC, or a
   // driver on the West Coast loses the stop after ~16:00 local (already next
   // day in UTC). `state` is the stop's USPS code; falls back to UTC if unknown.
+  //
+  // BOTH sides must be in the same time frame: compare the stop's LOCAL "today"
+  // against the load instant's LOCAL calendar date (not iso.slice(0,10), which
+  // is the UTC date). todayInState formats whatever Date it's given in the
+  // state's zone, so passing new Date(iso) yields the load's local date.
+  const loadInstant = new Date(iso);
+  if (Number.isNaN(loadInstant.getTime())) return null;
   const today = todayInState(state);
-  if (iso.slice(0, 10) !== today) return null;
+  const loadLocalDate = todayInState(state, loadInstant);
+  if (loadLocalDate !== today) return null;
   return {
     time: iso,
     address: `${city}, ${state}`,
     contact,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Receipt-OCR cost guard (per-driver). parseReceipt is a paid Claude vision
+// call; without a cap a single driver can run up an unbounded bill by hammering
+// scan-receipt. Mirror the in-memory per-user hourly-budget pattern used for
+// the dispatcher AI advisor (cockpit.ts aiRateCheck) and the Twilio verify
+// bucket. We additionally enforce a hard per-day ceiling so an attacker who
+// paces requests across hours still can't run an unbounded daily spend.
+// ---------------------------------------------------------------------------
+const OCR_MAX_PER_HOUR = 15;
+const OCR_MAX_PER_DAY = 60;
+const OCR_HOUR_MS = 60 * 60 * 1000;
+const OCR_DAY_MS = 24 * 60 * 60 * 1000;
+interface OcrBudget {
+  hourCount: number;
+  hourStart: number;
+  dayCount: number;
+  dayStart: number;
+}
+const ocrBudgets = new Map<string, OcrBudget>();
+function ocrRateCheck(userId: string): { allowed: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  let b = ocrBudgets.get(userId);
+  if (!b) {
+    b = { hourCount: 0, hourStart: now, dayCount: 0, dayStart: now };
+    ocrBudgets.set(userId, b);
+  }
+  if (now - b.hourStart > OCR_HOUR_MS) {
+    b.hourCount = 0;
+    b.hourStart = now;
+  }
+  if (now - b.dayStart > OCR_DAY_MS) {
+    b.dayCount = 0;
+    b.dayStart = now;
+  }
+  if (b.dayCount >= OCR_MAX_PER_DAY) {
+    return { allowed: false, retryAfterSec: Math.ceil((OCR_DAY_MS - (now - b.dayStart)) / 1000) };
+  }
+  if (b.hourCount >= OCR_MAX_PER_HOUR) {
+    return { allowed: false, retryAfterSec: Math.ceil((OCR_HOUR_MS - (now - b.hourStart)) / 1000) };
+  }
+  b.hourCount++;
+  b.dayCount++;
+  return { allowed: true, retryAfterSec: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Fuel occurredAt freshness clamp. Driver-supplied occurredAt drives IFTA
+// gallons-per-state attribution into a signed quarterly filing, so an arbitrary
+// past/future date lets a driver backdate gallons into a closed/filed quarter
+// or pre-load a future one (the GPS-ping path already clamps for the same
+// reason — see track.ts parseTimestamp). We accept only a bounded window:
+// up to FUEL_MAX_AGE in the past (late receipt entry is legitimate) and a
+// small clock-skew window into the future; anything outside — or unparseable —
+// falls back to server now().
+// ---------------------------------------------------------------------------
+const FUEL_MAX_AGE_MS = 35 * 24 * 60 * 60 * 1000; // ~5 weeks back (late entry)
+const FUEL_MAX_SKEW_MS = 60 * 60 * 1000; // 1h into the future (tz/clock drift)
+function clampFuelOccurredAt(raw: string | undefined): string {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  if (!raw) return nowIso;
+  const ms = new Date(raw).getTime();
+  if (!Number.isFinite(ms)) return nowIso;
+  if (ms < nowMs - FUEL_MAX_AGE_MS || ms > nowMs + FUEL_MAX_SKEW_MS) {
+    return nowIso;
+  }
+  return new Date(ms).toISOString();
 }
 
 // ---------------------------------------------------------------------------
@@ -335,12 +412,20 @@ export function registerMeRoutes(app: Express): void {
       const page = storage.listLoadsForDriver(user.id, { limit, cursor });
       let items = page.items.map(toLoadFull);
 
-      // Owner-operator: also include all loads for their carrier company
+      // Cursor/total contract: the driver page is created_at-ordered with a
+      // created_at-encoded cursor. The owner-operator merge below re-sorts the
+      // items by pickupAt and folds in a second result set, so the driver
+      // page's cursor/total no longer describe the returned items. When the
+      // merge path is taken we therefore drop the cursor (single, complete
+      // page) and recompute total from the merged deduped universe so we never
+      // skip/duplicate carrier loads across pages or understate the count.
       let isOwnerOperator = false;
+      let merged = false;
       if (user.linkedClientId) {
         const linkedClient = storage.getClient(user.linkedClientId);
         if (isOwnerOf(linkedClient, user)) {
           isOwnerOperator = true;
+          merged = true;
           const clientPage = storage.listLoadsForClientIds([user.linkedClientId], { limit: limit ?? 50 });
           const seen = new Set(items.map((l) => l.id));
           for (const cl of clientPage.items.map(toLoadFull)) {
@@ -353,6 +438,10 @@ export function registerMeRoutes(app: Express): void {
         }
       }
 
+      // Merged-universe size (deduped) — computed BEFORE the status filter so
+      // total reflects the same unfiltered count semantics as the driver page.
+      const mergedTotal = items.length;
+
       if (statusFilter) {
         items = items.filter((l) => deriveLoadStatus(l) === statusFilter);
       }
@@ -362,12 +451,15 @@ export function registerMeRoutes(app: Express): void {
 
       return res.json({
         items,
-        nextCursor: page.nextCursor,
-        hasMore: page.nextCursor !== null,
-        // total reflects the unfiltered driver-scoped count from storage.
-        // The status filter is a UI convenience, not a separately-counted
-        // facet — Phase 4 P0 keeps this simple.
-        total: page.total,
+        // On the merge path the driver-page cursor can't paginate the merged,
+        // pickupAt-ordered set without skipping/duplicating carrier loads, so we
+        // return a single complete page (no further cursor).
+        nextCursor: merged ? null : page.nextCursor,
+        hasMore: merged ? false : page.nextCursor !== null,
+        // total reflects the unfiltered count. For the merge path that's the
+        // deduped merged universe; otherwise the driver-scoped storage count.
+        // The status filter is a UI convenience, not a separately-counted facet.
+        total: merged ? mergedTotal : page.total,
       });
     }),
   );
@@ -783,6 +875,17 @@ export function registerMeRoutes(app: Express): void {
             .status(400)
             .json({ message: "Only JPEG or PNG receipts can be scanned" });
         }
+        // Per-driver cost cap on the paid vision call. Checked AFTER the cheap
+        // validations (so a bad request doesn't consume budget) but BEFORE the
+        // billable parseReceipt call.
+        const budget = ocrRateCheck(user.id);
+        if (!budget.allowed) {
+          res.setHeader("Retry-After", String(budget.retryAfterSec));
+          return res.status(429).json({
+            message: "Receipt-scan limit reached. Try again later or enter the amount manually.",
+            retryAfterSec: budget.retryAfterSec,
+          });
+        }
         const imageBase64 = fs.readFileSync(file.path).toString("base64");
         const ocr = await parseReceipt(imageBase64, mediaType);
         // Audit the attempt (not the image) so we can see OCR usage/hit-rate.
@@ -865,7 +968,9 @@ export function registerMeRoutes(app: Express): void {
         odometerMiles: body.odometerMiles ?? null,
         receiptStoragePath: null,
         notes: body.notes ?? null,
-        occurredAt: body.occurredAt || new Date().toISOString(),
+        // Clamp driver-supplied occurredAt to a sane window so fuel gallons
+        // can't be backdated into a filed IFTA quarter (or forward-dated).
+        occurredAt: clampFuelOccurredAt(body.occurredAt),
       });
 
       storage.audit("driver.fuel_logged", "fuel_transaction", id, {
@@ -988,6 +1093,11 @@ export function registerMeRoutes(app: Express): void {
   app.post(
     "/api/me/loads",
     driver,
+    // Billing gate: a self-dispatched load is billable (3% success fee + flat),
+    // so an expired / past-due-over-grace carrier must not be able to create
+    // one. requireActiveBilling resolves the carrier from user.linkedClientId
+    // for drivers and 402s on expired/past_due-over-grace.
+    requireActiveBilling,
     ah(async (req, res) => {
       const user = getCurrentUser(req);
       if (!user) return res.status(401).json({ message: "Authentication required" });

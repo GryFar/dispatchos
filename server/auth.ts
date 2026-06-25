@@ -316,11 +316,15 @@ export function requireActiveBilling(
   if (!client) return next();
 
   const status = client.billingStatus;
-  if (status === "expired") {
+  // 'canceled' (stamped by the Stripe webhook on customer.subscription.deleted /
+  // deriveSubscriptionUpdates) is a terminal blocking state, identical to
+  // 'expired' for access purposes — nothing else normalizes it, so a canceled
+  // carrier would otherwise keep full write access indefinitely.
+  if (status === "expired" || status === "canceled") {
     return res.status(402).json({
       message:
         "Аккаунт в режиме только для чтения (пробный период истёк или подписка отменена). Продлите на /admin/billing.",
-      billingStatus: "expired",
+      billingStatus: status,
     });
   }
   if (status === "past_due") {
