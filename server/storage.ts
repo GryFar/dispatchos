@@ -5788,11 +5788,25 @@ export const storage = {
     return this.getLoadSource(id);
   },
 
+  /**
+   * Record the outcome of one poll. On failure, bumps failure_streak and
+   * auto-pauses at the 3-strike threshold.
+   *
+   * Returns the active->paused TRANSITION info so the cron caller can surface a
+   * degraded count / fire an owner alert exactly ONCE (on the flip), never on
+   * subsequent already-paused polls. The return shape is additive — existing
+   * callers that ignore the return value are unaffected.
+   */
   recordLoadSourcePoll(id: string, result: {
     loadsFound: number;
     errorMessage?: string | null;
-  }) {
+  }): { justPaused: boolean; sourceId: string; clientId: string | null; label: string | null } {
     const t = now();
+    // Read status BEFORE the update so we can detect the active->paused edge
+    // (the streak/CASE is evaluated inside SQL, so we re-read after to compare).
+    const before = sqlite
+      .prepare("SELECT status, client_id, label FROM load_sources WHERE id = ?")
+      .get(id) as { status: string; client_id: string; label: string } | undefined;
     if (result.errorMessage) {
       sqlite.prepare(`
         UPDATE load_sources
@@ -5816,6 +5830,38 @@ export const storage = {
         WHERE id = ?
       `).run(t, result.loadsFound, t, id);
     }
+    const after = sqlite
+      .prepare("SELECT status FROM load_sources WHERE id = ?")
+      .get(id) as { status: string } | undefined;
+    const justPaused =
+      before?.status === "active" && after?.status === "paused";
+    return {
+      justPaused,
+      sourceId: id,
+      clientId: before?.client_id ?? null,
+      label: before?.label ?? null,
+    };
+  },
+
+  /** Ops/health: how many load sources are currently auto-paused (or paused). */
+  countPausedLoadSources(): number {
+    return (
+      sqlite
+        .prepare("SELECT COUNT(*) as c FROM load_sources WHERE status = 'paused'")
+        .get() as { c: number }
+    ).c;
+  },
+
+  /**
+   * Ops/health: the most recent successful poll heartbeat across all load
+   * sources (max last_polled_at). Returns null if no source has ever polled.
+   * Used by /api/health-deep to flag a stalled poller cron.
+   */
+  latestLoadSourcePollAt(): string | null {
+    const row = sqlite
+      .prepare("SELECT MAX(last_polled_at) as t FROM load_sources")
+      .get() as { t: string | null };
+    return row?.t ?? null;
   },
 
   /**

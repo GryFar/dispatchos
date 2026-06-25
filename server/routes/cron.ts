@@ -79,6 +79,21 @@ async function pushMatchedLoadAlerts(clientId: string, newLoadIds: string[]): Pr
   }
 }
 
+// A load source just flipped active->paused after repeated failures: its feed
+// is now dark with no further polling. There is no reusable, config-free
+// owner-alert sender in the codebase (the existing TG notifiers require
+// per-client chat config / private ctx), so we DO NOT invent one here — we log
+// a clear, greppable warning and surface pausedCount/degraded in the cron
+// response (read by load-sources-poll.yml). Wiring an actual push alert is left
+// to the owner once an alert channel/token is configured.
+function warnAutoPaused(rec: { sourceId: string; clientId: string | null; label: string | null }): void {
+  const name = rec.label || rec.sourceId;
+  console.warn(
+    `[cron/load-sources] ALERT: Load source ${name} (id=${rec.sourceId}, client=${rec.clientId ?? "?"}) ` +
+      `auto-paused after repeated failures — its load feed is now dark.`,
+  );
+}
+
 export function registerCronRoutes(app: Express): void {
   // -------------------------------------------------------------------------
   // POST /api/cron/refresh-fuel
@@ -129,7 +144,7 @@ export function registerCronRoutes(app: Express): void {
 
     type PollResult =
       | { id: string; ok: true; loadsFound: number; loadsNew: number; alertsSent: number }
-      | { id: string; ok: false; error: string; skipped?: true };
+      | { id: string; ok: false; error: string; skipped?: true; justPaused?: true };
 
     const pollSource = async (src: (typeof sources)[number]): Promise<PollResult> => {
       // Atomic lease: bump last_polled_at NOW iff the row is still due, so two
@@ -141,8 +156,9 @@ export function registerCronRoutes(app: Express): void {
       const t0 = Date.now();
       const adapter = getAdapter(src.adapterKey);
       if (!adapter) {
-        storage.recordLoadSourcePoll(src.id, { loadsFound: 0, errorMessage: `Unknown adapter: ${src.adapterKey}` });
-        return { id: src.id, ok: false, error: "unknown_adapter" };
+        const rec = storage.recordLoadSourcePoll(src.id, { loadsFound: 0, errorMessage: `Unknown adapter: ${src.adapterKey}` });
+        if (rec.justPaused) warnAutoPaused(rec);
+        return { id: src.id, ok: false, error: "unknown_adapter", ...(rec.justPaused ? { justPaused: true as const } : {}) };
       }
       try {
         let credsPlain: Record<string, string> | undefined;
@@ -184,12 +200,14 @@ export function registerCronRoutes(app: Express): void {
         return { id: src.id, ok: true, loadsFound: raws.length, loadsNew: inserted, alertsSent: pushed };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        storage.recordLoadSourcePoll(src.id, { loadsFound: 0, errorMessage: msg });
+        const rec = storage.recordLoadSourcePoll(src.id, { loadsFound: 0, errorMessage: msg });
+        if (rec.justPaused) warnAutoPaused(rec);
         storage.audit("load_source.poll_failed", "load_source", src.id, {
           error: msg,
           durationMs: Date.now() - t0,
+          justPaused: rec.justPaused,
         });
-        return { id: src.id, ok: false, error: msg };
+        return { id: src.id, ok: false, error: msg, ...(rec.justPaused ? { justPaused: true as const } : {}) };
       }
     };
 
@@ -213,10 +231,18 @@ export function registerCronRoutes(app: Express): void {
       Array.from({ length: Math.min(CONCURRENCY, sources.length) }, () => worker()),
     );
 
+    // Surface auto-pause transitions so the GitHub Actions poller
+    // (load-sources-poll.yml) and any external monitor can see a feed went
+    // dark this run, even though the per-source HTTP call itself "succeeded".
+    const pausedCount = results.filter(
+      (r) => r.ok === false && r.justPaused === true,
+    ).length;
     return res.json({
       ok: true,
       polled: sources.length,
       leased: results.filter((r) => !(r.ok === false && r.skipped)).length,
+      pausedCount,
+      degraded: pausedCount > 0,
       results,
     });
   });
