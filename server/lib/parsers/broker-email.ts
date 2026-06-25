@@ -55,7 +55,7 @@ function stripHtml(html: string): string {
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<\/?(tr|td|th|p|div|li|br)[^>]*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<[^<>]{0,2000}>/g, "")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
@@ -74,7 +74,7 @@ function htmlTableToLines(html: string): string {
     const cells = Array.from(rowInner.matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi))
       .map((c) =>
         c[1]
-          .replace(/<[^>]+>/g, "")
+          .replace(/<[^<>]{0,2000}>/g, "")
           .replace(/&nbsp;/g, " ")
           .replace(/&amp;/g, "&")
           .trim(),
@@ -87,7 +87,9 @@ function htmlTableToLines(html: string): string {
 }
 
 function bodyToText(raw: string): string {
-  let s = raw;
+  // ReDoS guard: inbound email bodies are attacker-controllable and the
+  // strip/parse runs synchronously on the event loop, so cap before any regex.
+  let s = raw.length > 65_536 ? raw.slice(0, 65_536) : raw;
   if (/<tr[\s>]/i.test(s)) s = htmlTableToLines(s);
   if (/<[a-z][\s\S]*>/i.test(s)) s = stripHtml(s);
   return s;
@@ -99,7 +101,8 @@ function normalizeKey(k: string): string {
 
 function parseCityState(value: string): { city: string; state: string; zip?: string } | undefined {
   // "Atlanta, GA" | "Atlanta, GA 30303" | "Atlanta GA 30303"
-  const m = value.match(/^\s*([A-Za-z][A-Za-z .'-]+?)[,\s]+([A-Z]{2})(?:\s+(\d{5}))?\s*$/);
+  if (value.length > 80) return undefined; // ReDoS guard: city/state lines are short
+  const m = value.match(/^\s*([A-Za-z][A-Za-z.'-]{0,38}(?: [A-Za-z.'-]+){0,5})[,\s]+([A-Z]{2})(?:\s+(\d{5}))?\s*$/);
   if (!m) return undefined;
   return { city: m[1].trim(), state: m[2].toUpperCase(), zip: m[3] };
 }

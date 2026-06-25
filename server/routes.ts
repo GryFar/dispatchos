@@ -2456,6 +2456,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const VERIFY_COOLDOWN_MS   = 60_000;
   const VERIFY_MAX_PER_24H   = 5;
   const VERIFY_WINDOW_24H_MS = 24 * 60 * 60 * 1_000;
+  const VERIFY_BUCKETS_MAX   = 50_000;
 
   interface VerifyBucket { lastSentAt: number; count24h: number; windowStart: number }
   const verifyBuckets = new Map<string, VerifyBucket>();
@@ -2464,6 +2465,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const now = Date.now();
     let b = verifyBuckets.get(key);
     if (!b) {
+      // Bound the Map so an attacker rotating target phones/emails can't grow
+      // it without bound (memory-exhaustion DoS). Sweep stale 24h entries first,
+      // then refuse rather than exceed the hard cap.
+      if (verifyBuckets.size >= VERIFY_BUCKETS_MAX) {
+        const stale: string[] = [];
+        verifyBuckets.forEach((v, k) => { if (now - v.windowStart > VERIFY_WINDOW_24H_MS) stale.push(k); });
+        stale.forEach((k) => verifyBuckets.delete(k));
+        if (verifyBuckets.size >= VERIFY_BUCKETS_MAX) {
+          return { allowed: false, cooldownSec: 60 };
+        }
+      }
       verifyBuckets.set(key, { lastSentAt: now, count24h: 1, windowStart: now });
       return { allowed: true, cooldownSec: 0 };
     }
