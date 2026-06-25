@@ -1,0 +1,50 @@
+name: Weekly DB Backup
+
+# Audit H5 — offsite, restore-grade DB backup. Pulls a CONSISTENT online
+# snapshot of the live SQLite file from /api/cron/backup and stores it as a
+# GitHub Actions artifact. This is the zero-config OFFSITE copy: free, needs no
+# S3/R2 credentials. (A future S3/R2 target is an owner option, not required.)
+#
+# Runs weekly (Mondays 07:00 UTC) and on manual dispatch. The DB is tiny (~1MB),
+# so streaming it back over HTTP is safe and non-blocking.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: backup-cron
+  cancel-in-progress: false
+
+# Target host is configurable so the backup follows the real deployment. Set
+# repo variable DISPATCHOS_BASE_URL to the live app URL; falls back to demo.
+env:
+  BASE_URL: ${{ vars.DISPATCHOS_BASE_URL || 'https://demo.dispatchos.co' }}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Pull DB snapshot
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          OUT="dispatchos-backup-$(date +%Y%m%d).db"
+          echo "BACKUP_FILE=$OUT" >> "$GITHUB_ENV"
+          CODE=$(curl -fsS -o "$OUT" -w '%{http_code}' "$BASE_URL/api/cron/backup" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 120 || echo 000)
+          if [ "$CODE" != "200" ]; then
+            echo "::error::backup endpoint returned HTTP $CODE"
+            exit 1
+          fi
+          echo "Saved $OUT ($(wc -c < "$OUT") bytes)."
+
+      - name: Upload backup artifact (offsite copy)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dispatchos-db-backup
+          path: ${{ env.BACKUP_FILE }}
+          retention-days: 90
+          if-no-files-found: error
