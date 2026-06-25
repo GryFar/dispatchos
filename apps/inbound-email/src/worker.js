@@ -103,8 +103,8 @@ export default {
       }
 
       // V2-4(3): per-sender rate-limit (best-effort; KV optional).
-      const allowed = await checkRateLimit(env.INBOUND_RL, message.from);
-      if (!allowed) {
+      const rateOk = await checkRateLimit(env.INBOUND_RL, message.from);
+      if (!rateOk) {
         console.warn(`[inbound-email] rejected: rate-limit hit from=${message.from}`);
         return;
       }
