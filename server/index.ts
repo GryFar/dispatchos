@@ -410,7 +410,11 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
+      // Only dump the response body (even redacted) in NON-prod. The deny-list
+      // below is top-level and non-recursive, so in production it would still
+      // leak nested PII — driver phone/email, GPS pings/tracks, broker contacts —
+      // to stdout/journald/log drains. Prod logs the status line only (audit H10).
+      if (capturedJsonResponse && !isProdLike) {
         // Redact tokens/passwords/secrets from request-log line to avoid
         // leaking them into stdout / journald. Several endpoints legitimately
         // return one-time secrets in their body (TOTP setup → {secret}, admin
