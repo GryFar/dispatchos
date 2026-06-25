@@ -192,6 +192,60 @@ function assert(name: string, cond: boolean, detail?: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Mobile API parsing — letter status codes (real mobile API shape)
+// brokerAuthorityStatus is a letter code, NOT a number. "A" = active.
+// ---------------------------------------------------------------------------
+{
+  const activeBroker = parseMobileApiResponse("MC-555", {
+    content: [{
+      carrier: {
+        legalName: "Letter Code Broker LLC",
+        allowedToOperate: "Y",
+        brokerAuthorityStatus: "A",
+        bondInsuranceOnFile: "Y",
+      },
+    }],
+  });
+  assert("parse: brokerAuthorityStatus 'A' → broker true", activeBroker?.authority.broker === true);
+  assert("parse: bondInsuranceOnFile 'Y' → bmc84OnFile true",
+    activeBroker?.insurance?.bmc84OnFile === true);
+
+  const inactiveBroker = parseMobileApiResponse("MC-556", {
+    content: [{
+      carrier: {
+        legalName: "Inactive Broker LLC",
+        allowedToOperate: "Y",
+        brokerAuthorityStatus: "N",
+        carrierOperation: "Interstate Carrier",
+      },
+    }],
+  });
+  assert("parse: brokerAuthorityStatus 'N' → broker false", inactiveBroker?.authority.broker === false);
+}
+
+// ---------------------------------------------------------------------------
+// Mobile API parsing — BMC-84 bond filing flows into the surety guard.
+// A broker with no bond on file must now be penalised (was dead code before).
+// ---------------------------------------------------------------------------
+{
+  const noBond = parseMobileApiResponse("MC-557", {
+    content: [{
+      carrier: {
+        legalName: "Unbonded Broker LLC",
+        allowedToOperate: "Y",
+        brokerAuthorityStatus: "A",
+        bondInsuranceOnFile: "N",
+      },
+    }],
+  });
+  assert("parse: bondInsuranceOnFile 'N' populates insurance", noBond?.insurance !== undefined);
+  assert("parse: bondInsuranceOnFile 'N' → bmc84OnFile false", noBond?.insurance?.bmc84OnFile === false);
+  const verdict = noBond ? evaluateBroker(noBond) : null;
+  assert("parse+eval: unbonded broker flagged for missing BMC-84",
+    !!verdict && verdict.redFlags.some((f) => f.includes("BMC-84")));
+}
+
+// ---------------------------------------------------------------------------
 // Mobile API parsing — empty response
 // ---------------------------------------------------------------------------
 {

@@ -52,12 +52,20 @@ export interface SylectusParsed {
 
 const FIELD_LINE = /^\s*([A-Za-z][A-Za-z \\/.#-]{1,30}?)\s*[:#-]\s*(.+?)\s*$/;
 
+// Hard cap on the body we feed to the (synchronous) regex pipeline. Inbound
+// email bodies are attacker-controllable and the schema only caps them at 1MB,
+// far above the ~100KB needed to make the tag-strip regexes stall the single
+// event loop. A real Sylectus posting is a few KB, so 32KB is generous.
+const MAX_PARSE_LEN = 32_768;
+
 function stripHtml(html: string): string {
   return html
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<\/?(tr|td|th|p|div|li|br)[^>]*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
+    // Bounded tag class: cap the run between '<' and '>' so a body with a
+    // single unclosed '<' followed by a huge non-'>' run cannot backtrack.
+    .replace(/<[^<>]{0,2000}>/g, "")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
@@ -73,16 +81,23 @@ function normalizeKey(k: string): string {
 
 function parseCityState(value: string): { city: string; state: string; zip?: string } | undefined {
   // "Atlanta, GA" or "Atlanta, GA 30303" or "Atlanta GA 30303"
-  const m = value.match(/^\s*([A-Za-z][A-Za-z .'-]+?)[,\s]+([A-Z]{2})(?:\s+(\d{5}))?\s*$/);
+  // Reject overlong values up front — a real "City, ST 12345" is well under 80
+  // chars, and the bounded count below removes the space/separator ambiguity
+  // that previously allowed O(n^2) backtracking on attacker-controlled input.
+  if (value.length > 80) return undefined;
+  const m = value.match(/^\s*([A-Za-z][A-Za-z.'-]{0,38})((?: [A-Za-z.'-]+){0,5})[,\s]+([A-Z]{2})(?:\s+(\d{5}))?\s*$/);
   if (!m) return undefined;
-  return { city: m[1].trim(), state: m[2].toUpperCase(), zip: m[3] };
+  const city = (m[1] + (m[2] || "")).trim();
+  return { city, state: m[3].toUpperCase(), zip: m[4] };
 }
 
 function parseMoney(value: string): number | undefined {
-  // "$1,850" | "1850" | "USD 1,850.00"
-  const cleaned = value.replace(/[^0-9.]/g, "");
-  if (!cleaned) return undefined;
-  const n = Math.round(Number(cleaned));
+  // "$1,850" | "1850" | "USD 1,850.00" | "$2,400 all-in"
+  // Anchor on the FIRST numeric token so a trailing FSC/per-mile figure on the
+  // same line can't be concatenated into the rate (1000x inflation / NaN).
+  const m = value.match(/\$?\s*([\d,]+(?:\.\d{1,2})?)/);
+  if (!m) return undefined;
+  const n = Math.round(Number(m[1].replace(/,/g, "")));
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
@@ -91,6 +106,37 @@ function parseInt0(value: string): number | undefined {
   if (!m) return undefined;
   const n = Number(m[0].replace(/,/g, ""));
   return Number.isFinite(n) ? n : undefined;
+}
+
+// Normalize a date field to ISO when we recognize the shape, else return the
+// raw string (the interface contract: "ISO if parseable, otherwise raw").
+// Mirrors broker-email.ts's parseDate so the pickup-reminder window query —
+// which compares against ISO bounds — actually sees Sylectus pickups.
+function parseDate(value?: string): string | undefined {
+  if (!value) return undefined;
+  const raw = value.trim();
+  if (!raw) return undefined;
+  // Already ISO-ish.
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? raw : d.toISOString();
+  }
+  // US "MM/DD/YYYY[ HH:MM]" — the common Sylectus / broker format.
+  const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:[ T](\d{1,2}):(\d{2}))?/);
+  if (m) {
+    const [, mm, dd, yyRaw, hh, min] = m;
+    const yy = yyRaw.length === 2 ? `20${yyRaw}` : yyRaw;
+    const d = new Date(
+      Number(yy),
+      Number(mm) - 1,
+      Number(dd),
+      hh ? Number(hh) : 0,
+      min ? Number(min) : 0,
+    );
+    return Number.isNaN(d.getTime()) ? raw : d.toISOString();
+  }
+  // Keep raw for anything else — callers tolerate non-ISO strings.
+  return raw;
 }
 
 function parseSubjectLane(subject: string):
@@ -127,7 +173,11 @@ export function parseSylectusEmail(input: {
   subject: string;
   body: string;
 }): SylectusParsed {
-  const bodyText = /<[a-z][\s\S]*>/i.test(input.body) ? stripHtml(input.body) : input.body;
+  // Truncate before any regex touches the body: inbound email is attacker-
+  // controllable and runs synchronously on the event loop.
+  const body =
+    input.body.length > MAX_PARSE_LEN ? input.body.slice(0, MAX_PARSE_LEN) : input.body;
+  const bodyText = /<[a-z][\s\S]*>/i.test(body) ? stripHtml(body) : body;
   const looksSylectus = isSylectus(input.from, bodyText);
   const subjectLane = parseSubjectLane(input.subject);
 
@@ -166,8 +216,8 @@ export function parseSylectusEmail(input: {
   const weightLbs = parseInt0(get("weight", "weightlbs") ?? "");
   const pieces = parseInt0(get("pieces", "qty", "quantity") ?? "");
   const equipment = get("equipment", "equipmenttype", "trailer", "truck");
-  const pickupAt = get("pickup", "pickupdate", "pickupat", "pickupdatetime");
-  const postedAt = get("posted", "postedat", "datetime");
+  const pickupAt = parseDate(get("pickup", "pickupdate", "pickupat", "pickupdatetime"));
+  const postedAt = parseDate(get("posted", "postedat", "datetime"));
   const reference = get("reference", "ref", "loadid", "loadnumber", "loadref");
 
   const broker = {

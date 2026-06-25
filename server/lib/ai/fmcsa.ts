@@ -318,9 +318,14 @@ export function parseMobileApiResponse(mcNumber: string, raw: unknown): FmcsaCar
 
     const authority = {
       carrier: pickString(carrier, "carrierOperation")?.toLowerCase().includes("carrier") ?? false,
-      broker: !!pickNumber(carrier, "brokerAuthorityStatus") ||
-              !!pickString(carrier, "brokerAuthority"),
-      freightForwarder: !!pickString(carrier, "freightForwarder"),
+      // FMCSA mobile API returns letter status codes ("A" active, "I" inactive,
+      // "N" none) for *AuthorityStatus fields — NOT numbers. Reading them with a
+      // numeric coercion turned every "A" into NaN and silently classified real
+      // brokers as non-brokers. Treat "A" (active) as authority granted. The
+      // legacy "brokerAuthority"/"freightForwarder" string keys are kept as a
+      // fallback for older shapes / fixtures that emit a free-text value.
+      broker: hasActiveAuthority(carrier, "brokerAuthorityStatus", "brokerAuthority"),
+      freightForwarder: hasActiveAuthority(carrier, "freightForwarderStatus", "freightForwarder"),
     };
 
     const authorityAgeYears = parseAuthorityAge(carrier);
@@ -345,6 +350,7 @@ export function parseMobileApiResponse(mcNumber: string, raw: unknown): FmcsaCar
       phone: pickString(carrier, "telephone") ?? undefined,
       operatingStatus,
       authority,
+      insurance: parseInsurance(carrier),
       authorityAgeYears,
       safetyRating: safetyRating === "NONE" ? undefined : safetyRating,
       powerUnits: pickNumber(carrier, "totalPowerUnits") ?? undefined,
@@ -360,12 +366,91 @@ function pickString(obj: Record<string, unknown>, key: string): string | undefin
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
+/**
+ * Decide whether an FMCSA authority field signals active authority.
+ *
+ * The mobile API exposes single-letter status codes:
+ *   "A" — active / authorized
+ *   "I" — inactive
+ *   "N" — none / never granted
+ * The canonical `statusKey` (e.g. "brokerAuthorityStatus") carries these codes.
+ * `legacyKey` (e.g. "brokerAuthority") is a free-text fallback some shapes /
+ * fixtures emit (e.g. "ACTIVE"); any non-empty value there that isn't an
+ * explicit inactive/none marker counts as authority granted.
+ */
+function hasActiveAuthority(
+  obj: Record<string, unknown>,
+  statusKey: string,
+  legacyKey: string,
+): boolean {
+  const status = pickString(obj, statusKey)?.trim().toUpperCase();
+  if (status) {
+    // Single-letter code path: only "A" is active.
+    return status.startsWith("A");
+  }
+  const legacy = pickString(obj, legacyKey)?.trim().toUpperCase();
+  if (legacy) {
+    return legacy !== "I" && legacy !== "N" && legacy !== "NONE" && legacy !== "INACTIVE";
+  }
+  return false;
+}
+
 function pickNumber(obj: Record<string, unknown>, key: string): number | undefined {
   const v = obj[key];
   if (typeof v === "number") return v;
   if (typeof v === "string") {
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Parse FMCSA insurance-filing flags into our normalized insurance shape.
+ *
+ * The mobile API exposes filing indicators such as `bondInsuranceOnFile`
+ * (BMC-84 broker surety bond), `bipdInsuranceOnFile` (BMC-91 carrier liability)
+ * and `cargoInsuranceOnFile`. Values come through as "Y"/"N" strings or numeric
+ * filing counts. Previously this object was never populated, so the BMC-84
+ * surety-bond guard in evaluateBroker() was dead code and a broker with no bond
+ * passed clean. We only return an object when at least one indicator is present
+ * so that fixtures/shapes that omit insurance data keep insurance === undefined
+ * (matching the optional schema) rather than asserting "no bond on file".
+ */
+function parseInsurance(carrier: Record<string, unknown>): FmcsaCarrier["insurance"] {
+  const bmc84 = pickFlag(carrier, "bondInsuranceOnFile", "brokerBondOnFile", "bmc84OnFile");
+  const bmc91 = pickFlag(carrier, "bipdInsuranceOnFile", "bipdRequired", "bmc91OnFile");
+  const cargo = pickFlag(carrier, "cargoInsuranceOnFile", "cargoInsuranceRequired", "cargoInsuranceFiled");
+  if (bmc84 === undefined && bmc91 === undefined && cargo === undefined) {
+    return undefined;
+  }
+  return {
+    bmc84OnFile: bmc84 ?? false,
+    bmc91OnFile: bmc91 ?? false,
+    cargoInsuranceFiled: cargo ?? false,
+  };
+}
+
+/**
+ * Read a boolean filing indicator from the first present key. Returns undefined
+ * when none of the keys are present (so callers can tell "absent" from "false").
+ * Accepts "Y"/"N" strings, true/false, and numeric filing counts (>0 = on file).
+ */
+function pickFlag(obj: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const v = obj[key];
+    if (v === undefined || v === null) continue;
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v > 0;
+    if (typeof v === "string") {
+      const s = v.trim().toUpperCase();
+      if (s === "") continue;
+      if (s === "Y" || s === "YES" || s === "T" || s === "TRUE") return true;
+      if (s === "N" || s === "NO" || s === "F" || s === "FALSE") return false;
+      const n = Number(s);
+      if (Number.isFinite(n)) return n > 0;
+      return true; // non-empty unknown free-text → treat as present/on-file
+    }
   }
   return undefined;
 }

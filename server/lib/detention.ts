@@ -137,10 +137,25 @@ function countPingsInRadius(
 /**
  * Compute the latest checkin of a given kind. Checkins are stored
  * `ORDER BY created_at ASC` by the storage layer; we walk from the
- * end to grab the freshest.
+ * end to grab the freshest. Used for COMPLETION anchors (loaded /
+ * delivered), where the most recent event is the real end of the leg.
  */
 function lastByKind(checkins: LoadCheckin[], kind: LoadCheckin["kind"]) {
   for (let i = checkins.length - 1; i >= 0; i--) {
+    if (checkins[i]!.kind === kind) return checkins[i]!;
+  }
+  return undefined;
+}
+
+/**
+ * Compute the EARLIEST checkin of a given kind. Used for ARRIVAL anchors
+ * (pickup_arrived / delivery_arrived): if a driver records arrival more
+ * than once, detention must be measured from the FIRST time the truck was
+ * on-site, not the latest — otherwise (completedAt - arrivedAt) shrinks and
+ * billable detention is understated or dropped entirely (Audit).
+ */
+function firstByKind(checkins: LoadCheckin[], kind: LoadCheckin["kind"]) {
+  for (let i = 0; i < checkins.length; i++) {
     if (checkins[i]!.kind === kind) return checkins[i]!;
   }
   return undefined;
@@ -194,7 +209,7 @@ export function computeDetentionForLoad(input: DetentionInput): DetentionEvent[]
     return "unverified";
   };
 
-  const pickupArrived = lastByKind(input.checkins, "pickup_arrived");
+  const pickupArrived = firstByKind(input.checkins, "pickup_arrived");
   const loaded = lastByKind(input.checkins, "loaded");
   if (pickupArrived) {
     const completedAt = loaded?.createdAt ?? now;
@@ -225,7 +240,7 @@ export function computeDetentionForLoad(input: DetentionInput): DetentionEvent[]
     }
   }
 
-  const deliveryArrived = lastByKind(input.checkins, "delivery_arrived");
+  const deliveryArrived = firstByKind(input.checkins, "delivery_arrived");
   const delivered = lastByKind(input.checkins, "delivered");
   if (deliveryArrived) {
     const completedAt = delivered?.createdAt ?? now;
@@ -267,7 +282,24 @@ export function billableDetentionCents(events: DetentionEvent[]): number {
     .reduce((sum, e) => sum + e.amountCents, 0);
 }
 
-/** Sum amount across multiple events. Convenience for invoice totals. */
-export function totalDetentionCents(events: DetentionEvent[]): number {
+/**
+ * GROSS sum of amountCents across ALL events — including 'estimated'
+ * (leg still in progress) and 'unverified' (GPS did not corroborate).
+ *
+ * ⚠️ NOT bill-safe. This is a PREVIEW/opportunity figure for the admin UI
+ * only (e.g. "potential detention to chase"). Do NOT use it to compute an
+ * invoice line or charge a customer — for anything that touches money use
+ * {@link billableDetentionCents}, which excludes unverified/estimated events
+ * per Audit V3-5.
+ */
+export function previewDetentionCents(events: DetentionEvent[]): number {
   return events.reduce((sum, e) => sum + e.amountCents, 0);
 }
+
+/**
+ * @deprecated Misleadingly named — sums non-bill-safe (unverified/estimated)
+ * events too. Kept as an alias for existing admin preview callers. Use
+ * {@link previewDetentionCents} for previews or {@link billableDetentionCents}
+ * for anything billing-related.
+ */
+export const totalDetentionCents = previewDetentionCents;

@@ -37,7 +37,22 @@ export function useAuth() {
   };
 }
 
-/** Force-refresh the cached /api/me (call after login/logout/profile update). */
+/** Force-refresh the cached /api/me (call after a profile update for the SAME user). */
 export async function refreshAuth() {
+  await queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+}
+
+/**
+ * Wipe the entire react-query cache, then refetch /api/me.
+ *
+ * MUST be called on logout AND after a successful login, so that no tenant-scoped
+ * data cached by a previous session (loads/clients/users/documents/billing/PII)
+ * can be served to the next user on the same SPA tab. `refreshAuth()` alone only
+ * invalidates ['auth','me'] and leaves every other cached query in memory.
+ */
+export async function clearAuthCache() {
+  // Drop all cached queries/mutations from the previous session.
+  queryClient.clear();
+  // Re-establish the current auth state for the new (or absent) session.
   await queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
 }

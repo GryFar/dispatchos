@@ -21,7 +21,7 @@ import {
   Truck,
   Users,
 } from "lucide-react";
-import { useAuth, refreshAuth } from "@/lib/use-auth";
+import { useAuth, clearAuthCache } from "@/lib/use-auth";
 import { apiJson } from "@/lib/queryClient";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
@@ -243,7 +243,7 @@ function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
     } catch {
       // ignore — мы всё равно выкидываем юзера на /login
     }
-    await refreshAuth();
+    await clearAuthCache();
     setLocation("~/login");
   }
 

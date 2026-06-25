@@ -5603,6 +5603,28 @@ export const storage = {
     return rows.map(rowToLoadSource);
   },
 
+  /**
+   * Atomically claim a single due source for polling. Bumps last_polled_at to
+   * NOW only if the row is STILL due (same window predicate as
+   * listLoadSourcesDueForPoll), in one UPDATE. Returns true iff this caller won
+   * the claim (changes === 1). If two overlapping cron runs both list the same
+   * row, exactly one lease succeeds; the loser skips it, so the source is not
+   * double-polled / double-alerted. The result is recorded later via
+   * recordLoadSourcePoll (which re-stamps last_polled_at), so the early bump is
+   * purely a lease, not the final timestamp.
+   */
+  leaseLoadSourceForPoll(id: string): boolean {
+    const info = sqlite.prepare(`
+      UPDATE load_sources
+      SET last_polled_at = ?, updated_at = ?
+      WHERE id = ?
+        AND status = 'active'
+        AND (last_polled_at IS NULL
+             OR julianday('now') - julianday(last_polled_at) > poll_interval_min / 1440.0)
+    `).run(now(), now(), id);
+    return info.changes === 1;
+  },
+
   updateLoadSource(id: string, patch: Record<string, unknown>) {
     const map: Record<string, string> = {
       label: "label",

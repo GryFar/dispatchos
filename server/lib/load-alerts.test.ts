@@ -190,6 +190,46 @@ const p2 = await notifyMatchedLoad(realClient, permLoad, {
 });
 assert("permanent failure kept claim → retry deduped (no spam)", p2.sent === 0 && p2.skipped === 2, `sent=${p2.sent} skipped=${p2.skipped}`);
 
+// --- (e3) in-process retry: a transient failure that recovers on a later
+// attempt within the SAME call must deliver (the caller never re-presents a
+// re-polled load, so same-invocation retry is the real recovery path).
+const flakyLoad = makeScored({ id: `load-${rnd()}` });
+const attemptsByChat: Record<string, number> = {};
+const rRetry = await notifyMatchedLoad(realClient, flakyLoad, {
+  ...deps,
+  // Fail the first attempt per chat (transient), succeed on the second.
+  send: async (chatId: string) => {
+    attemptsByChat[chatId] = (attemptsByChat[chatId] ?? 0) + 1;
+    return attemptsByChat[chatId] >= 2 ? { ok: true } : { ok: false, error: "tg 429" };
+  },
+});
+assert(
+  "transient blip recovers via in-process retry (no claim released)",
+  rRetry.sent === 2 && rRetry.errors.length === 0,
+  `sent=${rRetry.sent} errors=${rRetry.errors.join(";")}`,
+);
+assert(
+  "in-process retry actually retried each chat",
+  Object.values(attemptsByChat).every((n) => n === 2),
+  JSON.stringify(attemptsByChat),
+);
+
+// A PERMANENT failure must NOT be retried (no point hammering a dead chat).
+const deadLoad = makeScored({ id: `load-${rnd()}` });
+let permAttempts = 0;
+const rPerm = await notifyMatchedLoad(realClient, deadLoad, {
+  ...deps,
+  send: async () => {
+    permAttempts += 1;
+    return { ok: false, error: "tg 403", permanent: true };
+  },
+});
+assert(
+  "permanent failure is not retried",
+  rPerm.sent === 0 && permAttempts === 2,
+  `permAttempts=${permAttempts} (2 recipients × 1 attempt each)`,
+);
+
 // --- (f) batch digest -------------------------------------------------------
 // 3 fresh loads → ONE digest message per recipient (not 3 each).
 const batchMsg = formatMatchedLoadsBatchMessage(realClient, [

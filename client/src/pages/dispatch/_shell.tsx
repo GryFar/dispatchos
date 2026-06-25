@@ -11,7 +11,7 @@ import {
   Menu,
   Truck,
 } from "lucide-react";
-import { useAuth, refreshAuth } from "@/lib/use-auth";
+import { useAuth, clearAuthCache } from "@/lib/use-auth";
 import { apiJson } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import {
@@ -190,7 +190,7 @@ function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
     try {
       await apiJson("POST", "/api/auth/logout", {});
     } finally {
-      await refreshAuth();
+      await clearAuthCache();
       window.location.hash = "#/login";
     }
   };

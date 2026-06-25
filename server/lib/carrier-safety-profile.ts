@@ -30,6 +30,7 @@
 // or convert to PDF themselves.
 // ---------------------------------------------------------------------------
 
+import { createHash } from "node:crypto";
 import type { Client, Load } from "@shared/schema";
 import { storage } from "../storage";
 import { getIntegrationValue } from "./integration-config";
@@ -106,9 +107,37 @@ export interface CarrierSafetyProfile {
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 // Audit V2-16 — module-level cache for FMCSA SAFER responses.
-// Keyed by normalized MC number; TTL 24h.
+// Keyed by normalized MC number AND a hash of the web key, so a key rotation
+// (or a different tenant's key) never serves a result fetched under another
+// credential, and the entry is naturally invalidated when the key changes.
 const FMCSA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+// Negative ("no record found") results expire much sooner: a carrier that
+// just registered with FMCSA shouldn't be pinned as "not found" for a full
+// day, and a transient empty response shouldn't stick.
+const FMCSA_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000;
+// Bound the Map so a flood of distinct MC lookups can't grow it without limit.
+const FMCSA_CACHE_MAX_ENTRIES = 5000;
 const fmcsaCache: Map<string, { value: FmcsaCarrier | null; expiresAt: number }> = new Map();
+
+// Exported for tests (cache-isolation/TTL/bound invariants). Not part of the
+// module's intended public API — prefer buildCarrierSafetyProfile.
+export function fmcsaCacheKey(normalizedMc: string, webKey: string): string {
+  const webKeyHash = createHash("sha256").update(webKey).digest("hex").slice(0, 16);
+  return `${normalizedMc}|${webKeyHash}`;
+}
+
+function setFmcsaCache(key: string, value: FmcsaCarrier | null): void {
+  // Evict the oldest entry (insertion order) when at capacity. Deleting an
+  // existing key first keeps re-inserts from counting twice and refreshes
+  // recency ordering.
+  fmcsaCache.delete(key);
+  if (fmcsaCache.size >= FMCSA_CACHE_MAX_ENTRIES) {
+    const oldest = fmcsaCache.keys().next().value;
+    if (oldest !== undefined) fmcsaCache.delete(oldest);
+  }
+  const ttl = value === null ? FMCSA_NEGATIVE_CACHE_TTL_MS : FMCSA_CACHE_TTL_MS;
+  fmcsaCache.set(key, { value, expiresAt: Date.now() + ttl });
+}
 
 function classifyExpiry(iso: string | null | undefined): InsuranceLine {
   if (!iso) {
@@ -308,10 +337,13 @@ export async function buildCarrierSafetyProfile(
   } else if (!webKey) {
     fmcsaError = "FMCSA_WEB_KEY not configured — set it in Integrations.";
   } else {
-    // Audit V2-16 — 24h cache per MC. SAFER snapshot doesn't change daily,
-    // and FMCSA's mobile API has a shared 10K/day quota. Without cache, a
-    // dispatcher refreshing a profile page 10x burns 10 quota units.
-    const cached = fmcsaCache.get(normalizedMc);
+    // Audit V2-16 — cache per (MC, webKey). SAFER snapshot doesn't change
+    // daily, and FMCSA's mobile API has a shared 10K/day quota. Without cache,
+    // a dispatcher refreshing a profile page 10x burns 10 quota units. The key
+    // includes a hash of the web key so a rotated/different credential can't be
+    // served a stale result; negative results get a short TTL (see setter).
+    const cacheKey = fmcsaCacheKey(normalizedMc, webKey);
+    const cached = fmcsaCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       fmcsa = cached.value;
       fmcsaFetched = true;
@@ -319,10 +351,7 @@ export async function buildCarrierSafetyProfile(
       try {
         fmcsa = await fetchByMc(normalizedMc, { webKey });
         fmcsaFetched = true;
-        fmcsaCache.set(normalizedMc, {
-          value: fmcsa,
-          expiresAt: Date.now() + FMCSA_CACHE_TTL_MS,
-        });
+        setFmcsaCache(cacheKey, fmcsa);
       } catch (err) {
         fmcsaError = err instanceof Error ? err.message : String(err);
       }
