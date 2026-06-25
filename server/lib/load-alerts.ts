@@ -163,7 +163,17 @@ const realFetchSend =
       if (!res.ok) return { ok: false, error: `tg ${res.status}`, permanent: res.status === 400 || res.status === 403 };
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      // An AbortError means our timeout fired AFTER the request left — Telegram
+      // may have already received and delivered the message. Treat that as an
+      // AMBIGUOUS (unknown) outcome, NOT a clean transient failure: mark it
+      // `permanent` so the caller KEEPS the de-dup claim instead of releasing
+      // it. Releasing would let a later re-presentation of the same load re-ping
+      // a recipient who already got the message. A genuine pre-send network
+      // error (ECONNREFUSED/DNS/"fetch failed") delivered nothing, so it stays
+      // transient (permanent falsy → retry / release as before).
+      const e = err as Error;
+      const ambiguous = e?.name === "AbortError";
+      return { ok: false, error: e?.message ?? "network error", permanent: ambiguous };
     }
   };
 

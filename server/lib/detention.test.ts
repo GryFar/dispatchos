@@ -142,6 +142,53 @@ test("custom freeHours and rate per client", () => {
   assert.equal(events[0]!.amountCents, 10_000);
 });
 
+test("malformed config clamps — negative freeHours floored to 0, negative rate floored to 0", () => {
+  // Per-client config can arrive malformed. A negative free window must NOT
+  // bill the whole on-site time, and a negative rate must NOT produce a
+  // negative charge. Both are clamped to 0 (Audit medium).
+  const negFree = computeDetentionForLoad({
+    load: { id: "L1" },
+    checkins: [
+      ck("pickup_arrived", "2026-05-26T08:00:00Z"),
+      ck("loaded", "2026-05-26T09:00:00Z"), // 1h on-site
+    ],
+    freeHours: -5,
+  });
+  // freeHours clamped to 0 → all 1h is billable, but the rate is the default.
+  assert.equal(negFree.length, 1);
+  assert.equal(negFree[0]!.freeHours, 0);
+  assert.equal(negFree[0]!.billableHours, 1);
+
+  const negRate = computeDetentionForLoad({
+    load: { id: "L1" },
+    checkins: [
+      ck("pickup_arrived", "2026-05-26T08:00:00Z"),
+      ck("loaded", "2026-05-26T11:00:00Z"),
+    ],
+    ratePerHourCents: -7_500,
+  });
+  // rate clamped to 0 → no negative charge.
+  assert.equal(negRate[0]!.ratePerHourCents, 0);
+  assert.equal(negRate[0]!.amountCents, 0);
+});
+
+test("non-finite config falls back to defaults", () => {
+  const events = computeDetentionForLoad({
+    load: { id: "L1" },
+    checkins: [
+      ck("pickup_arrived", "2026-05-26T08:00:00Z"),
+      ck("loaded", "2026-05-26T11:00:00Z"), // 3h on-site
+    ],
+    freeHours: Number.NaN,
+    ratePerHourCents: Number.NaN,
+  });
+  // NaN config → defaults: 2h free, $75/h, so 1h billable @ $75.
+  assert.equal(events[0]!.freeHours, 2);
+  assert.equal(events[0]!.ratePerHourCents, 7_500);
+  assert.equal(events[0]!.billableHours, 1);
+  assert.equal(events[0]!.amountCents, 7_500);
+});
+
 test("multiple pickup_arrived checkins — EARLIEST arrival wins (no understatement)", () => {
   const events = computeDetentionForLoad({
     load: { id: "L1" },

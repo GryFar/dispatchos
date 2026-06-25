@@ -178,12 +178,29 @@ function hoursBetween(startIso: string, endIso: string): number {
 }
 
 /**
+ * Sanitize a caller-supplied config number (freeHours / ratePerHourCents)
+ * before it feeds billing math. Null/undefined and non-finite values fall
+ * back to the default; negative values are clamped to 0. This guards against
+ * malformed per-client config over-billing (negative freeHours) or producing
+ * a negative charge (negative rate).
+ */
+function clampConfig(value: number | null | undefined, fallback: number): number {
+  if (value == null || !Number.isFinite(value)) return fallback;
+  return Math.max(0, value);
+}
+
+/**
  * Inspect a load's check-ins and emit one DetentionEvent per leg that
  * exceeded the free window. Returns empty array if no detention.
  */
 export function computeDetentionForLoad(input: DetentionInput): DetentionEvent[] {
-  const freeHours = input.freeHours ?? DEFAULT_FREE_HOURS;
-  const rate = input.ratePerHourCents ?? DEFAULT_DETENTION_RATE_PER_HOUR_CENTS;
+  // Clamp caller-supplied config before it reaches money math. A non-finite
+  // value (NaN/Infinity from malformed per-client config) falls back to the
+  // default; a negative value is floored to 0. Without this, a negative
+  // freeHours over-bills nearly every leg and a negative rate yields a
+  // negative amountCents (Audit medium).
+  const freeHours = clampConfig(input.freeHours, DEFAULT_FREE_HOURS);
+  const rate = clampConfig(input.ratePerHourCents, DEFAULT_DETENTION_RATE_PER_HOUR_CENTS);
   const now = input.nowIso ?? new Date().toISOString();
   const events: DetentionEvent[] = [];
 

@@ -62,6 +62,8 @@ const cExpired = mkClient(`ins-expired-${suffix}`, { cargoInsuranceExpiresAt: "2
 const cFuture = mkClient(`ins-future-${suffix}`, { cargoInsuranceExpiresAt: "2026-06-30" });
 // No insurance dates -> never alerts.
 const cNone = mkClient(`ins-none-${suffix}`, {});
+// Garbage / unparseable expiry -> must NOT be treated as "expires today".
+const cGarbage = mkClient(`ins-garbage-${suffix}`, { cargoInsuranceExpiresAt: "TBD" });
 
 const res = await runInsuranceCheck(TODAY, null);
 const mine = res.alertsSent.filter((a) => a.clientId.endsWith(suffix));
@@ -72,6 +74,7 @@ assert("due-today alerts at threshold 0", byClient(cToday)?.daysBefore === 0, JS
 assert("expired-5d alerts at threshold -1", byClient(cExpired)?.daysBefore === -1, JSON.stringify(byClient(cExpired)));
 assert("15-days-out does NOT alert (past window)", !byClient(cFuture));
 assert("no-insurance client does NOT alert", !byClient(cNone));
+assert("unparseable expiry does NOT fire a false 'today' alert", !byClient(cGarbage), JSON.stringify(byClient(cGarbage)));
 assert("exactly 3 of my clients alerted", mine.length === 3, `got ${mine.length}`);
 assert("cargo type + label resolved", byClient(cToday)?.insuranceType === "cargo");
 assert("no channels sent (no config -> no network)", mine.every((a) => a.channels.length === 0));

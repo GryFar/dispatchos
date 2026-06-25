@@ -539,6 +539,18 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
 
       const subId = extractSubscriptionId(invoice);
       if (!stripe || !subId) {
+        // Never drop a payment_failed silently: if the subscription id can't be
+        // extracted (neither legacy invoice.subscription nor parent.subscription_details),
+        // we can't stamp past_due/pastDueSince — leave a loud trace so the missed
+        // dunning event is visible/alertable instead of vanishing behind a 200 ack.
+        console.error(
+          `[stripe] invoice.payment_failed dropped: no subscription id ` +
+            `(invoice=${invoice.id ?? "?"}, customer=${
+              typeof invoice.customer === "string"
+                ? invoice.customer
+                : invoice.customer?.id ?? "?"
+            }, stripeConfigured=${Boolean(stripe)}) — past_due NOT stamped`,
+        );
         return { handled: false, clientId: null };
       }
       const sub = await stripe.subscriptions.retrieve(subId);

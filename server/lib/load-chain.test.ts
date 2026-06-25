@@ -63,6 +63,18 @@ const chain2 = planLoadChain(start, [A, tooEarly], { costPerMile: 0.55 });
 const ids = chain2.legs.map((l) => l.loadId);
 assert("a load that picks up before the predecessor delivers is not chained after it", !(ids[0] === "A" && ids[1] === "EARLY"), ids.join(","));
 
+// --- money-losing chain -> recommend no load --------------------------------
+// A load whose rate cannot cover its operating + deadhead cost must not be
+// surfaced as the optimal plan; the empty chain (netValue 0) is preferable.
+const LOSS: ChainCandidate = {
+  id: "LOSS", originCity: "Miami", originState: "FL", destinationCity: "Newark", destinationState: "NJ",
+  originLat: MIAMI.lat, originLng: MIAMI.lng, destinationLat: NEWARK.lat, destinationLng: NEWARK.lng,
+  pickupAt: iso(6), deliveryAt: iso(40), rate: 200, loadedMiles: 1200, // rate far below cost + huge deadhead from Dallas
+};
+const loss = planLoadChain(start, [LOSS], { costPerMile: 0.55 });
+assert("a net-negative chain is not recommended (empty chain instead)", loss.legs.length === 0, loss.legs.map((l) => l.loadId).join(","));
+assert("net-negative input yields netValue 0", loss.netValue === 0, `${loss.netValue}`);
+
 // --- deterministic ----------------------------------------------------------
 const d1 = planLoadChain(start, [A, B, C], { costPerMile: 0.55 });
 const d2 = planLoadChain(start, [C, B, A], { costPerMile: 0.55 }); // different input order

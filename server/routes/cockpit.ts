@@ -231,16 +231,6 @@ export function registerCockpitRoutes(app: Express): void {
       const me = getCurrentUser(req);
       if (!me) return res.status(401).json({ message: "Authentication required" });
 
-      // V5-001 / PERF-034: cap expensive AI calls per dispatcher.
-      const budget = aiRateCheck(me.id);
-      if (!budget.allowed) {
-        return res.status(429).json({
-          message: "AI-анализ временно ограничен (слишком много запросов). Попробуйте позже.",
-          code: "ai_rate_limit",
-          retryAfterSec: budget.retryAfterSec,
-        });
-      }
-
       const clientId = String((req.body as { clientId?: unknown })?.clientId ?? "").trim();
       if (!clientId) return res.status(400).json({ message: "clientId is required" });
 
@@ -265,6 +255,18 @@ export function registerCockpitRoutes(app: Express): void {
 
       if (!top.length) {
         return res.status(404).json({ message: "No scored loads available for this carrier" });
+      }
+
+      // V5-001 / PERF-034: cap expensive AI calls per dispatcher. Checked only
+      // after the cheap validation gates above, so invalid/cross-tenant/no-load
+      // requests (which never reach Claude) don't consume the hourly budget.
+      const budget = aiRateCheck(me.id);
+      if (!budget.allowed) {
+        return res.status(429).json({
+          message: "AI-анализ временно ограничен (слишком много запросов). Попробуйте позже.",
+          code: "ai_rate_limit",
+          retryAfterSec: budget.retryAfterSec,
+        });
       }
 
       const rec = await getAiRecommendation(client, top);
