@@ -47,6 +47,7 @@ import {
   type Client,
 } from "@shared/schema";
 import {
+  billingBlockReason,
   buildOtpAuthUrl,
   generateBase32Secret,
   getCurrentUser,
@@ -57,7 +58,7 @@ import { storage, uploadsRoot } from "../storage";
 import { canAddDriver } from "../lib/plans";
 import { upload } from "../upload";
 import { uploadDriverDocumentSchema } from "@shared/schema";
-import { computeInvoiceForWeek } from "../lib/billing";
+import { computeInvoiceForWeek, FLAT_FEE_CENTS } from "../lib/billing";
 import { chargeInvoiceViaStripe } from "../lib/stripe";
 import {
   computeDetentionForLoad,
@@ -1518,7 +1519,9 @@ export function registerAdminRoutes(app: Express): void {
 
       // -- MRR ---------------------------------------------------------------
       const activeClients = storage.countActiveClientsForMrr();
-      const FLAT_FEE = 150;
+      // Canonical flat fee lives in billing.ts (FLAT_FEE_CENTS); derive the
+      // dollar figure here so the MRR tile never drifts from real invoices.
+      const FLAT_FEE = FLAT_FEE_CENTS / 100;
       const monthPercent = storage.monthToDatePercentFee();
       const currentUsd = Math.round((activeClients * FLAT_FEE + monthPercent) * 100) / 100;
 
@@ -1996,6 +1999,29 @@ export function registerAdminRoutes(app: Express): void {
         return res
           .status(400)
           .json({ message: "Driver is not linked to this load's client" });
+      }
+
+      // Billing gate (assign path only — unassign stays open so an expired
+      // carrier can still clear a truck). requireActiveBilling is keyed on
+      // body/query clientId, which this path-param route never supplies, so we
+      // resolve the carrier from the load and apply the same terminal/grace
+      // logic via the shared billingBlockReason helper (one source of truth
+      // with the dispatcher reassign handler).
+      const loadClient = storage.getClient(load.clientId) as
+        | (Record<string, unknown> & {
+            billingStatus?: string;
+            trialEndsAt?: string;
+            pastDueSince?: string;
+          })
+        | undefined;
+      const blockReason = billingBlockReason(loadClient);
+      if (blockReason) {
+        return res.status(402).json({
+          message:
+            "Аккаунт перевозчика в режиме только для чтения (подписка истекла, отменена или просрочена). Продлите на /admin/billing, чтобы назначать водителей.",
+          code: "billing_inactive",
+          billingStatus: blockReason,
+        });
       }
     }
 

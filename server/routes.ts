@@ -39,6 +39,7 @@ import {
 } from "./auth";
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
 import { assertSafeOutboundUrl } from "./lib/url-guard";
+import { fetchWithTimeout } from "./lib/fetch-timeout";
 import { sanitizePathSegment, isWithinDir } from "./lib/safe-path";
 import { upload } from "./upload";
 import { registerAdminRoutes } from "./routes/admin";
@@ -725,7 +726,17 @@ async function checkBrokerRisk(brokerMc: string, brokerName = "Unknown Broker"):
     try {
       const url = `${process.env.FMCSA_API_URL.replace(/\/$/, "")}?webKey=${encodeURIComponent(fmcsaWebKey)}&mc=${encodeURIComponent(normalized.replace(/\D/g, ""))}`;
       assertSafeOutboundUrl(url);
-      const response = await fetch(url);
+      // Bound the outbound call: a slow/hung FMCSA endpoint must not stall the
+      // awaited POST /api/broker/check indefinitely (no server-level request
+      // timeout). On timeout fetchWithTimeout throws AbortError → caught below.
+      const response = await fetchWithTimeout(url, {}, 5_000);
+      // Only trust the body on a 2xx. Previously response.json() was parsed and
+      // string-searched for 'authorized'/'active' regardless of status, so a 4xx/5xx
+      // error body containing those words misclassified a failed lookup as a clean,
+      // authorized broker. On a non-OK status fall through to the deterministic path.
+      if (!response.ok) {
+        throw new Error(`FMCSA lookup returned HTTP ${response.status}`);
+      }
       const payload: any = await response.json().catch(() => ({}));
       const statusText = JSON.stringify(payload).toLowerCase();
       const authorized = statusText.includes("authorized") || statusText.includes("active");
@@ -742,7 +753,12 @@ async function checkBrokerRisk(brokerMc: string, brokerName = "Unknown Broker"):
         checkedAt: new Date().toISOString(),
       };
     } catch (error: any) {
-      // fall through to deterministic fallback, but make the operator aware
+      // Fall through to the deterministic fallback, but surface the failure so a
+      // hung/erroring FMCSA endpoint is visible in logs instead of silently swallowed.
+      console.warn(
+        `[fmcsa] broker-check lookup failed for ${normalized}; using deterministic fallback:`,
+        error?.message ?? error,
+      );
     }
   }
 
@@ -868,8 +884,17 @@ async function importLoadsFromCsv(csv: string) {
   return { created, errors };
 }
 
-function buildDrivePlan(clientId?: string) {
-  const clients = clientId ? storage.listClients().filter((client) => client.id === clientId) : storage.listClients();
+// allowedClientIds: when provided (dispatcher caller), restrict the plan to the
+// caller's assigned carriers so a dispatcher can't enumerate the whole platform
+// roster (name + MC) by omitting clientId. Admins pass undefined (full reach).
+function buildDrivePlan(clientId?: string, allowedClientIds?: string[]) {
+  let clients = clientId
+    ? storage.listClients().filter((client) => client.id === clientId)
+    : storage.listClients();
+  if (allowedClientIds) {
+    const allowed = new Set(allowedClientIds);
+    clients = clients.filter((client) => allowed.has(client.id));
+  }
   return {
     root: "DispatchOS/Clients",
     generatedAt: new Date().toISOString(),
@@ -883,8 +908,8 @@ function buildDrivePlan(clientId?: string) {
   };
 }
 
-function createLocalDriveFolders(clientId?: string) {
-  const plan = buildDrivePlan(clientId);
+function createLocalDriveFolders(clientId?: string, allowedClientIds?: string[]) {
+  const plan = buildDrivePlan(clientId, allowedClientIds);
   const created: string[] = [];
   for (const folder of plan.folders) {
     // Anti-traversal: client.name / client.mc are operator-controlled; a name
@@ -2222,13 +2247,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.get("/api/drive/folder-plan", requireRole("admin", "dispatcher"), (req, res) => {
-    res.json(buildDrivePlan(String(req.query.clientId || "")));
+    const me = getCurrentUser(req);
+    // Dispatchers see ONLY their assigned carriers; admins see all. Without this
+    // scoping a dispatcher could omit clientId and enumerate every carrier's
+    // name + MC across all tenants (full roster leak).
+    const allowed =
+      me && me.role === "dispatcher"
+        ? storage.listAssignmentsForDispatcher(me.id).map((a) => a.clientId)
+        : undefined;
+    res.json(buildDrivePlan(String(req.query.clientId || ""), allowed));
   });
 
   app.post("/api/drive/create-local-folders", requireRole("admin", "dispatcher"), requireActiveBilling, (req, res) => {
     try {
+      const me = getCurrentUser(req);
       const input = driveCreateSchema.parse(req.body);
-      res.status(201).json(createLocalDriveFolders(input.clientId));
+      // Same assignment scoping as the folder-plan read: a dispatcher must not be
+      // able to materialize a folder tree for carriers they aren't assigned to.
+      const allowed =
+        me && me.role === "dispatcher"
+          ? storage.listAssignmentsForDispatcher(me.id).map((a) => a.clientId)
+          : undefined;
+      res.status(201).json(createLocalDriveFolders(input.clientId, allowed));
     } catch (error) {
       handleZodError(error, res);
     }

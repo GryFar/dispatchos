@@ -25,14 +25,17 @@ import {
 } from "../lib/load-alerts";
 import type { ScoredLoad } from "@shared/schema";
 
-function timingSafeEqual(a: string, b: string): boolean {
+// Exported for unit tests (cron.test.ts) — the auth gate guards ~9
+// unauthenticated cron endpoints, so its 503/401/length-mismatch behavior is
+// covered directly rather than only through the lib jobs it fronts.
+export function timingSafeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) return false;
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function requireCronSecret(req: Request, res: Response): boolean {
+export function requireCronSecret(req: Request, res: Response): boolean {
   const expected = process.env.DISPATCHOS_CRON_SECRET;
   if (!expected) {
     res.status(503).json({ message: "Cron disabled: DISPATCHOS_CRON_SECRET not set" });

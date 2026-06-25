@@ -98,6 +98,20 @@ const r4c = run(canceled.id);
 assert("canceled carrier -> 402", r4c.status === 402, `got status=${r4c.status}`);
 assert("402 reports canceled", r4c.body?.billingStatus === "canceled");
 
+// 4d. past_due with NO failure date at all -> fail closed (grace exhausted) -> 402.
+// Previously ref fell back to Date.now() so past≈0 and the carrier kept writing
+// indefinitely; now an unknown failure date is treated as grace-exhausted.
+const noDate = mkClient({ billingStatus: "past_due" });
+const r4d = run(noDate.id);
+assert("past_due with no date -> fail closed 402", r4d.status === 402, `got status=${r4d.status}`);
+assert("402 reports past_due (no date)", r4d.body?.billingStatus === "past_due");
+
+// 4e. past_due with an UNPARSEABLE pastDueSince -> NaN ref -> fail closed -> 402.
+// Previously NaN > 7 was false, so the block never fired.
+const badDate = mkClient({ billingStatus: "past_due", pastDueSince: "not-a-date" });
+const r4e = run(badDate.id);
+assert("past_due with garbage date -> fail closed 402", r4e.status === 402, `got status=${r4e.status}`);
+
 // 5. pastDueSince survives the payload round-trip.
 const stored = storage.getClient(recent.id) as any;
 assert("pastDueSince persisted in payload", typeof stored.pastDueSince === "string");

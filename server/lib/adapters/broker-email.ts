@@ -31,10 +31,33 @@ interface BrokerEmailConfig {
   lookbackMinutes?: number; // default 1440 (24h)
 }
 
+// Pull the domain out of a From header. Handles a bare address
+// ("loadoffers@rxo.com") and the display-name form ('"RXO" <loadoffers@rxo.com>'):
+// prefer the address inside the LAST angle-bracket pair, else the whole string,
+// then take the part after the final '@'. Returns "" when no '@' is present.
+function fromDomain(from: string): string {
+  let addr = from.trim();
+  const lt = addr.lastIndexOf("<");
+  const gt = addr.lastIndexOf(">");
+  if (lt !== -1 && gt > lt) addr = addr.slice(lt + 1, gt).trim();
+  const at = addr.lastIndexOf("@");
+  if (at === -1) return "";
+  return addr.slice(at + 1).trim().toLowerCase();
+}
+
 function senderMatches(from: string, domains: string[]): boolean {
   if (domains.length === 0) return true;
-  const low = from.toLowerCase();
-  return domains.some((d) => low.includes(d.toLowerCase()));
+  // Compare against the address domain with exact-or-subdomain matching, not a
+  // raw substring of the whole header. An unanchored includes() would treat
+  // "dispatch@rxo.com.attacker.example", a display name '"RXO rxo.com" <x@evil.com>',
+  // or any address merely CONTAINING the domain (e.g. notecho.com vs echo.com)
+  // as a legitimate broker, letting a spoofed sender inject trusted-looking loads.
+  const addrDomain = fromDomain(from);
+  if (!addrDomain) return false;
+  return domains.some((d) => {
+    const dom = d.toLowerCase().trim();
+    return addrDomain === dom || addrDomain.endsWith("." + dom);
+  });
 }
 
 export function makeBrokerEmailAdapter(opts: {
@@ -62,8 +85,15 @@ export function makeBrokerEmailAdapter(opts: {
 
     async fetchLoads(row: LoadSourceRow, limit?: number): Promise<RawLoad[]> {
       const cfg = row.configJson as BrokerEmailConfig;
-      const lookback = (cfg.lookbackMinutes ?? 1440) * 60_000;
-      const cutoff = Date.now() - lookback;
+      // Operator JSON config is unvalidated: a string ('1440') or any
+      // non-number makes the multiplication NaN, so `cutoff` is NaN and the
+      // `< cutoff` per-row guard (x < NaN === false) never skips anything —
+      // every email in the scan passes regardless of age. A negative value
+      // would push the cutoff into the future and skip everything. Coerce and
+      // fall back to the 24h default unless we have a finite, positive number.
+      const lm = Number(cfg.lookbackMinutes);
+      const lookbackMin = Number.isFinite(lm) && lm > 0 ? lm : 1440;
+      const cutoff = Date.now() - lookbackMin * 60_000;
       const inbox = cfg.inboundAddress?.toLowerCase();
       const domains = [...opts.senderDomains, ...(cfg.senderDomains ?? [])];
       const cap = Math.min(limit ?? 200, 500);
@@ -71,7 +101,11 @@ export function makeBrokerEmailAdapter(opts: {
       const rows = storage.listEmailIngest(cap);
       const out: RawLoad[] = [];
       for (const r of rows) {
-        if (new Date(r.createdAt).getTime() < cutoff) continue;
+        // Skip rows whose timestamp can't be parsed: an unparseable createdAt
+        // yields NaN, and `NaN < cutoff` is false, which would otherwise let a
+        // bad-timestamp row slip past the age window.
+        const createdMs = new Date(r.createdAt).getTime();
+        if (!Number.isFinite(createdMs) || createdMs < cutoff) continue;
         // storage.listEmailIngest already JSON-parses the stored payload and
         // SPREADS its fields (from/to/subject/body) onto the row alongside
         // id/createdAt — so the row itself IS the email payload. The previous

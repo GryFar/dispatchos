@@ -106,6 +106,11 @@ function rowToBrokerEvent(row: Record<string, unknown>): BrokerEvent {
 
 const sqlite = new Database(process.env.DISPATCHOS_DB_PATH || "dispatchos-unified.db");
 sqlite.pragma("journal_mode = WAL");
+// better-sqlite3 defaults to a 0ms busy timeout, so a writer hitting a
+// momentarily-locked DB (e.g. the 5-min load-sources poll upserting while a user
+// request also writes) throws SQLITE_BUSY immediately instead of waiting. Give
+// writers a 5s window to retry-wait before failing.
+sqlite.pragma("busy_timeout = 5000");
 
 /**
  * Checkpoint the WAL and close the DB cleanly on shutdown. Without this, every
@@ -1237,7 +1242,9 @@ function now() {
 }
 
 function makeId(prefix: string) {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  // Crypto-grade random suffix (~48 bits) instead of Math.random(), so
+  // concurrent inserts within the same millisecond don't hit the birthday bound.
+  return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(6).toString("hex")}`;
 }
 
 // Fill the scorer inputs a source adapter may not provide, so every persisted
@@ -1592,11 +1599,19 @@ export const storage = {
   },
 
   getAuthState() {
-    const userCount = (sqlite.prepare("SELECT COUNT(*) as c FROM users").get() as { c: number }).c;
+    // Scope to non-deleted rows: auth lookups (getUserById/getUserByEmail) all
+    // filter `deleted_at IS NULL`, so a soft-deleted admin cannot log in. If we
+    // counted them here, isConfigured could report "configured" while no admin
+    // can actually authenticate — a permanent bootstrap lockout.
+    const userCount = (
+      sqlite.prepare("SELECT COUNT(*) as c FROM users WHERE deleted_at IS NULL").get() as { c: number }
+    ).c;
     if (userCount > 0) {
       // New-style: users table is the source of truth.
       const adminCount = (
-        sqlite.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin' AND blocked = 0").get() as { c: number }
+        sqlite
+          .prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin' AND blocked = 0 AND deleted_at IS NULL")
+          .get() as { c: number }
       ).c;
       return {
         isConfigured: adminCount > 0,
@@ -2254,7 +2269,14 @@ export const storage = {
   }): { id: string } {
     const id = makeId("chq");
     // pre_employment действует бессрочно (только при найме); annual = 12 месяцев.
+    // Defense-in-depth: reject an unparseable queriedAt at the storage layer so a
+    // garbage value can't (a) persist as the stored queried_at, or (b) make the
+    // annual branch's v.toISOString() throw RangeError mid-insert. The route
+    // layer already validates this, but the storage contract must be self-safe.
     const queriedAt = new Date(input.queriedAt);
+    if (Number.isNaN(queriedAt.getTime())) {
+      throw new Error(`recordClearinghouseQuery: invalid queriedAt "${input.queriedAt}"`);
+    }
     let validUntil: string;
     if (input.queryType === "pre_employment") {
       validUntil = "9999-12-31T00:00:00.000Z";
@@ -2527,24 +2549,31 @@ export const storage = {
     userId: string,
     patch: { step?: number; data?: Record<string, unknown>; completed?: boolean },
   ): void {
-    const existing = this.getOnboardingProgress(userId);
-    const ts = now();
-    const mergedData = { ...(existing?.data ?? {}), ...(patch.data ?? {}) };
-    const step = patch.step ?? existing?.step ?? 0;
-    const completedAt = patch.completed ? ts : existing?.completedAt ?? null;
-    if (existing) {
-      sqlite
-        .prepare(
-          "UPDATE onboarding_progress SET step = ?, data = ?, updated_at = ?, completed_at = ? WHERE user_id = ?",
-        )
-        .run(step, JSON.stringify(mergedData), ts, completedAt, userId);
-    } else {
-      sqlite
-        .prepare(
-          "INSERT INTO onboarding_progress (user_id, step, data, started_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .run(userId, step, JSON.stringify(mergedData), ts, ts, completedAt);
-    }
+    // Wrap read-modify-write in a transaction so two concurrent saves can't both
+    // read the same `existing`, each merge against a stale base, and clobber the
+    // other's keys. better-sqlite3 takes a write lock for the duration, so the
+    // second caller sees the first's committed merge.
+    const txn = sqlite.transaction(() => {
+      const existing = this.getOnboardingProgress(userId);
+      const ts = now();
+      const mergedData = { ...(existing?.data ?? {}), ...(patch.data ?? {}) };
+      const step = patch.step ?? existing?.step ?? 0;
+      const completedAt = patch.completed ? ts : existing?.completedAt ?? null;
+      if (existing) {
+        sqlite
+          .prepare(
+            "UPDATE onboarding_progress SET step = ?, data = ?, updated_at = ?, completed_at = ? WHERE user_id = ?",
+          )
+          .run(step, JSON.stringify(mergedData), ts, completedAt, userId);
+      } else {
+        sqlite
+          .prepare(
+            "INSERT INTO onboarding_progress (user_id, step, data, started_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)",
+          )
+          .run(userId, step, JSON.stringify(mergedData), ts, ts, completedAt);
+      }
+    });
+    txn();
   },
 
   // -------------------------------------------------------------------------
@@ -2768,13 +2797,19 @@ export const storage = {
    * that wins the `consumed_at IS NULL` race; a concurrent second redemption
    * gets false (and must be rejected). Without the conditional WHERE, an
    * unlocked invite could mint two accounts from one code.
+   *
+   * The WHERE clause also enforces `expires_at > now()` so expiry and
+   * revocation (revokeInvite stamps expires_at = now()) are checked in the SAME
+   * atomic statement — not left to a TOCTOU-racy route-level read. An expired
+   * or revoked invite returns false, exactly like a double-redemption.
    */
   consumeInvite(code: string, userId: string): boolean {
+    const ts = now();
     const res = sqlite
       .prepare(
-        "UPDATE invites SET consumed_at = ?, consumed_by_user_id = ? WHERE code = ? AND consumed_at IS NULL",
+        "UPDATE invites SET consumed_at = ?, consumed_by_user_id = ? WHERE code = ? AND consumed_at IS NULL AND expires_at > ?",
       )
-      .run(now(), userId, code);
+      .run(ts, userId, code, ts);
     if (res.changes === 0) return false;
     this.audit("invite.consumed", "invite", code, { userId });
     return true;
@@ -3818,12 +3853,36 @@ export const storage = {
     const existing = this.getClient(id);
     if (!existing) return undefined;
     if (existing.deletedAt) return existing; // already archived, idempotent
-    const updated = this.upsertClient({
-      ...(existing as unknown as InsertClient),
-      deletedAt: now(),
+    // Cascade: archiving a carrier must also sever its live dispatcher
+    // assignments. Dispatcher tenancy + the dispatch write-path guard key off
+    // assignments with removed_at IS NULL only (they never join client.deletedAt),
+    // so without this cascade a dispatcher keeps booking/billing loads for a
+    // soft-deleted carrier. Run archive + assignment removal in one transaction
+    // so they commit (or roll back) together.
+    const ts = now();
+    const txn = sqlite.transaction(() => {
+      const updatedClient = this.upsertClient({
+        ...(existing as unknown as InsertClient),
+        deletedAt: ts,
+      });
+      const liveAssignments = this.listAssignmentsForClient(id);
+      const removeStmt = sqlite.prepare(
+        "UPDATE assignments SET removed_at = ?, removed_by_user_id = ? WHERE id = ? AND removed_at IS NULL",
+      );
+      for (const a of liveAssignments) {
+        removeStmt.run(ts, actorUserId ?? null, a.id);
+        this.audit("assignment.removed", "assignment", a.id, {
+          removedByUserId: actorUserId ?? null,
+          reason: "client_archived",
+        });
+      }
+      this.audit("client.archived", "client", id, {
+        actorUserId: actorUserId ?? null,
+        cascadedAssignments: liveAssignments.length,
+      });
+      return updatedClient;
     });
-    this.audit("client.archived", "client", id, { actorUserId: actorUserId ?? null });
-    return updated;
+    return txn();
   },
 
   /**
@@ -5457,7 +5516,21 @@ export const storage = {
    */
   purgeOldAuditEvents(retainDays = 180): number {
     const cutoff = new Date(Date.now() - retainDays * 24 * 3600 * 1000).toISOString();
-    const r = sqlite.prepare("DELETE FROM audit_events WHERE created_at < ?").run(cutoff);
+    // Exempt financial events (invoice.* / billing.*) from the GDPR/CCPA
+    // PII-minimization purge: who was charged what is a financial record that
+    // typically requires multi-year retention (US tax ~7yr), so wiping it after
+    // 180 days would leave billing history unreconstructable for a dispute,
+    // chargeback, tax audit, or breach investigation. These rows reference an
+    // invoice/client id, not raw PII, so retaining them is consistent with the
+    // minimization intent.
+    const r = sqlite
+      .prepare(
+        `DELETE FROM audit_events
+           WHERE created_at < ?
+             AND event_type NOT LIKE 'invoice.%'
+             AND event_type NOT LIKE 'billing.%'`,
+      )
+      .run(cutoff);
     return r.changes ?? 0;
   },
 
