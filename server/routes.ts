@@ -58,7 +58,8 @@ import { registerCronRoutes } from "./routes/cron";
 import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { registerBillingRoutes } from "./routes/billing";
-import { enrichLoadSync, outboundMarketScore, getRouteFuelPrice, observedLaneQualityAdjustment } from "./lib/ai";
+import { outboundMarketScore, getRouteFuelPrice, observedLaneQualityAdjustment } from "./lib/ai";
+import { enrichLoadBestEffort } from "./lib/ai/enrich";
 import { resolveScoreWeights } from "./lib/score-weights";
 import { parseSylectusEmail } from "./lib/parsers/sylectus";
 import { getIntegrationValue } from "./lib/integration-config";
@@ -798,7 +799,7 @@ function parseCsvLine(line: string) {
   return cells.map((cell) => cell.replace(/^"|"$/g, ""));
 }
 
-function importLoadsFromCsv(csv: string) {
+async function importLoadsFromCsv(csv: string) {
   const lines = csv.trim().split(/\r?\n/).filter(Boolean);
   const maxRows = Number(process.env.DISPATCHOS_CSV_MAX_ROWS || 250);
   if (lines.length - 1 > maxRows) {
@@ -808,6 +809,10 @@ function importLoadsFromCsv(csv: string) {
   const created: Load[] = [];
   const errors: Array<{ row: number; message: string }> = [];
 
+  // Validate rows synchronously first so per-row schema errors are reported
+  // exactly as before. Enrichment (which may do a bounded FMCSA lookup when a
+  // key is configured) happens afterwards, off the validation path.
+  const valid: Array<{ rowNumber: number; load: InsertLoad }> = [];
   lines.slice(1).forEach((line, index) => {
     const rowNumber = index + 2;
     const values = parseCsvLine(line);
@@ -835,15 +840,29 @@ function importLoadsFromCsv(csv: string) {
         marketQuality: Number(row.marketQuality || 70),
         notes: row.notes,
       };
-      // Phase 4: enrich CSV imports too — overrides any marketQuality
-      // value the CSV provided with the lane-benchmark calculation.
-      const parsed = insertLoadSchema.parse(load);
-      const enriched = enrichLoadSync(parsed);
-      created.push(storage.upsertLoad(enriched));
+      valid.push({ rowNumber, load: insertLoadSchema.parse(load) });
     } catch (error: any) {
       errors.push({ row: rowNumber, message: error.message || "Invalid row" });
     }
   });
+
+  // Phase 4: enrich CSV imports too — overrides any marketQuality value the CSV
+  // provided with the lane-benchmark calculation, and (when FMCSA_WEB_KEY is
+  // configured) verifies the broker MC against FMCSA to defend against
+  // double-brokering. enrichLoadBestEffort caps each lookup with a short
+  // timeout and falls back to the sync result, so a large import never hangs
+  // and a slow/down FMCSA service never fails the import. With no key it is a
+  // pure no-op (no network). Bounded concurrency keeps wall-clock sane.
+  const CSV_ENRICH_CONCURRENCY = 8;
+  for (let i = 0; i < valid.length; i += CSV_ENRICH_CONCURRENCY) {
+    const batch = valid.slice(i, i + CSV_ENRICH_CONCURRENCY);
+    const enriched = await Promise.all(
+      batch.map((entry) => enrichLoadBestEffort(entry.load)),
+    );
+    for (const load of enriched) {
+      created.push(storage.upsertLoad(load));
+    }
+  }
 
   storage.audit("loads.csv_imported", "load", "bulk", { created: created.length, errors });
   return { created, errors };
@@ -2130,19 +2149,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(storage.listLoads());
   });
 
-  app.post("/api/loads", requireRole("admin"), requireActiveBilling, (req, res) => {
+  app.post("/api/loads", requireRole("admin"), requireActiveBilling, async (req, res) => {
     try {
       // Phase 3 P2 + Phase 4 P0: accept optional clientId/bookedAt for billing
       // linkage AND optional driverId for driver-portal scoping. Pre-Phase-3
       // callers (v1.2.7 frontend, Phase 1 smoke) keep working — those fields
       // are all optional, validation is strict-superset of Phase 1.
       //
-      // Phase 4: enrichLoadSync replaces hand-tuned marketQuality with a real
-      // lane-benchmark calculation (origin region × dest region × equipment ×
-      // seasonality). Brokers and fuel pricing are enriched separately at
-      // score time (see scoreLoadForClient).
+      // Phase 4: enrichLoadBestEffort replaces hand-tuned marketQuality with a
+      // real lane-benchmark calculation (origin region × dest region ×
+      // equipment × seasonality) AND, when FMCSA_WEB_KEY is configured, verifies
+      // the broker MC against FMCSA (double-brokering defense). The FMCSA lookup
+      // is bounded by a short timeout and falls back to the sync result, so a
+      // slow/down FMCSA service never blocks or fails the request. With no key
+      // it is a pure no-op (no network), identical to the legacy sync path.
       const parsed = insertLoadFullSchema.parse(req.body);
-      const enriched = enrichLoadSync(parsed);
+      const enriched = await enrichLoadBestEffort(parsed);
       const load = storage.upsertLoad(enriched);
       // Killer #4: match this new load against active lane watches.
       try {
@@ -2163,10 +2185,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/loads/import-csv", requireRole("admin"), requireActiveBilling, (req, res) => {
+  app.post("/api/loads/import-csv", requireRole("admin"), requireActiveBilling, async (req, res) => {
     try {
       const { csv } = csvImportSchema.parse(req.body);
-      res.status(201).json(importLoadsFromCsv(csv));
+      res.status(201).json(await importLoadsFromCsv(csv));
     } catch (error) {
       handleZodError(error, res);
     }

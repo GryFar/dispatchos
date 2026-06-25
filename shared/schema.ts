@@ -63,9 +63,9 @@ export const clientSchema = z.object({
   // All optional so existing test fixtures keep validating. Defaults
   // applied in scoreLoadForClient when missing.
   equipmentTypes: z.array(equipmentSchema).optional(),  // accept multi-trailer fleets
-  maxGvwLbs: z.number().optional(),                     // truck/trailer combined cap
-  payCentsPerMile: z.number().optional(),               // driver pay model: flat cpm
-  payPctOfGross: z.number().optional(),                 // driver pay model: % of gross
+  maxGvwLbs: z.number().nullable().optional(),          // truck/trailer combined cap (null = cleared)
+  payCentsPerMile: z.number().nullable().optional(),    // driver pay model: flat cpm (null = cleared)
+  payPctOfGross: z.number().nullable().optional(),      // driver pay model: % of gross (null = cleared)
   blockedBrokers: z.array(z.string()).optional(),       // MC# strings to reject outright
   tollsCostPerMile: z.number().optional(),              // default 0.05 if absent
   wearCostPerMile: z.number().optional(),               // default 0.15 if absent

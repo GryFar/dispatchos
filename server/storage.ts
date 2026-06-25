@@ -389,6 +389,28 @@ sqlite.exec(
   "CREATE UNIQUE INDEX IF NOT EXISTS loads_source_external_uq ON loads(source_id, source_external_id) WHERE source_id IS NOT NULL",
 );
 
+// email_ingest dedup: the messageId was only ever buried in the JSON payload, so
+// replaying a POST /api/inbound/email (or a cron re-parse) minted a fresh row +
+// downstream load every time. Promote messageId to a real nullable column with a
+// UNIQUE partial index (only on rows that HAVE a messageId), so saveEmailIngest
+// can be idempotent without rebuilding the table. Rows without a messageId keep
+// inserting freely (NULLs are exempt from the partial index). The backfill stamps
+// message_id from existing payloads exactly once, on the boot that adds the column.
+function ensureEmailIngestMessageIdColumn() {
+  const cols = sqlite.prepare("PRAGMA table_info(email_ingest)").all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "message_id")) {
+    sqlite.exec("ALTER TABLE email_ingest ADD COLUMN message_id TEXT");
+    // One-time backfill from the JSON payload for rows that predate this column.
+    sqlite.exec(
+      "UPDATE email_ingest SET message_id = json_extract(payload, '$.messageId') WHERE message_id IS NULL AND json_extract(payload, '$.messageId') IS NOT NULL",
+    );
+  }
+}
+ensureEmailIngestMessageIdColumn();
+sqlite.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS email_ingest_message_id_uq ON email_ingest(message_id) WHERE message_id IS NOT NULL",
+);
+
 // Audit actor denormalization: the actor was only ever embedded in the JSON
 // payload, so the audit log had to filter by actor in JS AFTER fetching a page —
 // which made `total`, `hasMore` and `nextCursor` inaccurate when actorId was set.
@@ -4811,13 +4833,53 @@ export const storage = {
     return row.c;
   },
 
+  // Look up an ingest row by its stable email Message-ID. Used to make ingest
+  // idempotent so a replayed POST (or cron re-parse) doesn't mint a duplicate.
+  getEmailIngestByMessageId(messageId: string) {
+    const row = sqlite
+      .prepare(
+        "SELECT id, payload, created_at as createdAt FROM email_ingest WHERE message_id = ?",
+      )
+      .get(messageId) as { id: string; payload: string; createdAt: string } | undefined;
+    if (!row) return undefined;
+    return { id: row.id, ...JSON.parse(row.payload), createdAt: row.createdAt };
+  },
+
   saveEmailIngest(payload: unknown) {
+    const messageId =
+      payload && typeof payload === "object"
+        ? (payload as { messageId?: unknown }).messageId
+        : undefined;
+    const hasMessageId = typeof messageId === "string" && messageId.length > 0;
+
+    // Idempotency: if this email carries a Message-ID and we've already ingested
+    // it, return the EXISTING row instead of inserting a duplicate. The UNIQUE
+    // partial index on message_id guards against a race, but the explicit check
+    // lets us return the original ingest id (callers key downstream loads on it).
+    if (hasMessageId) {
+      const existing = this.getEmailIngestByMessageId(messageId as string);
+      if (existing) return existing;
+    }
+
     const id = makeId("email");
-    sqlite
-      .prepare("INSERT INTO email_ingest (id, payload, created_at) VALUES (?, ?, ?)")
-      .run(id, JSON.stringify(payload), now());
+    const createdAt = now();
+    // ON CONFLICT closes the TOCTOU window: if a concurrent request inserted the
+    // same messageId between our check and this write, the insert is a no-op and
+    // we fall back to returning the row that won the race. The conflict target
+    // must repeat the partial index's WHERE predicate so SQLite matches the
+    // `WHERE message_id IS NOT NULL` partial UNIQUE index (a bare `(message_id)`
+    // target does NOT match a partial index).
+    const info = sqlite
+      .prepare(
+        "INSERT INTO email_ingest (id, payload, created_at, message_id) VALUES (?, ?, ?, ?) ON CONFLICT(message_id) WHERE message_id IS NOT NULL DO NOTHING",
+      )
+      .run(id, JSON.stringify(payload), createdAt, hasMessageId ? (messageId as string) : null);
+    if (info.changes === 0 && hasMessageId) {
+      const winner = this.getEmailIngestByMessageId(messageId as string);
+      if (winner) return winner;
+    }
     this.audit("email.ingested", "email", id, payload);
-    return { id, ...(payload as object), createdAt: now() };
+    return { id, ...(payload as object), createdAt };
   },
 
   // -------------------------------------------------------------------------

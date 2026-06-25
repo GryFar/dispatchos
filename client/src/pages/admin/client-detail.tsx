@@ -360,11 +360,21 @@ function ProfileTab({ client }: { client: Client }) {
     // maxGvwLbs is a HARD load filter server-side (routes.ts) — must be
     // persisted when set, otherwise admin edits are silently dropped.
     if (form.maxGvwLbs !== "") patch.maxGvwLbs = Number(form.maxGvwLbs);
-    if (form.payMode === "cpm" && form.payCentsPerMile !== "") {
-      patch.payCentsPerMile = Number(form.payCentsPerMile);
-    }
-    if (form.payMode === "pct" && form.payPctOfGross !== "") {
-      patch.payPctOfGross = Number(form.payPctOfGross);
+    // Pay model — send BOTH fields every save so switching mode actually clears
+    // the other field server-side. `null` is the server's "clear this field"
+    // signal (additive merge can't otherwise remove a stale value).
+    //   none → both cleared; cpm → cpm set, pct cleared; pct → pct set, cpm cleared.
+    if (form.payMode === "cpm") {
+      patch.payCentsPerMile =
+        form.payCentsPerMile !== "" ? Number(form.payCentsPerMile) : null;
+      patch.payPctOfGross = null;
+    } else if (form.payMode === "pct") {
+      patch.payPctOfGross =
+        form.payPctOfGross !== "" ? Number(form.payPctOfGross) : null;
+      patch.payCentsPerMile = null;
+    } else {
+      patch.payCentsPerMile = null;
+      patch.payPctOfGross = null;
     }
     const blockedList = form.blockedBrokers
       .split(",")

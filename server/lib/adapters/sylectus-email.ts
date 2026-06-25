@@ -111,7 +111,12 @@ export const sylectusEmailAdapter: BoardAdapter = {
     const dg = geocodeCityState(parsed.destination?.city, parsed.destination?.state);
     return {
       sourceId: row.id,
-      sourceExternalId: String(raw.ingestId ?? raw.messageId ?? Date.now()),
+      // Prefer the email's stable Message-ID (or broker reference) over the
+      // per-row ingestId so the downstream load dedup (loads_source_external_uq)
+      // keys on the stable message identity. With messageId-based ingest dedup
+      // upstream the ingestId is now also stable, but keying on messageId first
+      // means a re-ingest under a new ingestId still maps to the same load.
+      sourceExternalId: String(raw.messageId ?? parsed.reference ?? raw.ingestId ?? Date.now()),
       clientId: row.clientId,
       source: "sylectus_email",
       originCity: parsed.origin?.city ?? "",
