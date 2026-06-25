@@ -2731,6 +2731,105 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // GET /api/health-deep
+  //
+  // Deep liveness probe (vs. the shallow row-count /api/health). Exercises the
+  // DB WRITE path and reports ops signals (paused feeds, stale poller cron) so
+  // a monitor can catch a dead write path or a dark load feed.
+  //
+  // Auth: same shared-secret gate as the /api/cron/* ops endpoints
+  // (X-Cron-Secret == env DISPATCHOS_CRON_SECRET). NOT public — it does a
+  // write and exposes operational internals.
+  //
+  // Response: { ok, checkedAt, checks: { db_write, paused_load_sources,
+  //             stale_crons } } — each check is { ok, ...detail }. Top-level
+  //             `ok` = AND of the critical checks (db_write only).
+  // -------------------------------------------------------------------------
+  app.get("/api/health-deep", (req, res) => {
+    const expected = process.env.DISPATCHOS_CRON_SECRET;
+    if (!expected) {
+      return res.status(503).json({ ok: false, message: "Health-deep disabled: DISPATCHOS_CRON_SECRET not set" });
+    }
+    const header = req.headers["x-cron-secret"];
+    const provided = Array.isArray(header) ? header[0] : header;
+    const a = Buffer.from(typeof provided === "string" ? provided : "");
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return res.status(401).json({ ok: false, message: "Unauthorized" });
+    }
+
+    // (a) db_write — actually round-trip the WRITE path: write a probe audit
+    // event, then read it back. A failure here means the DB is read-only /
+    // disk-full / corrupted even when row counts still "look" healthy. The
+    // 'health.probe' marker keeps this out of real business data and is purged
+    // by the standard audit retention job.
+    let dbWrite: { ok: boolean; detail: string };
+    try {
+      const token = crypto.randomUUID();
+      storage.audit("health.probe", "health", token, { token, at: new Date().toISOString() });
+      const found = storage
+        .listAuditEvents(20)
+        .some((e: { eventType?: string; entityId?: string }) => e.eventType === "health.probe" && e.entityId === token);
+      dbWrite = found
+        ? { ok: true, detail: "probe write persisted and read back" }
+        : { ok: false, detail: "probe write did not read back" };
+    } catch (err) {
+      dbWrite = { ok: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+
+    // (b) paused_load_sources — ok regardless, but degraded + count when any
+    // feed has auto-paused (dark feed).
+    let pausedCheck: { ok: boolean; count: number; degraded: boolean; detail: string };
+    try {
+      const count = storage.countPausedLoadSources();
+      pausedCheck = {
+        ok: true,
+        count,
+        degraded: count > 0,
+        detail: count > 0 ? `${count} load source(s) paused` : "no paused load sources",
+      };
+    } catch (err) {
+      pausedCheck = { ok: false, count: 0, degraded: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+
+    // (c) stale_crons — the only cron heartbeat we actually track is the
+    // load-source poller's last_polled_at. Flag stale if the most recent poll
+    // across all sources is older than ~36h. If nothing has ever polled (no
+    // sources / never run), don't fabricate a failure.
+    let staleCheck: { ok: boolean; lastPolledAt: string | null; stale: boolean; detail: string };
+    try {
+      const last = storage.latestLoadSourcePollAt();
+      if (!last) {
+        staleCheck = { ok: true, lastPolledAt: null, stale: false, detail: "no cron heartbeat tracked" };
+      } else {
+        const ageMs = Date.now() - new Date(last).getTime();
+        const stale = ageMs > 36 * 3600_000;
+        staleCheck = {
+          ok: true,
+          lastPolledAt: last,
+          stale,
+          detail: stale ? `last poll ${Math.round(ageMs / 3600_000)}h ago (stale)` : "poller heartbeat fresh",
+        };
+      }
+    } catch (err) {
+      staleCheck = { ok: true, lastPolledAt: null, stale: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+
+    // Top-level ok = AND of the CRITICAL checks. Only db_write is critical;
+    // paused feeds / stale crons are degraded signals, not hard failures.
+    const ok = dbWrite.ok;
+    return res.status(ok ? 200 : 503).json({
+      ok,
+      checkedAt: new Date().toISOString(),
+      checks: {
+        db_write: dbWrite,
+        paused_load_sources: pausedCheck,
+        stale_crons: staleCheck,
+      },
+    });
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }

@@ -76,11 +76,16 @@ export default {
       // Only forward mail addressed to our known ingest address(es), so a
       // misconfigured catch-all route can't pipe arbitrary mail into ingest.
       const to = String(message.to || "").toLowerCase();
+      // Strip any plus-tag sub-address (loads+<clientId>@x -> loads@x) so the
+      // per-carrier addresses the app generates are matched against the base
+      // allowlist instead of being silently rejected (every inbound load email
+      // was dropped otherwise).
+      const toBase = to.replace(/\+[^@]*(?=@)/, "");
       const allowed = String(env.INBOUND_ALLOWED_TO || "loads@dispatchos.co")
         .split(",")
         .map((s) => s.trim().toLowerCase())
         .filter(Boolean);
-      if (!allowed.includes(to)) {
+      if (!allowed.includes(to) && !allowed.includes(toBase)) {
         console.warn(`[inbound-email] rejected: recipient ${message.to} not in allowlist`);
         return;
       }
