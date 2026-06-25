@@ -125,6 +125,18 @@ export function closeDatabase(): void {
   }
 }
 
+/**
+ * Produce a CONSISTENT online snapshot of the live DB into destPath, without
+ * locking the app. better-sqlite3's .backup() runs the SQLite online-backup
+ * API on a separate connection and resolves a Promise when done, so this never
+ * blocks the event loop for the duration of the copy. The destination directory
+ * must already exist (the caller is responsible for mkdir). Re-uses the open
+ * `sqlite` handle so backup callers never re-open the file.
+ */
+export async function backupDatabaseTo(destPath: string): Promise<void> {
+  await sqlite.backup(destPath);
+}
+
 // Audit Critical #5 (2026-05-26): включаем FK enforcement на все будущие
 // CREATE TABLE с FOREIGN KEY clauses. Существующие таблицы FK в DDL не имеют
 // — этот флаг НИЧЕГО не ломает в текущей базе, но разблокирует возможность

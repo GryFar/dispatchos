@@ -8,6 +8,9 @@
 
 import type { Express, Request, Response } from "express";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { createDbSnapshot } from "../lib/backup";
 import { refreshFromEia } from "../lib/ai/fuel";
 import { fetchGasBuddyDieselNear } from "../lib/ai/fuel-gasbuddy";
 import { storage } from "../storage";
@@ -449,4 +452,57 @@ export function registerCronRoutes(app: Express): void {
 
     return res.json({ ok: true, points: points.length, totalObserved, perPoint });
   });
+
+  // -------------------------------------------------------------------------
+  // GET|POST /api/cron/backup
+  //
+  // Audit H5 — restore-grade offsite DB backup. Takes a CONSISTENT online
+  // snapshot of the live SQLite file (no app lock) and STREAMS it back as the
+  // response body so the caller (GitHub Actions, see backup-cron.yml) can store
+  // it as an artifact — the zero-config offsite copy, no S3 creds required.
+  //
+  // The snapshot itself is retained locally per DISPATCHOS_BACKUP_KEEP; we do
+  // NOT delete the file we just streamed (retention prunes older ones).
+  //
+  // Auth: X-Cron-Secret header must equal env DISPATCHOS_CRON_SECRET. The DB is
+  // never exposed without that secret. Body: none.
+  // Response: application/octet-stream attachment + X-Backup-Sha256 header.
+  // -------------------------------------------------------------------------
+  const handleBackup = async (req: Request, res: Response): Promise<void> => {
+    if (!requireCronSecret(req, res)) return;
+    let snap: { path: string; bytes: number; sha256: string };
+    try {
+      snap = await createDbSnapshot();
+    } catch (err) {
+      console.error("[cron/backup] snapshot failed:", err);
+      res.status(500).json({
+        message: "Backup failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+
+    const filename = path.basename(snap.path);
+    storage.audit("backup.created", "database", filename, {
+      bytes: snap.bytes,
+      sha256: snap.sha256,
+      filename,
+    });
+
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", String(snap.bytes));
+    res.setHeader("X-Backup-Sha256", snap.sha256);
+
+    const stream = fs.createReadStream(snap.path);
+    stream.on("error", (err) => {
+      console.error("[cron/backup] stream failed:", err);
+      // Headers may already be sent; only set status if we can.
+      if (!res.headersSent) res.status(500).json({ message: "Backup stream failed" });
+      else res.destroy();
+    });
+    stream.pipe(res);
+  };
+  app.get("/api/cron/backup", handleBackup);
+  app.post("/api/cron/backup", handleBackup);
 }
