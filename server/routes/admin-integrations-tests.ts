@@ -13,6 +13,7 @@ import { INTEGRATIONS, type IntegrationDescriptor } from "../lib/integrations";
 import { getIntegrationValue } from "../lib/integration-config";
 import { storage } from "../storage";
 import { assertSafeOutboundUrl } from "../lib/url-guard";
+import { getCurrentUser } from "../auth";
 
 // Alias the global Response (undici/fetch) — keeps it visually distinct from
 // Express's Response and stops tsc from collapsing both into one type.
@@ -105,9 +106,12 @@ async function testTelegramBot(): Promise<TestResult> {
     const meRes = meOut.res;
     const whRes = whOut.res;
     if (!meRes.ok) return mkFail(`getMe HTTP ${meRes.status}`, ms);
-    const me = (await meRes.json()) as { ok: boolean; result?: { username?: string } };
-    const wh = (await whRes.json()) as {
-      ok: boolean;
+    const me = (await meRes.json().catch(() => ({}))) as { ok?: boolean; result?: { username?: string } };
+    // getMe already succeeded; don't let a non-2xx / non-JSON getWebhookInfo
+    // body throw and get masked as a generic "network:" error in the catch.
+    if (!whRes.ok) return mkFail(`getWebhookInfo HTTP ${whRes.status}`, ms);
+    const wh = (await whRes.json().catch(() => ({}))) as {
+      ok?: boolean;
       result?: { url?: string; pending_update_count?: number; last_error_message?: string };
     };
     const details = {
@@ -291,6 +295,7 @@ export function registerAdminIntegrationTestsRoutes(
         ok: result.ok,
         latencyMs: result.latencyMs,
         message: result.message,
+        actorUserId: getCurrentUser(req)?.id,
       });
       return res.json({ ...result, fromCache: false });
     } catch (err) {

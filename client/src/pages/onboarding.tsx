@@ -131,8 +131,14 @@ export default function OnboardingPage() {
       );
       return;
     }
-    setStep(p.step ?? 0);
     const d = p.data || {};
+    // Steps 2+ (company / plan) depend on persona to filter plans and toggle
+    // fleet-only fields. Older / partial records (or a goBack that persisted
+    // only `step`) may land here past step 1 with no persona, which would
+    // dead-end the user on an empty plan list. Clamp back to the persona step
+    // so they re-pick rather than getting stuck.
+    const resumeStep = p.step ?? 0;
+    setStep(resumeStep >= 2 && typeof d.persona !== "string" ? 1 : resumeStep);
     if (typeof d.persona === "string") setPersona(d.persona as Persona);
     if (typeof d.companyName === "string") setCompanyName(d.companyName);
     if (typeof d.mc === "string") setMc(d.mc);
@@ -205,7 +211,10 @@ export default function OnboardingPage() {
     );
   }
 
-  if (authLoading || progressQ.isLoading) {
+  if (authLoading || progressQ.isLoading || !user) {
+    // !user: the redirect to /login fires from an effect (post-render), so
+    // hold the loader here to avoid flashing the wizard body for one frame
+    // with a null user before the bounce lands.
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#0a0e1a]">
         <Loader2 className="h-8 w-8 animate-spin text-[#f59e0b]" />
@@ -648,7 +657,8 @@ function CompanyStep({
             <Label className="text-xs text-[#9aa3ba]">{t("onboarding.company.dot.label")}</Label>
             <Input
               value={dot}
-              onChange={(e) => setDot(e.target.value)}
+              inputMode="numeric"
+              onChange={(e) => setDot(e.target.value.replace(/\D/g, ""))}
               placeholder="3456789"
               className="border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-white placeholder:text-[#6b7390]"
             />

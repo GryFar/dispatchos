@@ -21,7 +21,6 @@ import {
   rejectLeadSchema,
   listLeadsQuerySchema,
 } from "@shared/schema";
-import crypto from "node:crypto";
 import { generateInviteCode } from "../lib/invite-code";
 import { canAddDriver } from "../lib/plans";
 
@@ -93,9 +92,10 @@ function hostFromReq(req: Request): string {
   const xfHost = req.headers["x-forwarded-host"];
   const rawHost = typeof xfHost === "string" ? xfHost : req.headers.host;
   if (!rawHost) return "https://dispatchos.co";
-  const xfProto = req.headers["x-forwarded-proto"];
-  const proto = (typeof xfProto === "string" ? xfProto : req.protocol) ?? "https";
-  const candidate = `${proto}://${rawHost}`;
+  // Pin the scheme to https: the allowlist is https-only, so any other scheme
+  // could never match anyway. Reading the proto from a client header
+  // (x-forwarded-proto) would be a fragile no-op here.
+  const candidate = `https://${rawHost}`;
   if (PUBLIC_URL_ALLOWLIST.has(candidate)) return candidate;
   // Unknown host — audit and fall back to the canonical landing URL so
   // emails never carry an attacker-controlled link.
@@ -149,7 +149,15 @@ export function registerLeadRoutes(app: Express): void {
       });
     }
 
-    const country = (req.headers["cf-ipcountry"] as string | undefined) ?? null;
+    // cf-ipcountry is client-settable when a request does not actually transit
+    // Cloudflare. Constrain it to a 2-letter code (Cloudflare's documented
+    // shape, including XX/T1 sentinels); anything else is treated as untrusted
+    // and stored as null.
+    const rawCountry = req.headers["cf-ipcountry"];
+    const country =
+      typeof rawCountry === "string" && /^[A-Za-z0-9]{2}$/.test(rawCountry)
+        ? rawCountry.toUpperCase()
+        : null;
     const userAgent = (req.headers["user-agent"] as string | undefined)?.slice(0, 500) ?? null;
 
     const { lead, isNew } = storage.insertSignupLead({

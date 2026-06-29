@@ -104,10 +104,16 @@ export async function sendInviteEmail(input: InviteEmailInput): Promise<SendEmai
   const t = INVITE_COPY[lang];
   const roleName = t.roles[input.role];
   const inviter = input.inviterName ? `${input.inviterName} (DispatchOS)` : "DispatchOS";
-  const expires = new Date(input.expiresAt).toLocaleString("en-US", {
-    month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
-    timeZoneName: "short",
-  });
+  // Guard against an unparseable expiresAt: toLocaleString would otherwise emit
+  // the literal "Invalid Date" into the email body. Fall back to the raw input
+  // string so the recipient still sees something meaningful.
+  const expiresDate = new Date(input.expiresAt);
+  const expires = Number.isNaN(expiresDate.getTime())
+    ? input.expiresAt
+    : expiresDate.toLocaleString("en-US", {
+        month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+        timeZoneName: "short",
+      });
 
   const subject = t.subject.replace("{role}", roleName);
 
@@ -119,6 +125,7 @@ export async function sendInviteEmail(input: InviteEmailInput): Promise<SendEmai
   const roleNameHtml = escapeHtml(roleName);
   const subjectHtml = escapeHtml(subject);
   const signupUrlHtml = escapeHtml(input.signupUrl);
+  const expiresHtml = escapeHtml(expires);
   const html = `<!doctype html>
 <html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${subjectHtml}</title></head>
@@ -136,7 +143,7 @@ export async function sendInviteEmail(input: InviteEmailInput): Promise<SendEmai
           <p style="margin:0 0 32px;">
             <a href="${signupUrlHtml}" style="display:inline-block;background:#01696F;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:15px;">${t.cta}</a>
           </p>
-          <p style="margin:0 0 8px;font-size:13px;color:#7A7974;">${t.expires.replace("{expires}", expires)}</p>
+          <p style="margin:0 0 8px;font-size:13px;color:#7A7974;">${t.expires.replace("{expires}", expiresHtml)}</p>
           <p style="margin:0 0 24px;font-size:13px;color:#7A7974;">${t.fallback}</p>
           <p style="margin:0;font-size:13px;color:#7A7974;word-break:break-all;"><a href="${signupUrlHtml}" style="color:#01696F;">${signupUrlHtml}</a></p>
         </td></tr>

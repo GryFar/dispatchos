@@ -45,6 +45,21 @@ function clampPollInterval(n: number): number {
   return Math.max(1, Math.min(1440, Math.floor(n)));
 }
 
+// configJson is persisted (and spread) as a plain object. A string/number/array
+// would be spread into a malformed config in storage.createLoadSource, so reject
+// anything that isn't a non-null, non-array object.
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// credentials are encrypted, later decrypted, and handed to adapter.authenticate
+// as a flat string map. A nested/array/non-string value survives encryption and
+// only fails opaquely at /test time, so validate the shape up front.
+function isStringMap(v: unknown): v is Record<string, string> {
+  if (!isPlainObject(v)) return false;
+  return Object.values(v).every((x) => typeof x === "string");
+}
+
 export function registerAdminLoadSourcesRoutes(
   app: Express,
   requireAdmin: (req: Request, res: ExpressResponse, next: () => void) => void,
@@ -90,6 +105,12 @@ export function registerAdminLoadSourcesRoutes(
       (typeof body.pollIntervalMin !== "number" || !Number.isFinite(body.pollIntervalMin))
     ) {
       return res.status(400).json({ message: "pollIntervalMin must be a number" });
+    }
+    if (body.configJson !== undefined && !isPlainObject(body.configJson)) {
+      return res.status(400).json({ message: "configJson must be an object" });
+    }
+    if (body.credentials !== undefined && !isStringMap(body.credentials)) {
+      return res.status(400).json({ message: "credentials must be a flat object of strings" });
     }
 
     let encEnc: string | null = null;
@@ -143,6 +164,12 @@ export function registerAdminLoadSourcesRoutes(
       (typeof body.pollIntervalMin !== "number" || !Number.isFinite(body.pollIntervalMin))
     ) {
       return res.status(400).json({ message: "pollIntervalMin must be a number" });
+    }
+    if (body.configJson !== undefined && !isPlainObject(body.configJson)) {
+      return res.status(400).json({ message: "configJson must be an object" });
+    }
+    if (body.credentials !== undefined && !isStringMap(body.credentials)) {
+      return res.status(400).json({ message: "credentials must be a flat object of strings" });
     }
     const patch: Record<string, unknown> = {};
     if (body.label !== undefined) patch.label = body.label;
@@ -206,7 +233,10 @@ export function registerAdminLoadSourcesRoutes(
       await adapter.authenticate(rowForAdapter);
       const sample = await adapter.fetchLoads(rowForAdapter, 1);
       const ms = Date.now() - t0;
-      storage.audit("load_source.tested", "load_source", id, { ok: true, ms, sample: sample[0] ?? null, actorUserId: getCurrentUser(req)?.id });
+      // Don't persist the raw third-party sample (broker contact/rates/email
+      // content) into the long-lived audit payload; record only that one was
+      // fetched. The full sample is still returned to the admin caller below.
+      storage.audit("load_source.tested", "load_source", id, { ok: true, ms, sampleReceived: sample.length > 0, actorUserId: getCurrentUser(req)?.id });
       return res.json({ ok: true, latencyMs: ms, sample: sample[0] ?? null });
     } catch (err) {
       const ms = Date.now() - t0;

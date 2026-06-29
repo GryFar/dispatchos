@@ -61,10 +61,12 @@ interface TgUpdate {
 }
 
 function timingSafeEqual(a: string, b: string): boolean {
-  const ba = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ba.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ba, bb);
+  // Hash both inputs to a fixed length first so the compared buffers are always
+  // equal-length. A raw length check on the secret would short-circuit and leak
+  // the token length via timing — this is the webhook's only auth gate.
+  const ha = crypto.createHash("sha256").update(a, "utf8").digest();
+  const hb = crypto.createHash("sha256").update(b, "utf8").digest();
+  return crypto.timingSafeEqual(ha, hb);
 }
 
 async function tgSend(
@@ -363,15 +365,18 @@ async function handleLoc(
     source = "telegram_live";
   }
 
-  // "City, ST" — best-effort parse
+  // "City, ST" — best-effort parse. City is driver-supplied free text that gets
+  // persisted and later rendered/echoed, so strip control chars and cap length.
+  const cleanCity = (s: string): string =>
+    s.replace(/[ -]+/g, " ").trim().slice(0, 64);
   if (args) {
     const m = args.match(/^([^,]+?)\s*,\s*([A-Za-z]{2})\b/);
     if (m) {
-      city = m[1].trim();
+      city = cleanCity(m[1]);
       state = m[2].toUpperCase();
     } else {
       // Free-form: treat whole string as city, keep state
-      city = args.trim();
+      city = cleanCity(args);
     }
   }
 
@@ -443,7 +448,7 @@ async function handleApprovalLog(
       }
     | null = null;
   if (loadId) {
-    const rec = storage.getLoad?.(loadId) as
+    const rec = storage.getLoad(loadId) as
       | {
           clientId?: string; client_id?: string;
           brokerMc?: string; broker_mc?: string;
@@ -471,12 +476,20 @@ async function handleApprovalLog(
   if (verb === "/no" && ownedLoad) {
     const brokerMc = (ownedLoad.brokerMc ?? ownedLoad.broker_mc ?? "") as string;
     if (brokerMc) {
-      storage.appendBrokerTrustSignal({
-        brokerMc, loadId, clientId: user.linkedClientId,
-        signalType: "load_refused_by_carrier", positive: false,
-        reportedByUserId: user.id, source: "driver",
-        notes: `Driver /no via Telegram (chatId=${chatId})`,
-      });
+      try {
+        storage.appendBrokerTrustSignal({
+          brokerMc, loadId, clientId: user.linkedClientId,
+          signalType: "load_refused_by_carrier", positive: false,
+          reportedByUserId: user.id, source: "driver",
+          notes: `Driver /no via Telegram (chatId=${chatId})`,
+        });
+      } catch (err) {
+        // The /no itself is already captured in the audit log above; only the
+        // broker-trust aggregation failed. Don't throw past the success ack
+        // (the only catch is in handleUpdate, which runs after TG was 200'd, so
+        // the driver would otherwise get silence). Log and continue to ack.
+        console.error("[tg-bot] appendBrokerTrustSignal failed:", err);
+      }
     }
   }
 
@@ -501,21 +514,35 @@ async function handleApprovalLog(
       dispatcherUserId = active.dispatcherUserId;
       routedTo = "dispatcher";
     }
-    const task = storage.createApprovalTask({
-      taskType: "driver_booking_request",
-      assigneeRole,
-      payload: {
-        loadId,
-        lane: `${ownedLoad.originCity ?? "?"}, ${ownedLoad.originState ?? "?"} → ${ownedLoad.destinationCity ?? "?"}, ${ownedLoad.destinationState ?? "?"}`,
-        note: note || null,
-        brokerMc: ownedLoad.brokerMc ?? ownedLoad.broker_mc ?? null,
-        reporterUserId: user.id,
-        source: "telegram_nego",
-        dispatcherUserId,
-        routedTo,
-      },
-      createdByUserId: user.id,
-    });
+    let task: ReturnType<typeof storage.createApprovalTask>;
+    try {
+      task = storage.createApprovalTask({
+        taskType: "driver_booking_request",
+        assigneeRole,
+        payload: {
+          loadId,
+          lane: `${ownedLoad.originCity ?? "?"}, ${ownedLoad.originState ?? "?"} → ${ownedLoad.destinationCity ?? "?"}, ${ownedLoad.destinationState ?? "?"}`,
+          note: note || null,
+          brokerMc: ownedLoad.brokerMc ?? ownedLoad.broker_mc ?? null,
+          reporterUserId: user.id,
+          source: "telegram_nego",
+          dispatcherUserId,
+          routedTo,
+        },
+        createdByUserId: user.id,
+      });
+    } catch (err) {
+      // The negotiation task is the driver's primary action here. If it fails,
+      // tell them plainly instead of throwing past the success ack (which would
+      // leave them with no reply but believing dispatch was notified).
+      console.error("[tg-bot] createApprovalTask failed:", err);
+      await tgSend(
+        botToken,
+        chatId,
+        "⚠️ Couldn't log your negotiation request just now. Please try again, or contact dispatch directly.",
+      );
+      return;
+    }
     storage.audit("driver.nego_requested", "approval_task", task.id, {
       userId: user.id,
       actorUserId: user.id,
