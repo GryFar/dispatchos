@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Route, Router, Switch, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { Loader2 } from "lucide-react";
@@ -16,47 +16,15 @@ import SignupPage from "@/pages/signup";
 import ForgotPasswordPage from "@/pages/forgot-password";
 import OnboardingPage from "@/pages/onboarding";
 import NotFound from "@/pages/not-found";
-import { AdminShell } from "@/pages/admin/_shell";
-import LegacyDashboardPage from "@/pages/admin/legacy-dashboard";
-import DashboardPage from "@/pages/admin/dashboard";
-import UsersPage from "@/pages/admin/users";
-import AssignmentsPage from "@/pages/admin/assignments";
-import ClientsPage from "@/pages/admin/clients";
-import LoadsPage from "@/pages/admin/loads";
-import AdminLoadDetailPage from "@/pages/admin/load-detail";
-import BrokersPage from "@/pages/admin/brokers";
-import DocumentsPage from "@/pages/admin/documents";
-import QueuePage from "@/pages/admin/queue";
-import AuditPage from "@/pages/admin/audit";
-import BackupPage from "@/pages/admin/backup";
-import BillingPage from "@/pages/admin/billing";
-import BillingStripePage from "@/pages/admin/billing-stripe";
-import SettingsPage from "@/pages/admin/settings";
-import IntegrationsPage from "@/pages/admin/integrations";
-import EmailInboxPage from "@/pages/admin/email-inbox";
-import ClientDetailPage from "@/pages/admin/client-detail";
-import UserDetailPage from "@/pages/admin/user-detail";
-import LoadSourcesPage from "@/pages/admin/load-sources";
-import LoadSourceNewPage from "@/pages/admin/load-source-new";
-import LoadSourceDetailPage from "@/pages/admin/load-source-detail";
 
-// Phase 4 P0 — driver portal at /d/*
-import { DriverShell } from "@/pages/driver/_shell";
-import DriverDashboardPage from "@/pages/driver/dashboard";
-import DriverLoadsListPage from "@/pages/driver/loads-list";
-import DriverLoadDetailPage from "@/pages/driver/load-detail";
-import DriverDocumentsPage from "@/pages/driver/documents";
-import DriverProfilePage from "@/pages/driver/profile";
-import DriverLoadCreatePage from "@/pages/driver/load-create";
-// Phase 4 P0 — dispatcher portal at /dispatch/*
-import { DispatchShell } from "@/pages/dispatch/_shell";
-import DispatchDashboardPage from "@/pages/dispatch/dashboard";
-import DispatchClientsPage from "@/pages/dispatch/clients";
-import DispatchLoadsPage from "@/pages/dispatch/loads";
-import DispatchLoadDetailPage from "@/pages/dispatch/load-detail";
-import DispatchQueuePage from "@/pages/dispatch/queue";
-import DispatchCockpitPage from "@/pages/dispatch/cockpit";
-import DispatchPredictionsPage from "@/pages/dispatch/predictions";
+// Per-portal routers are code-split: each role's screens live in their own
+// lazy-loaded chunk, so a driver on a phone never downloads the ~20-page admin
+// portal or the dispatcher portal in the first paint. Vite emits one chunk per
+// import() below; navigating into a portal fetches its chunk on demand
+// (PortalLoading covers the brief fetch).
+const AdminRouter = lazy(() => import("@/pages/admin/_router"));
+const DispatchRouter = lazy(() => import("@/pages/dispatch/_router"));
+const DriverRouter = lazy(() => import("@/pages/driver/_router"));
 
 /**
  * Wrapped hash-location hook that strips any `?query` (and `#fragment`) from
@@ -83,21 +51,28 @@ function useStrippedHashLocation(): [string, (to: string, opts?: { replace?: boo
   (useHashLocation as unknown as { hrefs: (href: string) => string }).hrefs;
 
 /**
+ * Full-screen spinner shown while a portal's lazy chunk is fetched. Mirrors the
+ * RootRoute spinner so the transition reads as the same app, not a flash.
+ */
+function PortalLoading() {
+  return (
+    <div className="flex h-screen items-center justify-center">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
+
+/**
  * Single entry-point for the whole web app.
  *
  * - Router uses hash-based location (main.tsx initialises window.location.hash
  *   to "#/"). This keeps the deployable static-host friendly.
  * - Three top-level role spaces: /admin/*, /dispatch/*, /d/*. Each is
- *   guarded by <RoleGate>. Unauthenticated users get bounced to /login;
- *   wrong-role users get bounced to their portal's home (silent).
+ *   guarded by <RoleGate> and lazy-loaded (own chunk) behind <Suspense>.
+ *   Unauthenticated users get bounced to /login; wrong-role users get bounced
+ *   to their portal's home (silent).
  * - "/" is a smart root: anonymous visitors see the marketing landing;
  *   logged-in users are redirected to their portal home (defaultRouteForRole).
- *
- * Phase 4 P0 scope:
- *   - Driver portal /d/* реализован (dashboard, loads, load detail,
- *     documents stub, profile). API: /api/me/* (server/routes/me.ts).
- *   - Dispatcher portal /dispatch/* реализован (dashboard, clients, loads,
- *     cockpit, queue, predictions). API: /api/dispatch/* (server/routes/dispatch.ts).
  */
 export default function App() {
   return (
@@ -117,21 +92,27 @@ export default function App() {
               {/* Admin space */}
               <Route path="/admin" nest>
                 <RoleGate allow={["admin"]}>
-                  <AdminRouter />
+                  <Suspense fallback={<PortalLoading />}>
+                    <AdminRouter />
+                  </Suspense>
                 </RoleGate>
               </Route>
 
               {/* Dispatcher space (Phase 4 P0) */}
               <Route path="/dispatch" nest>
                 <RoleGate allow={["dispatcher"]}>
-                  <DispatchRouter />
+                  <Suspense fallback={<PortalLoading />}>
+                    <DispatchRouter />
+                  </Suspense>
                 </RoleGate>
               </Route>
 
               {/* Driver space (Phase 4 P0 — реализовано) */}
               <Route path="/d" nest>
                 <RoleGate allow={["driver"]}>
-                  <DriverRouter />
+                  <Suspense fallback={<PortalLoading />}>
+                    <DriverRouter />
+                  </Suspense>
                 </RoleGate>
               </Route>
 
@@ -151,94 +132,12 @@ export default function App() {
 }
 
 /**
- * AdminRouter — routes inside the /admin space. Because the parent
- * <Route path="/admin" nest>, paths here are relative to /admin.
- */
-function AdminRouter() {
-  return (
-    <AdminShell>
-      <Switch>
-        <Route path="/" component={DashboardPage} />
-        <Route path="/users" component={UsersPage} />
-        <Route path="/users/:id" component={UserDetailPage} />
-        <Route path="/assignments" component={AssignmentsPage} />
-        <Route path="/clients" component={ClientsPage} />
-        <Route path="/clients/:id" component={ClientDetailPage} />
-        <Route path="/loads" component={LoadsPage} />
-        <Route path="/loads/:id" component={AdminLoadDetailPage} />
-        <Route path="/brokers" component={BrokersPage} />
-        <Route path="/documents" component={DocumentsPage} />
-        <Route path="/queue" component={QueuePage} />
-        <Route path="/audit" component={AuditPage} />
-        <Route path="/backup" component={BackupPage} />
-        <Route path="/billing" component={BillingStripePage} />
-        <Route path="/invoicing" component={BillingPage} />
-        <Route path="/settings" component={SettingsPage} />
-        <Route path="/legacy-dashboard" component={LegacyDashboardPage} />
-        <Route path="/integrations" component={IntegrationsPage} />
-        <Route path="/load-sources" component={LoadSourcesPage} />
-        <Route path="/load-sources/new" component={LoadSourceNewPage} />
-        <Route path="/load-sources/:id" component={LoadSourceDetailPage} />
-        <Route path="/email-inbox" component={EmailInboxPage} />
-        <Route component={NotFound} />
-      </Switch>
-    </AdminShell>
-  );
-}
-
-/**
- * DriverRouter — routes inside the /d space. Paths relative to /d.
- * Phase 4 P0. The shell wraps all driver screens in the orange theme
- * override and provides the bottom nav.
- */
-function DriverRouter() {
-  return (
-    <DriverShell>
-      <Switch>
-        <Route path="/" component={DriverDashboardPage} />
-        <Route path="/loads/new" component={DriverLoadCreatePage} />
-        <Route path="/loads" component={DriverLoadsListPage} />
-        <Route path="/loads/:id" component={DriverLoadDetailPage} />
-        <Route path="/documents" component={DriverDocumentsPage} />
-        <Route path="/profile" component={DriverProfilePage} />
-        <Route component={NotFound} />
-      </Switch>
-    </DriverShell>
-  );
-}
-
-/**
- * DispatchRouter — routes inside the /dispatch space. Paths relative to
- * /dispatch. Phase 4 P0 dispatcher portal. The shell wraps all dispatch
- * screens in the emerald (.theme-jade) override.
- */
-function DispatchRouter() {
-  return (
-    <DispatchShell>
-      <Switch>
-        <Route path="/" component={DispatchDashboardPage} />
-        <Route path="/clients" component={DispatchClientsPage} />
-        <Route path="/loads" component={DispatchLoadsPage} />
-        <Route path="/loads/:id" component={DispatchLoadDetailPage} />
-        <Route path="/cockpit" component={DispatchCockpitPage} />
-        <Route path="/queue" component={DispatchQueuePage} />
-        <Route path="/predictions" component={DispatchPredictionsPage} />
-        <Route component={NotFound} />
-      </Switch>
-    </DispatchShell>
-  );
-}
-
-/**
  * Smart root route for "/".
  * - while auth is resolving: a spinner (avoids flashing the landing then yanking
  *   it away).
  * - logged-in: redirect to the role's portal home (replace, so Back doesn't trap
  *   the user on "/").
  * - anonymous: the public marketing landing.
- *
- * Previously "/" rendered <LandingPage> unconditionally, so authenticated users
- * who hit the root saw marketing instead of their dashboard.
  */
 function RootRoute() {
   const { user, isLoading } = useAuth();
