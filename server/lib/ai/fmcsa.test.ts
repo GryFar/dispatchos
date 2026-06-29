@@ -1,8 +1,12 @@
 // Unit tests for FMCSA verification logic.
 // Run: npx tsx server/lib/ai/fmcsa.test.ts
 
-import { evaluateBroker, normalizeMcNumber, mcNumberDigits, parseMobileApiResponse } from "./fmcsa";
+import { evaluateBroker, normalizeMcNumber, mcNumberDigits, parseMobileApiResponse, fmcsaCarrierSchema } from "./fmcsa";
 import type { FmcsaCarrier } from "./fmcsa";
+
+// Pinned epoch so authority-age math + fetchedAt are deterministic (no Date.now
+// flakiness). 2025-06-01T00:00:00Z.
+const FIXED_NOW = Date.parse("2025-06-01T00:00:00.000Z");
 
 let pass = 0;
 let fail = 0;
@@ -316,6 +320,155 @@ function assert(name: string, cond: boolean, detail?: string) {
   assert("parse: null input", parseMobileApiResponse("MC-1", null) === null);
   assert("parse: empty content", parseMobileApiResponse("MC-1", { content: [] }) === null);
   assert("parse: missing legalName", parseMobileApiResponse("MC-1", { content: [{ carrier: { dotNumber: "1" } }] }) === null);
+}
+
+// ===========================================================================
+// REGRESSION GUARDS (appended) — lock in FMCSA letter-status authority parsing
+// and the fmcsaCarrierSchema validation gate. A teammate is refactoring nearby;
+// these must keep passing.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Carrier (motor) authority from common/contract status LETTER codes.
+//
+// FMCSA mobile API returns single-letter codes ("A" active, "I" inactive,
+// "N" none) on commonAuthorityStatus / contractAuthorityStatus — NOT numbers.
+// PRE-FIX BUG: these fields were read with a numeric coercion, so "A" became
+// NaN (falsy) and every real motor carrier was silently classified as having
+// NO carrier authority. These guards FAIL on that pre-fix behavior and PASS now.
+// They also lock the "I"/"N"/absent cases (only "A" counts as active), which
+// the existing suite only covered for "A"/"N".
+// ---------------------------------------------------------------------------
+{
+  // commonAuthorityStatus "A" → carrier authority granted (NOT NaN/false).
+  const commonActive = parseMobileApiResponse("MC-1100", {
+    content: [{ carrier: { legalName: "Common A Carrier LLC", allowedToOperate: "Y", commonAuthorityStatus: "A" } }],
+  }, FIXED_NOW);
+  assert("regress: commonAuthorityStatus 'A' (letter, not number) → carrier true",
+    commonActive?.authority.carrier === true,
+    `got ${commonActive?.authority.carrier}`);
+
+  // contractAuthorityStatus "A" alone also grants carrier authority.
+  const contractActive = parseMobileApiResponse("MC-1101", {
+    content: [{ carrier: { legalName: "Contract A Carrier LLC", allowedToOperate: "Y", contractAuthorityStatus: "A" } }],
+  }, FIXED_NOW);
+  assert("regress: contractAuthorityStatus 'A' → carrier true",
+    contractActive?.authority.carrier === true);
+
+  // "I" = INACTIVE authority → carrier false (only "A" is active). Record is
+  // still returned (not null) — the carrier exists, just without live authority.
+  // PRE-FIX risk: an "anything-but-N" check would have wrongly treated "I" as active.
+  const commonInactive = parseMobileApiResponse("MC-1102", {
+    content: [{ carrier: { legalName: "Inactive Common Carrier LLC", allowedToOperate: "Y", commonAuthorityStatus: "I" } }],
+  }, FIXED_NOW);
+  assert("regress: commonAuthorityStatus 'I' (inactive) → carrier false",
+    commonInactive?.authority.carrier === false,
+    `got ${commonInactive?.authority.carrier}`);
+  assert("regress: inactive carrier record is still returned (not null)",
+    commonInactive !== null);
+
+  const contractInactive = parseMobileApiResponse("MC-1103", {
+    content: [{ carrier: { legalName: "Inactive Contract Carrier LLC", allowedToOperate: "Y", contractAuthorityStatus: "I" } }],
+  }, FIXED_NOW);
+  assert("regress: contractAuthorityStatus 'I' (inactive) → carrier false",
+    contractInactive?.authority.carrier === false);
+
+  // "N" = NONE → carrier false.
+  const commonNone = parseMobileApiResponse("MC-1104", {
+    content: [{ carrier: { legalName: "No-Authority Carrier LLC", allowedToOperate: "Y", commonAuthorityStatus: "N" } }],
+  }, FIXED_NOW);
+  assert("regress: commonAuthorityStatus 'N' (none) → carrier false",
+    commonNone?.authority.carrier === false);
+
+  // Absent authority codes entirely → carrier false (no false-positive default).
+  const noAuthorityKeys = parseMobileApiResponse("MC-1105", {
+    content: [{ carrier: { legalName: "Broker-Only LLC", allowedToOperate: "Y", brokerAuthorityStatus: "A" } }],
+  }, FIXED_NOW);
+  assert("regress: no common/contract authority keys → carrier false",
+    noAuthorityKeys?.authority.carrier === false);
+
+  // contractAuthorityStatus "A" must NOT leak into broker/freightForwarder.
+  assert("regress: carrier authority does not falsely set broker",
+    contractActive?.authority.broker === false && contractActive?.authority.freightForwarder === false);
+}
+
+// ---------------------------------------------------------------------------
+// fmcsaCarrierSchema validation GATE.
+//
+// parseMobileApiResponse hand-builds the carrier and then runs it through
+// fmcsaCarrierSchema.safeParse() before returning. PRE-FIX: there was no gate,
+// so a drifted/out-of-contract record could be returned unvalidated. These
+// guards lock the contract:
+//   (a) every returned record conforms to fmcsaCarrierSchema;
+//   (b) the operatingStatus is a real enum member (never a raw passthrough);
+//   (c) authorityAgeYears is always a number|null (never NaN/undefined);
+//   (d) a candidate the loop must reject is SKIPPED in favor of a later valid
+//       one (proves the gate path uses `continue`, returning validated data
+//       rather than the first raw candidate or null).
+// ---------------------------------------------------------------------------
+{
+  const parsed = parseMobileApiResponse("MC-1200", {
+    content: [{
+      carrier: {
+        legalName: "Schema Gate LLC",
+        allowedToOperate: "Y",
+        brokerAuthorityStatus: "A",
+        snapshotDate: "2018-01-01",
+        safetyRating: "S",
+      },
+    }],
+  }, FIXED_NOW);
+
+  // (a) The returned record re-validates cleanly through the SAME exported
+  // schema the parser gates on — i.e. the parser never returns un-validated data.
+  assert("regress: returned record re-validates through fmcsaCarrierSchema",
+    parsed !== null && fmcsaCarrierSchema.safeParse(parsed).success === true);
+
+  // (b) operatingStatus is a real enum member, not a raw string passthrough.
+  const okStatuses: FmcsaCarrier["operatingStatus"][] = ["AUTHORIZED", "NOT_AUTHORIZED", "OUT_OF_SERVICE", "PENDING", "UNKNOWN"];
+  assert("regress: operatingStatus is a schema enum member",
+    parsed !== null && okStatuses.includes(parsed.operatingStatus));
+
+  // (c) authorityAgeYears is number|null and (here, from a fixed snapshot) a
+  // finite number — never NaN. With FIXED_NOW=2025-06-01 and snapshot 2018-01-01
+  // the age is deterministic (~7.4y), proving the injected clock is honored.
+  assert("regress: authorityAgeYears is a finite number for a parseable snapshot",
+    typeof parsed?.authorityAgeYears === "number" && Number.isFinite(parsed.authorityAgeYears as number));
+  assert("regress: authorityAgeYears deterministic with injected clock (~7.4y)",
+    parsed?.authorityAgeYears === 7.4, `got ${parsed?.authorityAgeYears}`);
+
+  // A NaN authorityAgeYears must be rejected by the gate — assert the schema the
+  // parser uses actually rejects it (so a future mapping drift that emits NaN
+  // can't slip through). This is the precise property the gate enforces.
+  assert("regress: fmcsaCarrierSchema rejects NaN authorityAgeYears (gate is real)",
+    fmcsaCarrierSchema.safeParse({
+      mcNumber: "MC-1", legalName: "x", address: {}, operatingStatus: "AUTHORIZED",
+      authority: { carrier: false, broker: true, freightForwarder: false },
+      authorityAgeYears: NaN, fetchedAt: "x",
+    }).success === false);
+
+  // ...and rejects an out-of-enum operatingStatus (the other drift the gate guards).
+  assert("regress: fmcsaCarrierSchema rejects out-of-enum operatingStatus (gate is real)",
+    fmcsaCarrierSchema.safeParse({
+      mcNumber: "MC-1", legalName: "x", address: {}, operatingStatus: "ACTIVE",
+      authority: { carrier: false, broker: true, freightForwarder: false },
+      authorityAgeYears: 1, fetchedAt: "x",
+    }).success === false);
+
+  // (d) The loop SKIPS a candidate it cannot build a valid record from and
+  // returns the next valid one (rather than returning null on the first miss or
+  // emitting the raw first candidate). Pre-fix-style early-return would yield
+  // null here; a non-skipping/unvalidated path would surface the bad candidate.
+  const skipped = parseMobileApiResponse("MC-1201", {
+    content: [
+      { carrier: { dotNumber: "1" } },                          // no legalName → must be skipped
+      { carrier: { legalName: "Second Valid LLC", allowedToOperate: "Y", brokerAuthorityStatus: "A" } },
+    ],
+  }, FIXED_NOW);
+  assert("regress: malformed first candidate skipped, valid second returned",
+    skipped?.legalName === "Second Valid LLC");
+  assert("regress: skipped-then-valid result still schema-valid",
+    skipped !== null && fmcsaCarrierSchema.safeParse(skipped).success === true);
 }
 
 // ---------------------------------------------------------------------------
