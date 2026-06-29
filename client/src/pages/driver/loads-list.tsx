@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { ChevronRight, Package } from "lucide-react";
 import type { LoadFull, MeLoadsResponse } from "@shared/schema";
 import { apiJson } from "@/lib/queryClient";
@@ -25,28 +25,32 @@ import { useT } from "@/lib/i18n";
 export default function DriverLoadsListPage() {
   const { t } = useT();
   const [statusFilter, setStatusFilter] = useState<"all" | "available" | "booked">("all");
-  const [pages, setPages] = useState<MeLoadsResponse[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
 
-  const queryUrl =
-    statusFilter === "all"
-      ? `/api/me/loads?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`
-      : `/api/me/loads?limit=20&status=${statusFilter}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+  const buildUrl = (cursor: string | null) => {
+    const base =
+      statusFilter === "all"
+        ? `/api/me/loads?limit=20`
+        : `/api/me/loads?limit=20&status=${statusFilter}`;
+    return cursor ? `${base}&cursor=${encodeURIComponent(cursor)}` : base;
+  };
 
-  const { data, isLoading, isFetching, error } = useQuery<MeLoadsResponse>({
-    queryKey: ["me", "loads", statusFilter, cursor],
-    queryFn: async () => {
-      const resp = await apiJson<MeLoadsResponse>("GET", queryUrl);
-      // Append to accumulator on cursor pages, replace on first page.
-      setPages((prev) => (cursor ? [...prev, resp] : [resp]));
-      return resp;
-    },
-    // No polling — list is read on visit, refresh via pull or filter change.
-  });
+  // Cursor pagination via useInfiniteQuery so page accumulation lives in the
+  // query cache (not component state). Refetch re-fetches every loaded page in
+  // place, so rows never duplicate or churn — unlike the previous queryFn that
+  // called setState as a side effect on each fetch.
+  const { data, isLoading, isFetchingNextPage, fetchNextPage, hasNextPage, error } =
+    useInfiniteQuery<MeLoadsResponse>({
+      queryKey: ["me", "loads", statusFilter],
+      queryFn: ({ pageParam }) =>
+        apiJson<MeLoadsResponse>("GET", buildUrl((pageParam as string | null) ?? null)),
+      initialPageParam: null as string | null,
+      getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.nextCursor : undefined),
+      // No polling — list is read on visit, refresh via pull or filter change.
+    });
 
-  const allLoads: LoadFull[] = pages.flatMap((p) => p.items);
-  const total = data?.total ?? 0;
-  const hasMore = data?.hasMore ?? false;
+  const allLoads: LoadFull[] = (data?.pages ?? []).flatMap((p) => p.items);
+  const total = data?.pages[0]?.total ?? 0;
+  const hasMore = hasNextPage;
 
   return (
     <div className="space-y-4">
@@ -63,28 +67,19 @@ export default function DriverLoadsListPage() {
       <div className="flex gap-2 overflow-x-auto pb-1">
         <FilterPill
           active={statusFilter === "all"}
-          onClick={() => {
-            setStatusFilter("all");
-            setCursor(null);
-          }}
+          onClick={() => setStatusFilter("all")}
         >
           {t("driver.loads_list.filter.all")}
         </FilterPill>
         <FilterPill
           active={statusFilter === "booked"}
-          onClick={() => {
-            setStatusFilter("booked");
-            setCursor(null);
-          }}
+          onClick={() => setStatusFilter("booked")}
         >
           {t("driver.loads_list.filter.booked")}
         </FilterPill>
         <FilterPill
           active={statusFilter === "available"}
-          onClick={() => {
-            setStatusFilter("available");
-            setCursor(null);
-          }}
+          onClick={() => setStatusFilter("available")}
         >
           {t("driver.loads_list.filter.available")}
         </FilterPill>
@@ -124,10 +119,10 @@ export default function DriverLoadsListPage() {
           <Button
             variant="outline"
             size="lg"
-            disabled={isFetching}
-            onClick={() => setCursor(data?.nextCursor ?? null)}
+            disabled={isFetchingNextPage}
+            onClick={() => fetchNextPage()}
           >
-            {isFetching ? t("common.loading") : t("driver.loads_list.show_more")}
+            {isFetchingNextPage ? t("common.loading") : t("driver.loads_list.show_more")}
           </Button>
         </div>
       )}
