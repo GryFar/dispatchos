@@ -280,6 +280,49 @@ export async function chargeInvoiceViaStripe(
   }
 }
 
+// ---------------------------------------------------------------------------
+// AI credit packs (Variant 2: user buys, charged to their carrier's Stripe
+// customer). Granted on the invoice.payment_succeeded webhook below.
+// ---------------------------------------------------------------------------
+export const AI_CREDIT_PACK = { credits: 100, priceCents: 500 } as const; // 100 requests for $5
+
+export async function chargeAiCreditPack(
+  userId: string,
+  clientId: string,
+): Promise<{ ok: boolean; stripeInvoiceId?: string; reason?: string }> {
+  const stripe = stripeClient();
+  if (!stripe) return { ok: false, reason: "stripe_not_configured" };
+  const client = storage.getClient(clientId) as
+    | (Record<string, unknown> & { stripeCustomerId?: string; deletedAt?: string | null })
+    | undefined;
+  if (!client || client.deletedAt) return { ok: false, reason: "client_not_found" };
+  const customer = client.stripeCustomerId;
+  if (!customer) return { ok: false, reason: "no_stripe_customer" };
+  try {
+    // Create the invoice FIRST (empty), attach ONLY the AI-pack item to it, then
+    // finalize. This avoids pending_invoice_items_behavior:"include" sweeping
+    // unrelated pending items (e.g. a weekly success fee) onto this charge.
+    const created = await stripe.invoices.create({
+      customer,
+      collection_method: "charge_automatically",
+      auto_advance: false,
+      metadata: { aiCreditsUserId: userId, aiCreditsPack: String(AI_CREDIT_PACK.credits) },
+    });
+    if (!created.id) return { ok: false, reason: "stripe_no_invoice_id" };
+    await stripe.invoiceItems.create({
+      customer,
+      invoice: created.id,
+      amount: AI_CREDIT_PACK.priceCents,
+      currency: "usd",
+      description: `DispatchOS - ${AI_CREDIT_PACK.credits} AI requests`,
+    });
+    await stripe.invoices.finalizeInvoice(created.id, { auto_advance: true });
+    return { ok: true, stripeInvoiceId: created.id };
+  } catch (err) {
+    return { ok: false, reason: (err as Error).message };
+  }
+}
+
 /**
  * Extract subscription id from an Invoice across Stripe API versions.
  * Older API: invoice.subscription (string | Subscription).
@@ -580,6 +623,22 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
 
     case "invoice.payment_succeeded": {
       const invoice = event.data.object as Stripe.Invoice;
+
+      // AI credit-pack top-up (one-off, no subscription). Grant the purchased
+      // credits to the user from metadata. The webhook route dedupes by event.id
+      // (markStripeEventProcessed), so this runs once -> no double-grant.
+      const aiCreditsUserId = invoice.metadata?.aiCreditsUserId;
+      const aiCreditsPack = Number(invoice.metadata?.aiCreditsPack ?? 0);
+      if (aiCreditsUserId && aiCreditsPack > 0) {
+        const balance = storage.addAiCredits(aiCreditsUserId, aiCreditsPack);
+        storage.audit("ai.credits_purchased", "user", aiCreditsUserId, {
+          pack: aiCreditsPack,
+          balance,
+          stripeInvoiceId: invoice.id,
+        });
+        return { handled: true, clientId: null, changes: { aiCreditsUserId, aiCreditsPack, balance } };
+      }
+
       const stripe = stripeClient();
 
       // --- Success-fee reconciliation (one-off invoices have NO subscription) ---

@@ -2107,6 +2107,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Audit V3-13 — dispatch board is operational data (loads, drivers,
   // statuses). Admin-only: dispatchers get fleet/load data via the cockpit and
   // /api/dispatch/* endpoints, not this admin board. Drivers/anonymous blocked.
+  // Per-user AI quota status for the header indicator. Driver (receipt OCR) and
+  // dispatcher (AI recommend) share one daily budget; admins don't consume AI.
+  app.get("/api/ai-quota", requireRole("driver", "dispatcher"), (req, res) => {
+    const u = getCurrentUser(req);
+    if (!u) return res.status(401).json({ message: "Authentication required" });
+    res.json(storage.getAiQuotaStatus(u.id));
+  });
+
   app.get("/api/dispatch-board", requireRole("admin"), (req, res) => {
     res.json(buildDispatchBoard(String(req.query.clientId ?? "")));
   });
