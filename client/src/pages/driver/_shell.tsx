@@ -6,6 +6,7 @@ import { useT } from "@/lib/i18n";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeToggle } from "@/components/dispatch/ThemeToggle";
 import { SubscriptionBadge } from "@/components/SubscriptionBadge";
+import { AiQuotaBadge } from "@/components/AiQuotaBadge";
 
 /**
  * DriverShell — общий layout для всех экранов /d/*.
@@ -59,6 +60,7 @@ function DriverTopBar() {
         </Link>
         <div className="flex items-center gap-1">
           <SubscriptionBadge />
+          <AiQuotaBadge />
           <LanguageSwitcher variant="inline" />
           <ThemeToggle />
           <span className="rounded-full bg-primary/15 px-2.5 py-0.5 text-xs font-medium text-primary">
