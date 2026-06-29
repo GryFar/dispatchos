@@ -1,5 +1,5 @@
 import { useRoute, useLocation } from "wouter";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -278,6 +278,11 @@ function ActionButtons({ loadId }: { loadId: string }) {
   const [issueOpen, setIssueOpen] = useState(false);
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [fuelOpen, setFuelOpen] = useState(false);
+  // Guard against duplicate check-ins fired while geolocation is still pending:
+  // the button's `disabled` only covers the mutation, not the async gap before
+  // it. Ref is the synchronous re-entrancy gate; state mirrors it for the UI.
+  const geoPendingRef = useRef(false);
+  const [geoPending, setGeoPending] = useState(false);
 
   const checkinMutation = useMutation({
     mutationFn: (input: { kind: CheckinKind; lat?: number; lng?: number; notes?: string }) =>
@@ -298,6 +303,9 @@ function ActionButtons({ loadId }: { loadId: string }) {
   });
 
   function withGeo(kind: CheckinKind) {
+    // Synchronous re-entrancy gate: ignore taps while a check-in is already
+    // resolving geolocation or posting, so we never queue duplicate check-ins.
+    if (geoPendingRef.current || checkinMutation.isPending) return;
     if (!navigator.geolocation) {
       toast({
         variant: "destructive",
@@ -306,19 +314,29 @@ function ActionButtons({ loadId }: { loadId: string }) {
       });
       return;
     }
+    geoPendingRef.current = true;
+    setGeoPending(true);
+    const clearGeo = () => {
+      geoPendingRef.current = false;
+      setGeoPending(false);
+    };
     navigator.geolocation.getCurrentPosition(
-      (pos) =>
+      (pos) => {
+        clearGeo();
         checkinMutation.mutate({
           kind,
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
-        }),
-      (err) =>
+        });
+      },
+      (err) => {
+        clearGeo();
         toast({
           variant: "destructive",
           title: t("common.error"),
           description: err.message,
-        }),
+        });
+      },
       { enableHighAccuracy: true, timeout: 10_000 },
     );
   }
@@ -330,10 +348,10 @@ function ActionButtons({ loadId }: { loadId: string }) {
           variant="outline"
           size="lg"
           className="h-auto flex-col gap-1.5 py-3"
-          disabled={checkinMutation.isPending}
+          disabled={checkinMutation.isPending || geoPending}
           onClick={() => withGeo("pickup_arrived")}
         >
-          {checkinMutation.isPending ? (
+          {checkinMutation.isPending || geoPending ? (
             <Loader2 className="h-5 w-5 animate-spin" />
           ) : (
             <Truck className="h-5 w-5" />
@@ -362,10 +380,14 @@ function ActionButtons({ loadId }: { loadId: string }) {
           variant="outline"
           size="lg"
           className="h-auto flex-col gap-1.5 py-3"
-          disabled={checkinMutation.isPending}
+          disabled={checkinMutation.isPending || geoPending}
           onClick={() => withGeo("delivered")}
         >
-          <CheckCircle2 className="h-5 w-5" />
+          {checkinMutation.isPending || geoPending ? (
+            <Loader2 className="h-5 w-5 animate-spin" />
+          ) : (
+            <CheckCircle2 className="h-5 w-5" />
+          )}
           <span className="text-xs font-medium">{t("driver.loadDetail.delivered")}</span>
         </Button>
         <Button

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ShieldQuestion } from "lucide-react";
+import { ShieldAlert, ShieldQuestion } from "lucide-react";
 import { apiJson } from "@/lib/queryClient";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
 import { cn } from "@/lib/utils";
@@ -68,8 +68,26 @@ export function TrustBadge({
     );
   }
 
-  // On error, or when there are no signals yet, show a muted "no data" chip.
-  if (isError || !data || data.totalSignals === 0) {
+  // A failed fetch is NOT "no data" — surface it distinctly so a load error
+  // is never mistaken for a legitimately-empty broker history.
+  if (isError) {
+    return (
+      <span
+        className={cn(
+          "inline-flex items-center gap-1 rounded-md border border-destructive/40 bg-muted px-2 py-0.5 font-medium text-destructive",
+          textSize,
+          className,
+        )}
+        title={t("dispatch.TrustBadge.errorTooltip")}
+      >
+        <ShieldAlert className="h-3 w-3" />
+        {t("dispatch.TrustBadge.errorLabel")}
+      </span>
+    );
+  }
+
+  // Successful fetch with no signals yet — show a muted "no data" chip.
+  if (!data || data.totalSignals === 0) {
     return (
       <span
         className={cn(
