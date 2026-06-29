@@ -223,8 +223,11 @@ export default function LoadSourceDetailPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="active">{t("admin.loadSourceDetail.statusActive")}</SelectItem>
-                  <SelectItem value="paused">{t("admin.loadSourceDetail.statusPaused")}</SelectItem>
+                  {(["active", "paused", "error", "needs_credentials"] as LoadSourceStatus[]).map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {t(STATUS_LABEL_KEY[s])}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

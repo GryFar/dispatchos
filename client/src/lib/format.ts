@@ -91,9 +91,10 @@ export function formatDate(iso: string | Date | null | undefined): string {
   if (!iso) return "—";
   try {
     const d = typeof iso === "string" ? new Date(iso) : iso;
+    if (Number.isNaN(d.getTime())) return "—";
     return dateFormatter.format(d);
   } catch {
-    return String(iso);
+    return "—";
   }
 }
 
@@ -102,9 +103,10 @@ export function formatDateFull(iso: string | Date | null | undefined): string {
   if (!iso) return "—";
   try {
     const d = typeof iso === "string" ? new Date(iso) : iso;
+    if (Number.isNaN(d.getTime())) return "—";
     return dateFullFormatter.format(d);
   } catch {
-    return String(iso);
+    return "—";
   }
 }
 
@@ -113,9 +115,10 @@ export function formatDateOnly(iso: string | Date | null | undefined): string {
   if (!iso) return "—";
   try {
     const d = typeof iso === "string" ? new Date(iso) : iso;
+    if (Number.isNaN(d.getTime())) return "—";
     return dateOnlyFormatter.format(d);
   } catch {
-    return String(iso);
+    return "—";
   }
 }
 

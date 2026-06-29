@@ -99,6 +99,14 @@ export default function OnboardingPage() {
   const [fleetSize, setFleetSize] = useState<string>("");
   const [planTier, setPlanTier] = useState<string>("");
 
+  // MC lookup is lifted to the page so the footer Continue button can read its
+  // hard-block result (claimedByOther / out-of-service) and gate advancement,
+  // not just whether an MC string was typed.
+  const { result: mcLookup, loading: mcLoading } = useMcLookup(mc);
+  const mcHardBlocked = Boolean(
+    mcLookup?.claimedByOther || (mcLookup?.found && mcLookup?.blocked),
+  );
+
   // Auth gate — if not logged in, send to login. If onboarding already complete,
   // send to role-default route.
   useEffect(() => {
@@ -208,7 +216,7 @@ export default function OnboardingPage() {
   const canAdvance =
     step === 0 ||
     (step === 1 && Boolean(persona)) ||
-    (step === 2 && Boolean(mc)) ||
+    (step === 2 && Boolean(mc) && !mcHardBlocked) ||
     (step === 3 && Boolean(planTier));
 
   return (
@@ -290,6 +298,8 @@ export default function OnboardingPage() {
                 setDot={setDot}
                 fleetSize={fleetSize}
                 setFleetSize={setFleetSize}
+                mcLookup={mcLookup}
+                mcLoading={mcLoading}
               />
             )}
             {step === 3 && (
@@ -557,6 +567,8 @@ function CompanyStep({
   setDot,
   fleetSize,
   setFleetSize,
+  mcLookup,
+  mcLoading,
 }: {
   persona: Persona | null;
   companyName: string;
@@ -567,10 +579,11 @@ function CompanyStep({
   setDot: (s: string) => void;
   fleetSize: string;
   setFleetSize: (s: string) => void;
+  mcLookup: McLookupResult | null;
+  mcLoading: boolean;
 }) {
   const { t } = useT();
   const isFleet = persona === "fleet" || persona === "enterprise";
-  const { result: mcLookup, loading: mcLoading } = useMcLookup(mc);
 
   // Auto-fill empty companyName + DOT once a SAFER hit arrives; never
   // overwrite something the user already typed (they could be correcting

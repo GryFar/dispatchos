@@ -190,6 +190,20 @@ function csvList(value: string) {
     .filter(Boolean);
 }
 
+/**
+ * Parse a numeric form field, returning null for empty/non-finite input so the
+ * caller can reject it instead of silently sending Number("")===0 or NaN to the
+ * API. `min`/`max` optionally bound the accepted range.
+ */
+function parseFiniteNumber(value: string, min?: number, max?: number): number | null {
+  if (value.trim() === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  if (min !== undefined && n < min) return null;
+  if (max !== undefined && n > max) return null;
+  return n;
+}
+
 function localDateTimeToIso(value: string, fallbackMs: number) {
   if (!value) return new Date(Date.now() + fallbackMs).toISOString();
   return new Date(value).toISOString();
@@ -311,30 +325,48 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
 
   async function submitClient(event: FormEvent) {
     event.preventDefault();
-    await apiRequest("POST", "/api/clients", {
-      name: clientForm.name,
-      mc: clientForm.mc,
-      equipment: clientForm.equipment,
-      targetPpm: Number(clientForm.targetPpm),
-      minimumPpm: Number(clientForm.minimumPpm),
-      mpg: Number(clientForm.mpg),
-      fuelPrice: Number(clientForm.fuelPrice),
-      fixedCostPerMile: Number(clientForm.fixedCostPerMile),
-      preferredLanes: csvList(clientForm.preferredLanes),
-      avoidStates: csvList(clientForm.avoidStates),
-      currentLocation: {
-        city: clientForm.city,
-        state: clientForm.state,
-        lat: Number(clientForm.lat),
-        lng: Number(clientForm.lng),
-        source: "manual_checkin",
-        updatedAt: new Date().toISOString(),
-        status: "empty",
-        availableAt: new Date().toISOString(),
-      },
-    });
-    setClientForm(emptyClientForm);
-    await refresh(t("admin.legacyDashboard.statusClientSaved"));
+    const lat = parseFiniteNumber(clientForm.lat, -90, 90);
+    const lng = parseFiniteNumber(clientForm.lng, -180, 180);
+    const targetPpm = parseFiniteNumber(clientForm.targetPpm, 0);
+    const minimumPpm = parseFiniteNumber(clientForm.minimumPpm, 0);
+    const mpg = parseFiniteNumber(clientForm.mpg, 0);
+    const fuelPrice = parseFiniteNumber(clientForm.fuelPrice, 0);
+    const fixedCostPerMile = parseFiniteNumber(clientForm.fixedCostPerMile, 0);
+    if (
+      lat === null || lng === null || targetPpm === null || minimumPpm === null ||
+      mpg === null || fuelPrice === null || fixedCostPerMile === null
+    ) {
+      setStatus(t("admin.legacyDashboard.statusInvalidNumbers"));
+      return;
+    }
+    try {
+      await apiRequest("POST", "/api/clients", {
+        name: clientForm.name,
+        mc: clientForm.mc,
+        equipment: clientForm.equipment,
+        targetPpm,
+        minimumPpm,
+        mpg,
+        fuelPrice,
+        fixedCostPerMile,
+        preferredLanes: csvList(clientForm.preferredLanes),
+        avoidStates: csvList(clientForm.avoidStates),
+        currentLocation: {
+          city: clientForm.city,
+          state: clientForm.state,
+          lat,
+          lng,
+          source: "manual_checkin",
+          updatedAt: new Date().toISOString(),
+          status: "empty",
+          availableAt: new Date().toISOString(),
+        },
+      });
+      setClientForm(emptyClientForm);
+      await refresh(t("admin.legacyDashboard.statusClientSaved"));
+    } catch (err: any) {
+      setStatus(err?.message || String(err));
+    }
   }
 
   async function submitLocation(event: FormEvent) {
@@ -355,30 +387,50 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
 
   async function submitLoad(event: FormEvent) {
     event.preventDefault();
-    await apiRequest("POST", "/api/loads", {
-      source: loadForm.source,
-      originCity: loadForm.originCity,
-      originState: loadForm.originState,
-      originLat: Number(loadForm.originLat),
-      originLng: Number(loadForm.originLng),
-      destinationCity: loadForm.destinationCity,
-      destinationState: loadForm.destinationState,
-      destinationLat: Number(loadForm.destinationLat),
-      destinationLng: Number(loadForm.destinationLng),
-      rate: Number(loadForm.rate),
-      loadedMiles: Number(loadForm.loadedMiles),
-      pickupAt: localDateTimeToIso(loadForm.pickupAt, 4 * 60 * 60 * 1000),
-      deliveryAt: localDateTimeToIso(loadForm.deliveryAt, 36 * 60 * 60 * 1000),
-      equipment: loadForm.equipment,
-      brokerName: loadForm.brokerName,
-      brokerMc: loadForm.brokerMc,
-      brokerScore: Number(loadForm.brokerScore),
-      fraudRisk: Number(loadForm.fraudRisk),
-      marketQuality: Number(loadForm.marketQuality),
-      notes: loadForm.notes,
-    });
-    setLoadForm(emptyLoadForm);
-    await refresh(t("admin.legacyDashboard.statusLoadSaved"));
+    const originLat = parseFiniteNumber(loadForm.originLat, -90, 90);
+    const originLng = parseFiniteNumber(loadForm.originLng, -180, 180);
+    const destinationLat = parseFiniteNumber(loadForm.destinationLat, -90, 90);
+    const destinationLng = parseFiniteNumber(loadForm.destinationLng, -180, 180);
+    const rate = parseFiniteNumber(loadForm.rate, 0);
+    const loadedMiles = parseFiniteNumber(loadForm.loadedMiles, 0);
+    const brokerScore = parseFiniteNumber(loadForm.brokerScore, 0, 100);
+    const fraudRisk = parseFiniteNumber(loadForm.fraudRisk, 0, 100);
+    const marketQuality = parseFiniteNumber(loadForm.marketQuality, 0, 100);
+    if (
+      originLat === null || originLng === null || destinationLat === null || destinationLng === null ||
+      rate === null || loadedMiles === null || brokerScore === null || fraudRisk === null || marketQuality === null
+    ) {
+      setStatus(t("admin.legacyDashboard.statusInvalidNumbers"));
+      return;
+    }
+    try {
+      await apiRequest("POST", "/api/loads", {
+        source: loadForm.source,
+        originCity: loadForm.originCity,
+        originState: loadForm.originState,
+        originLat,
+        originLng,
+        destinationCity: loadForm.destinationCity,
+        destinationState: loadForm.destinationState,
+        destinationLat,
+        destinationLng,
+        rate,
+        loadedMiles,
+        pickupAt: localDateTimeToIso(loadForm.pickupAt, 4 * 60 * 60 * 1000),
+        deliveryAt: localDateTimeToIso(loadForm.deliveryAt, 36 * 60 * 60 * 1000),
+        equipment: loadForm.equipment,
+        brokerName: loadForm.brokerName,
+        brokerMc: loadForm.brokerMc,
+        brokerScore,
+        fraudRisk,
+        marketQuality,
+        notes: loadForm.notes,
+      });
+      setLoadForm(emptyLoadForm);
+      await refresh(t("admin.legacyDashboard.statusLoadSaved"));
+    } catch (err: any) {
+      setStatus(err?.message || String(err));
+    }
   }
 
   async function submitBroker(event: FormEvent) {
@@ -449,18 +501,25 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
       setStatus(t("admin.legacyDashboard.statusChooseFile"));
       return;
     }
-    const form = new FormData();
-    form.append("clientId", uploadForm.clientId || clientId);
-    if (uploadForm.loadId) form.append("loadId", uploadForm.loadId);
-    form.append("type", uploadForm.type);
-    form.append("status", uploadForm.status);
-    form.append("notes", uploadForm.notes);
-    form.append("file", uploadFile);
-    const response = await fetch("/api/documents/upload", { method: "POST", body: form });
-    if (!response.ok) throw new Error(await response.text());
-    setUploadFile(null);
-    setUploadForm(emptyUploadForm);
-    await refresh(t("admin.legacyDashboard.statusFileUploaded"));
+    try {
+      const form = new FormData();
+      form.append("clientId", uploadForm.clientId || clientId);
+      if (uploadForm.loadId) form.append("loadId", uploadForm.loadId);
+      form.append("type", uploadForm.type);
+      form.append("status", uploadForm.status);
+      form.append("notes", uploadForm.notes);
+      form.append("file", uploadFile);
+      // credentials:"include" mirrors apiRequest so the cookie-based session is
+      // sent with the multipart upload (FormData can't go through apiRequest's
+      // JSON body, so we keep raw fetch here).
+      const response = await fetch("/api/documents/upload", { method: "POST", body: form, credentials: "include" });
+      if (!response.ok) throw new Error(await response.text());
+      setUploadFile(null);
+      setUploadForm(emptyUploadForm);
+      await refresh(t("admin.legacyDashboard.statusFileUploaded"));
+    } catch (err: any) {
+      setStatus(err?.message || String(err));
+    }
   }
 
   return (

@@ -77,6 +77,12 @@ export default function AssignmentsPage() {
     staleTime: 30_000,
   });
 
+  // In-flight pair guard — prevents a second POST for the same client↔dispatcher
+  // pair fired before onSuccess invalidation lands (and works even when the
+  // existing assignment is beyond the 200-item cache cap).
+  const [pendingPairs, setPendingPairs] = useState<Set<string>>(() => new Set());
+  const pairKey = (clientId: string, dispatcherUserId: string) => `${clientId}|${dispatcherUserId}`;
+
   const createMutation = useMutation({
     mutationFn: (body: { clientId: string; dispatcherUserId: string }) =>
       apiJson<Assignment>("POST", "/api/admin/assignments", body),
@@ -86,6 +92,13 @@ export default function AssignmentsPage() {
     },
     onError: (err: Error) => {
       toast({ variant: "destructive", title: t("common.error"), description: err.message });
+    },
+    onSettled: (_data, _err, body) => {
+      setPendingPairs((prev) => {
+        const next = new Set(prev);
+        next.delete(pairKey(body.clientId, body.dispatcherUserId));
+        return next;
+      });
     },
   });
 
@@ -121,6 +134,9 @@ export default function AssignmentsPage() {
     if (!activeId.startsWith("client:") || !overId.startsWith("dispatcher:")) return;
     const clientId = activeId.slice("client:".length);
     const dispatcherUserId = overId.slice("dispatcher:".length);
+    const key = pairKey(clientId, dispatcherUserId);
+    // Already in flight — ignore the duplicate drop (cache may not yet reflect it).
+    if (pendingPairs.has(key)) return;
     const exists = (assignmentsQuery.data?.items ?? []).some(
       (a) => a.clientId === clientId && a.dispatcherUserId === dispatcherUserId && !a.removedAt,
     );
@@ -128,6 +144,7 @@ export default function AssignmentsPage() {
       toast({ title: t("admin.assignments.alreadyAssignedTitle"), description: t("admin.assignments.alreadyAssignedDesc") });
       return;
     }
+    setPendingPairs((prev) => new Set(prev).add(key));
     createMutation.mutate({ clientId, dispatcherUserId });
   }
 

@@ -156,6 +156,9 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
       toast({ description: t("tracking.DriverLocationCard.trackingDisabled") });
       qc.invalidateQueries({ queryKey: ["/api/admin/users", userId, "track"] });
     },
+    onError: (err: Error) => {
+      toast({ variant: "destructive", title: t("common.error"), description: err.message });
+    },
   });
 
   if (trackQ.isLoading) {

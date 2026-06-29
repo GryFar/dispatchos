@@ -135,6 +135,10 @@ export default function DriverLoadCreatePage() {
       toast({ title: "Pickup and delivery datetime are required", variant: "destructive" });
       return;
     }
+    if (new Date(form.deliveryAt) <= new Date(form.pickupAt)) {
+      toast({ title: "Delivery must be after pickup", variant: "destructive" });
+      return;
+    }
 
     mutation.mutate({
       originCity: form.originCity.trim(),

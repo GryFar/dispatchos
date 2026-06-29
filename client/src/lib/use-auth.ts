@@ -1,12 +1,17 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import type { UserPublic } from "@shared/schema";
 import { apiJson, ApiError, queryClient } from "@/lib/queryClient";
 
 /**
  * useAuth — единый источник правды для текущего пользователя на фронте.
  *
- * Загружает GET /api/me. Если 401 — возвращает `user: null` (не залогинен).
- * Если 200 — возвращает UserPublic. Сетевые ошибки бросает.
+ * Загружает GET /api/me.
+ *   - 401/403  → пользователь действительно не залогинен → `user: null`.
+ *   - 200      → UserPublic.
+ *   - 5xx / network / CORS → ТРАНЗИЕНТНАЯ ошибка. НЕ считаем юзера разлогиненным:
+ *     удерживаем последнего известного user (`keepPreviousData`) и ретраим,
+ *     чтобы кратковременный сбой /api/me не вышвыривал авторизованного юзера
+ *     на /login. `isError` отдаётся наружу, чтобы гард мог показать retry-UI.
  *
  * Используется:
  *   - в App.tsx — для роутинга и role guards
@@ -20,18 +25,29 @@ export function useAuth() {
       try {
         return await apiJson<UserPublic>("GET", "/api/me");
       } catch (err) {
-        if (err instanceof ApiError && err.status === 401) return null;
+        // Только настоящий auth-denied (401/403) означает «не залогинен».
+        // Всё остальное (5xx/сеть/CORS) — транзиентно, пробрасываем как ошибку,
+        // чтобы query ушёл в error-state, а не в «успешно вернул null».
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          return null;
+        }
         throw err;
       }
     },
     staleTime: 60_000,
-    retry: false,
+    // Удерживаем предыдущего user'а во время транзиентной ошибки, чтобы
+    // query.data не схлопывался в undefined и гард не редиректил на /login.
+    placeholderData: keepPreviousData,
+    // Авто-восстановление после кратковременного сбоя. 401/403 пришли как
+    // `null` (а не throw), так что сюда попадают только транзиентные ошибки.
+    retry: (failureCount) => failureCount < 2,
   });
 
   return {
     user: query.data ?? null,
     isAuthenticated: Boolean(query.data),
     isLoading: query.isLoading,
+    isError: query.isError,
     error: query.error,
     refetch: query.refetch,
   };

@@ -167,7 +167,7 @@ function InvoicesTable({ rows, loading }: { rows: Invoice[]; loading: boolean })
       header: t("admin.billing.colGrossBooked"),
       align: "right",
       mono: true,
-      cell: (inv) => <MoneyCell value={inv.grossBooked} />,
+      cell: (inv) => <MoneyCell value={inv.grossBooked} cents />,
       width: "130px",
       hideOnMobile: true,
     },
@@ -178,7 +178,7 @@ function InvoicesTable({ rows, loading }: { rows: Invoice[]; loading: boolean })
       mono: true,
       cell: (inv) => (
         <div className="text-xs">
-          <div>{formatMoney(inv.flatFee)}</div>
+          <div>{formatMoneyCents(inv.flatFee)}</div>
           <div className="text-muted-foreground">{formatMoneyCents(inv.percentFee)}</div>
         </div>
       ),
@@ -394,8 +394,8 @@ function PreviewView({
 
       <div className="space-y-4 py-4">
         <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
-          <Row label={t("admin.billing.rowGrossBooked")} value={formatMoney(preview.grossBooked)} />
-          <Row label={t("admin.billing.rowFlatFee")} value={formatMoney(preview.flatFee)} />
+          <Row label={t("admin.billing.rowGrossBooked")} value={formatMoneyCents(preview.grossBooked)} />
+          <Row label={t("admin.billing.rowFlatFee")} value={formatMoneyCents(preview.flatFee)} />
           <Row label={t("admin.billing.rowPercentFee")} value={formatMoneyCents(preview.percentFee)} />
           <div className="my-2 border-t border-border" />
           <Row

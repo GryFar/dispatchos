@@ -8,9 +8,11 @@ import { useT } from "@/lib/i18n";
 import { formatDateFull } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { DataTable, type DataTableColumn } from "@/components/dispatch/DataTable";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
 import { EmptyState } from "@/components/dispatch/EmptyState";
+import { EndpointPending, isEndpointMissing } from "@/components/dispatch/EndpointPending";
 
 /**
  * /admin/load-sources — Phase 6 load source management.
@@ -82,7 +84,7 @@ export default function LoadSourcesPage() {
   const { t } = useT();
   const [, setLocation] = useLocation();
 
-  const { data, isLoading } = useQuery<{ loadSources: LoadSource[] }>({
+  const { data, isLoading, error } = useQuery<{ loadSources: LoadSource[] }>({
     queryKey: ["/api/admin/load-sources"],
     queryFn: () => apiJson("GET", "/api/admin/load-sources"),
   });
@@ -114,6 +116,13 @@ export default function LoadSourcesPage() {
   }, [clients]);
 
   const sources = data?.loadSources ?? [];
+
+  // The load-sources endpoint may not be mounted yet (Vite SPA fallback returns
+  // the HTML shell) — show the sibling "endpoint pending" panel, matching
+  // /admin/users behaviour, rather than a misleading empty state.
+  if (isEndpointMissing(error)) {
+    return <EndpointPending endpoint="GET /api/admin/load-sources" />;
+  }
 
   const columns: DataTableColumn<LoadSource>[] = [
     {
@@ -198,6 +207,13 @@ export default function LoadSourcesPage() {
         <Card className="flex h-32 items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </Card>
+      ) : error ? (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            {t("admin.loadSources.loadFailed", { message: (error as Error).message })}
+          </AlertDescription>
+        </Alert>
       ) : sources.length === 0 ? (
         <Card className="p-2">
           <EmptyState
