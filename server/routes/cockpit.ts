@@ -18,6 +18,7 @@ import { getCurrentUser, requireRole } from "../auth";
 import { storage } from "../storage";
 import { scoreLoadForClient } from "../routes";
 import { getAiRecommendation } from "../lib/ai/dispatch-advisor";
+import { chargeAiCreditPack, AI_CREDIT_PACK } from "../lib/stripe";
 
 function ah(
   handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown> | unknown,
@@ -291,6 +292,30 @@ export function registerCockpitRoutes(app: Express): void {
         loadsConsidered: top.length,
       });
       return res.json(rec);
+    }),
+  );
+
+  // Variant 2 (dispatcher): buy an AI-credit pack billed to ONE of the
+  // dispatcher's assigned carriers (they serve several — clientId picks which).
+  // Credits land on the invoice.payment_succeeded webhook (see stripe.ts).
+  app.post(
+    "/api/dispatch/ai-credits/purchase",
+    requireRole("dispatcher"),
+    ah(async (req, res) => {
+      const me = getCurrentUser(req);
+      if (!me) return res.status(401).json({ message: "Authentication required" });
+      const clientId = String((req.body as { clientId?: unknown })?.clientId ?? "").trim();
+      if (!clientId) return res.status(400).json({ message: "clientId is required" });
+      // Tenant gate: only carriers assigned to this dispatcher can be billed.
+      const assigned = storage.listAssignedClientsForDispatcher(me.id);
+      if (!assigned.some((c) => c.id === clientId)) {
+        return res.status(404).json({ message: "Client not found" });
+      }
+      const result = await chargeAiCreditPack(me.id, clientId);
+      if (!result.ok) {
+        return res.status(402).json({ message: "Оплата не оформлена.", code: result.reason });
+      }
+      return res.json({ ok: true, pack: AI_CREDIT_PACK.credits, priceCents: AI_CREDIT_PACK.priceCents });
     }),
   );
 }
