@@ -5,8 +5,19 @@ import { apiJson } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatDateFull } from "@/lib/format";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -20,6 +31,7 @@ import { useT } from "@/lib/i18n";
 export default function BackupPage() {
   const { t } = useT();
   const [downloading, setDownloading] = useState<"redacted" | "full" | null>(null);
+  const [confirmFullOpen, setConfirmFullOpen] = useState(false);
   const { toast } = useToast();
 
   const systemQuery = useQuery<{ version?: string; uptimeSeconds?: number; dbSize?: number }>({
@@ -111,7 +123,7 @@ export default function BackupPage() {
             <Button
               variant="outline"
               className="w-full"
-              onClick={() => handleDownload("full")}
+              onClick={() => setConfirmFullOpen(true)}
               disabled={downloading !== null}
             >
               <Download className="h-4 w-4" />
@@ -161,6 +173,26 @@ export default function BackupPage() {
           </CardContent>
         </Card>
       )}
+
+      <AlertDialog open={confirmFullOpen} onOpenChange={setConfirmFullOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("admin.backup.confirmFullTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("admin.backup.confirmFullBody")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("admin.backup.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              className={cn(buttonVariants({ variant: "destructive" }))}
+              onClick={() => handleDownload("full")}
+            >
+              {t("admin.backup.confirmFullConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

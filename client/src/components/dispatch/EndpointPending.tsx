@@ -64,11 +64,21 @@ export function EndpointPending({
  * как JSON и ловит SyntaxError. Признак — текст ошибки начинается с "Unexpected token '<'".
  *
  * Также детектим явный 404 (когда backend всё-таки настроен правильно — после Phase 3).
+ *
+ * Текст SyntaxError при попытке распарсить HTML как JSON зависит от движка:
+ *   V8 (Chrome/Edge/Node): "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON"
+ *   SpiderMonkey (Firefox): "JSON.parse: unexpected character at line 1 column 1 of the JSON data"
+ *   JSC (Safari):           "JSON Parse error: Unexpected identifier \"<\"" / "Unexpected token '<'"
+ * Поэтому матчим все три варианта, а не только V8.
  */
 import { ApiError } from "@/lib/queryClient";
+
+// Сообщение SyntaxError'а для HTML-вместо-JSON во всех основных движках.
+const HTML_INSTEAD_OF_JSON_RE =
+  /Unexpected token '?<|unexpected character|JSON Parse error|Unexpected identifier/i;
+
 export function isEndpointMissing(error: unknown): boolean {
   if (error instanceof ApiError && error.status === 404) return true;
-  if (error instanceof SyntaxError && /Unexpected token '<'/.test(error.message)) return true;
-  if (error instanceof Error && /Unexpected token '<'/.test(error.message)) return true;
+  if (error instanceof Error && HTML_INSTEAD_OF_JSON_RE.test(error.message)) return true;
   return false;
 }

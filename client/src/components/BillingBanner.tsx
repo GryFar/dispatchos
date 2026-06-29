@@ -9,7 +9,7 @@
 //
 // Pulls /api/billing/status; doesn't render anything if Stripe isn't configured.
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { AlertTriangle, Clock, CreditCard } from "lucide-react";
 import { apiJson } from "@/lib/queryClient";
@@ -33,6 +33,10 @@ export function BillingBanner() {
     refetchInterval: 5 * 60 * 1000,
     // Don't hammer this endpoint while logged-out / non-staff.
     retry: false,
+    // Keep the last-known status if a poll fails transiently (network blip / 500).
+    // Otherwise a momentary failure would silently drop a critical past_due/expired
+    // banner until the next 5-min refetch. With retry:false there's no auto recovery.
+    placeholderData: keepPreviousData,
   });
 
   const s = q.data;

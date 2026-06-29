@@ -156,7 +156,7 @@ function BrokersTable({ rows, loading }: { rows: BrokerRecord[]; loading: boolea
           : "verify";
         return (
           <div>
-            <StatusBadge variant={variant}>{b.authorityStatus.replace("_", " ")}</StatusBadge>
+            <StatusBadge variant={variant}>{b.authorityStatus.replace(/_/g, " ")}</StatusBadge>
             {b.authorityAgeMonths > 0 && (
               <p className="mt-0.5 text-[10px] text-muted-foreground">
                 {t("admin.brokers.months", { count: b.authorityAgeMonths })}
@@ -306,7 +306,7 @@ function CheckBrokerDialog({ open, onOpenChange }: { open: boolean; onOpenChange
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-xs uppercase tracking-wider text-muted-foreground">Authority</span>
-                <span className="text-sm capitalize">{result.authorityStatus.replace("_", " ")}</span>
+                <span className="text-sm capitalize">{result.authorityStatus.replace(/_/g, " ")}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-xs uppercase tracking-wider text-muted-foreground">Risk score</span>

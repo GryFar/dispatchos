@@ -22,11 +22,16 @@ import { useT } from "@/lib/i18n";
  */
 export function RoleGate({ allow, children }: { allow: UserRole[]; children: ReactNode }) {
   const { t } = useT();
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, error, refetch } = useAuth();
   const [, setLocation] = useLocation();
 
   useEffect(() => {
     if (isLoading) return;
+    // A transient /api/me failure (network blip, 500, timeout, CORS) leaves the
+    // auth query in an error state with user === null. That is NOT a logout, so
+    // we must NOT bounce a logged-in user to /login. Show a retry UI instead and
+    // only redirect once the query genuinely resolves to "no user".
+    if (error) return;
     if (!user) {
       setLocation("~/login");
       return;
@@ -38,7 +43,7 @@ export function RoleGate({ allow, children }: { allow: UserRole[]; children: Rea
     if (!allow.includes(user.role)) {
       setLocation("~" + defaultRouteForRole(user.role));
     }
-  }, [user, isLoading, allow, setLocation]);
+  }, [user, isLoading, error, allow, setLocation]);
 
   if (isLoading) {
     return (
@@ -49,6 +54,28 @@ export function RoleGate({ allow, children }: { allow: UserRole[]; children: Rea
             <Loader2 className="relative h-6 w-6 animate-spin text-primary" />
           </div>
           <p className="text-xs text-muted-foreground">{t("common.loading")}</p>
+        </div>
+      </div>
+    );
+  }
+  // Transient auth failure: keep the user where they are and offer a retry
+  // instead of silently treating them as logged out (which would blank the
+  // screen and the effect would redirect to /login on success of a stale read).
+  if (error) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="flex max-w-sm flex-col items-center gap-3 px-6 text-center">
+          <p className="text-sm font-medium text-foreground">{t("common.error")}</p>
+          <p className="text-xs text-muted-foreground">
+            Не удалось проверить сессию. Проверьте подключение и повторите попытку.
+          </p>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            className="mt-1 rounded-md border border-border bg-card px-4 py-2 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+          >
+            Повторить
+          </button>
         </div>
       </div>
     );

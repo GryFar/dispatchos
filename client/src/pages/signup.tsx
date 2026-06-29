@@ -560,15 +560,6 @@ function PostSignupEmailVerify({
         {t("auth.emailVerify.verify")}
       </Button>
 
-      <Button
-        onClick={onContinue}
-        variant="ghost"
-        className="w-full text-muted-foreground"
-        disabled={verifying}
-      >
-        {t("auth.emailVerify.skip")}
-      </Button>
-
       {cooldown > 0 ? (
         <p className="text-center text-xs text-muted-foreground">
           {t("auth.emailVerify.cooldown").replace("{sec}", String(cooldown))}
@@ -767,15 +758,6 @@ function PostSignupPhoneVerify({ onContinue }: { onContinue: () => void }) {
           </Button>
         </>
       )}
-
-      <Button
-        onClick={onContinue}
-        variant="ghost"
-        className="w-full text-muted-foreground"
-        disabled={verifying || sending}
-      >
-        {t("auth.phoneVerify.skip")}
-      </Button>
     </div>
   );
 }

@@ -180,7 +180,13 @@ export default function LoadSourceNewPage() {
         pollIntervalMin: Number(pollIntervalMin) || 15,
         status,
       };
-      if (needsCreds) body.credentials = credentials;
+      if (needsCreds) {
+        // Filter credentials by the current adapter shape so stale fields from a
+        // previously-selected adapter never leak into the payload.
+        body.credentials = Object.fromEntries(
+          shape.credentials.map((f) => [f.key, credentials[f.key] ?? ""]),
+        );
+      }
       return apiJson("POST", "/api/admin/load-sources", body);
     },
     onSuccess: () => {
@@ -261,7 +267,16 @@ export default function LoadSourceNewPage() {
             <>
               <div className="space-y-1.5">
                 <Label>{t("admin.loadSourceNew.adapter")}</Label>
-                <Select value={adapterKey} onValueChange={setAdapterKey}>
+                <Select
+                  value={adapterKey}
+                  onValueChange={(v) => {
+                    setAdapterKey(v);
+                    // Reset per-adapter form state so leftover config/credentials
+                    // from a previously-selected adapter don't carry over.
+                    setConfig({});
+                    setCredentials({});
+                  }}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder={t("admin.loadSourceNew.selectSource")} />
                   </SelectTrigger>

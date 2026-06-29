@@ -333,6 +333,42 @@ function ProfileTab({ client }: { client: Client }) {
   });
 
   function handleSave() {
+    // Validate every editable numeric field before mutating: reject NaN /
+    // negative / absurd values so a stray keystroke can't push bogus economics
+    // (negative PPM, garbage fuel price, etc.) into the load-scoring backend.
+    // Always-sent fields are validated against the raw value; optional fields
+    // only when they are non-empty (empty = "leave/clear", handled below).
+    const numericChecks: Array<{ field: string; raw: unknown; max: number; optional?: boolean }> = [
+      { field: "Target PPM", raw: form.targetPpm, max: 100 },
+      { field: "Minimum PPM", raw: form.minimumPpm, max: 100 },
+      { field: "MPG", raw: form.mpg, max: 100 },
+      { field: "Fuel price", raw: form.fuelPrice, max: 100 },
+      { field: "Fixed cost / mile", raw: form.fixedCostPerMile, max: 100 },
+      { field: "Avg MPG", raw: form.avgMpg, max: 100, optional: true },
+      { field: "Max GVW (lbs)", raw: form.maxGvwLbs, max: 1_000_000, optional: true },
+      { field: "Tolls / mile", raw: form.tollsCostPerMile, max: 100, optional: true },
+      { field: "Wear / mile", raw: form.wearCostPerMile, max: 100, optional: true },
+      { field: "Hours available", raw: form.hoursAvailable, max: 1000, optional: true },
+      { field: "Fuel tank (gallons)", raw: form.fuelTankGallons, max: 100_000, optional: true },
+    ];
+    if (form.payMode === "cpm") {
+      numericChecks.push({ field: "Cents per mile", raw: form.payCentsPerMile, max: 100, optional: true });
+    } else if (form.payMode === "pct") {
+      numericChecks.push({ field: "Percent of gross", raw: form.payPctOfGross, max: 100, optional: true });
+    }
+    for (const c of numericChecks) {
+      if (c.optional && (c.raw === "" || c.raw == null)) continue;
+      const n = Number(c.raw);
+      if (!Number.isFinite(n) || n < 0 || n > c.max) {
+        toast({
+          title: t("common.error"),
+          description: t("admin.clientDetail.invalidNumber", { field: c.field }),
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     const patch: Partial<Client> = {
       name: form.name,
       // Henry QA Bug #6+7 — contact person: send empty string as undefined to clear.
