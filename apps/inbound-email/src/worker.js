@@ -54,8 +54,12 @@ async function checkRateLimit(kv, sender) {
     const raw = await kv.get(key);
     const count = raw ? parseInt(raw, 10) || 0 : 0;
     if (count >= RATE_LIMIT_PER_HOUR) return false;
-    // Don't bother resetting expiry on every hit; simple counter is fine
-    // for 30/hour granularity. expirationTtl is set on first put.
+    // NOTE: expirationTtl is (re)applied on every put, so a continuous trickle
+    // of mail perpetually refreshes the 1-hour window and the counter only
+    // resets after a full hour of silence — this is a soft, approximate cap,
+    // not a strict per-hour window. The read-modify-write is also non-atomic
+    // (KV has no atomic increment), so concurrent mail from one sender may
+    // undercount. Acceptable at 30/hour anti-abuse granularity.
     await kv.put(key, String(count + 1), { expirationTtl: 3600 });
     return true;
   } catch (err) {
@@ -72,6 +76,16 @@ export default {
    */
   async email(message, env, ctx) {
     try {
+      // Fail fast & loud on misconfiguration: without these bindings the POST
+      // below would call fetch(undefined) (TypeError) or send a literal
+      // "undefined" secret, and the catch would silently swallow the mail.
+      if (!env.INGEST_URL || !env.DISPATCHOS_INBOUND_SECRET) {
+        console.error(
+          "[inbound-email] misconfigured: INGEST_URL and/or DISPATCHOS_INBOUND_SECRET binding is unset — dropping mail",
+        );
+        return;
+      }
+
       // Recipient allowlist — defense-in-depth on top of the CF routing rule.
       // Only forward mail addressed to our known ingest address(es), so a
       // misconfigured catch-all route can't pipe arbitrary mail into ingest.

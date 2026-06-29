@@ -39,7 +39,8 @@ const STATE_CENTROID: Readonly<Record<string, LatLng>> = Object.freeze({
 // Major US freight metros (key = "city|ST", lowercased city) → lat,lng.
 const CITY_COORDS: Readonly<Record<string, LatLng>> = Object.freeze({
   "atlanta|GA": { lat: 33.75, lng: -84.39 }, "dallas|TX": { lat: 32.78, lng: -96.80 },
-  "fort worth|TX": { lat: 32.76, lng: -97.33 }, "houston|TX": { lat: 29.76, lng: -95.37 },
+  "fort worth|TX": { lat: 32.76, lng: -97.33 }, "ft worth|TX": { lat: 32.76, lng: -97.33 },
+  "houston|TX": { lat: 29.76, lng: -95.37 },
   "san antonio|TX": { lat: 29.42, lng: -98.49 }, "laredo|TX": { lat: 27.51, lng: -99.51 },
   "el paso|TX": { lat: 31.76, lng: -106.49 }, "chicago|IL": { lat: 41.88, lng: -87.63 },
   "los angeles|CA": { lat: 34.05, lng: -118.24 }, "long beach|CA": { lat: 33.77, lng: -118.19 },
@@ -64,6 +65,31 @@ const CITY_COORDS: Readonly<Record<string, LatLng>> = Object.freeze({
   "louisville|KY": { lat: 38.25, lng: -85.76 }, "birmingham|AL": { lat: 33.52, lng: -86.80 },
 });
 
+// Full state name (lowercased) → USPS code. Email-parsed lanes sometimes carry
+// the spelled-out state ("Texas") instead of "TX"; without this they'd miss both
+// the city key and STATE_CENTROID and return null, re-introducing the (0,0) bug.
+const STATE_NAME_TO_CODE: Readonly<Record<string, string>> = Object.freeze({
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR", california: "CA",
+  colorado: "CO", connecticut: "CT", delaware: "DE", florida: "FL", georgia: "GA",
+  hawaii: "HI", idaho: "ID", illinois: "IL", indiana: "IN", iowa: "IA",
+  kansas: "KS", kentucky: "KY", louisiana: "LA", maine: "ME", maryland: "MD",
+  massachusetts: "MA", michigan: "MI", minnesota: "MN", mississippi: "MS", missouri: "MO",
+  montana: "MT", nebraska: "NE", nevada: "NV", "new hampshire": "NH", "new jersey": "NJ",
+  "new mexico": "NM", "new york": "NY", "north carolina": "NC", "north dakota": "ND", ohio: "OH",
+  oklahoma: "OK", oregon: "OR", pennsylvania: "PA", "rhode island": "RI", "south carolina": "SC",
+  "south dakota": "SD", tennessee: "TN", texas: "TX", utah: "UT", vermont: "VT",
+  virginia: "VA", washington: "WA", "west virginia": "WV", wisconsin: "WI", wyoming: "WY",
+  "district of columbia": "DC",
+});
+
+// Resolve a raw state token to its USPS code. Accepts a 2-letter code as-is, or
+// maps a spelled-out state name; returns "" for anything else (caller -> null).
+function normState(raw: string): string {
+  const s = raw.trim();
+  if (/^[A-Za-z]{2}$/.test(s)) return s.toUpperCase();
+  return STATE_NAME_TO_CODE[s.toLowerCase().replace(/\s+/g, " ")] ?? "";
+}
+
 function normCity(s: string): string {
   return s.toLowerCase().replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
 }
@@ -76,7 +102,7 @@ export function geocodeCityState(
   city: string | null | undefined,
   state: string | null | undefined,
 ): LatLng | null {
-  const st = (state ?? "").toUpperCase().trim();
+  const st = normState(state ?? "");
   if (city) {
     const key = `${normCity(city)}|${st}`;
     const hit = CITY_COORDS[key];

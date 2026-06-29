@@ -393,16 +393,45 @@ function statusBadge(level: SafetyVerdict["level"]): string {
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
-  return new Date(iso).toISOString().slice(0, 10);
+  // A non-empty but unparseable date (e.g. a malformed client-supplied
+  // insurance ISO that classifyExpiry passes through verbatim) would make
+  // new Date(iso).toISOString() throw "RangeError: Invalid time value".
+  // Fall back to a placeholder instead of crashing the whole render.
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return "—";
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+// Escape characters that are structural in Markdown (and strip control
+// characters / newlines) before embedding externally-sourced strings —
+// FMCSA legal name / address / phone and the client name/MC are untrusted
+// and could otherwise inject links, images, or break list/heading layout
+// when the document is pasted into a viewer or converted to PDF. Benign
+// values (plain names, MC numbers, addresses) are unaffected.
+function escapeMarkdown(value: string | null | undefined): string {
+  if (value == null) return "";
+  return String(value)
+    // Collapse control characters / newlines to a single space so the value
+    // cannot break out of its Markdown list item, heading, or table cell.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]+/g, " ")
+    // Backslash-escape the Markdown metacharacters that are dangerous INLINE
+    // (links, images, code, emphasis, strikethrough, table cells, raw HTML) so
+    // external text renders literally rather than as active markup. Chars that
+    // are only structural at line-start (- . + # { }) are intentionally NOT
+    // escaped: these values are embedded mid-line, and escaping them would
+    // mangle legitimate content like "MC-123456" or "5.5" into "MC\-123456".
+    .replace(/([\\`*_[\]()!|<>~])/g, "\\$1")
+    .trim();
 }
 
 export function renderCarrierSafetyProfileMarkdown(profile: CarrierSafetyProfile): string {
   const lines: string[] = [];
-  lines.push(`# Carrier Safety Profile — ${profile.clientName}`);
+  lines.push(`# Carrier Safety Profile — ${escapeMarkdown(profile.clientName)}`);
   lines.push("");
-  lines.push(`**MC:** ${profile.mc}`);
+  lines.push(`**MC:** ${escapeMarkdown(profile.mc)}`);
   if (profile.fmcsa.raw?.dotNumber) {
-    lines.push(`**USDOT:** ${profile.fmcsa.raw.dotNumber}`);
+    lines.push(`**USDOT:** ${escapeMarkdown(profile.fmcsa.raw.dotNumber)}`);
   }
   lines.push(`**Generated:** ${formatDate(profile.generatedAt)}`);
   lines.push("");
@@ -424,19 +453,24 @@ export function renderCarrierSafetyProfileMarkdown(profile: CarrierSafetyProfile
 
   lines.push("## FMCSA SAFER record");
   if (!profile.fmcsa.fetched) {
-    lines.push(`_FMCSA fetch unavailable: ${profile.fmcsa.error ?? "unknown error"}._`);
+    // The error string can embed client-supplied MC text (see buildCarrierSafetyProfile)
+    // or an upstream fetch error message — both untrusted, so escape like other external fields.
+    lines.push(`_FMCSA fetch unavailable: ${escapeMarkdown(profile.fmcsa.error ?? "unknown error")}._`);
   } else if (!profile.fmcsa.raw) {
     lines.push("_No FMCSA record found for this MC number._");
   } else {
     const f = profile.fmcsa.raw;
-    lines.push(`- **Legal name:** ${f.legalName}`);
-    if (f.dbaName) lines.push(`- **DBA:** ${f.dbaName}`);
+    lines.push(`- **Legal name:** ${escapeMarkdown(f.legalName)}`);
+    if (f.dbaName) lines.push(`- **DBA:** ${escapeMarkdown(f.dbaName)}`);
     if (f.address) {
       const a = f.address;
-      const parts = [a.street, a.city, a.state, a.zip].filter(Boolean).join(", ");
+      const parts = [a.street, a.city, a.state, a.zip]
+        .filter(Boolean)
+        .map((part) => escapeMarkdown(part))
+        .join(", ");
       if (parts) lines.push(`- **Address:** ${parts}`);
     }
-    if (f.phone) lines.push(`- **Phone:** ${f.phone}`);
+    if (f.phone) lines.push(`- **Phone:** ${escapeMarkdown(f.phone)}`);
     if (f.operatingStatus) lines.push(`- **Operating status:** ${f.operatingStatus.replace("_", " ")}`);
     if (f.safetyRating) lines.push(`- **Safety rating:** ${f.safetyRating}`);
     if (typeof f.authorityAgeYears === "number") {

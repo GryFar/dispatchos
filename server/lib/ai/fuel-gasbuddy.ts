@@ -42,9 +42,13 @@ let lastRequestAt = 0;
 const MIN_REQUEST_GAP_MS = 10_000;
 
 async function throttle(): Promise<void> {
-  const wait = lastRequestAt + MIN_REQUEST_GAP_MS - Date.now();
+  // Reserve the next slot atomically (synchronously, before any await) so
+  // overlapping callers each get a distinct, spaced slot instead of all
+  // reading the same lastRequestAt and firing together.
+  const slot = Math.max(Date.now(), lastRequestAt + MIN_REQUEST_GAP_MS);
+  lastRequestAt = slot;
+  const wait = slot - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastRequestAt = Date.now();
 }
 
 // ---- in-memory cache: 30 min per rounded (lat,lng,radius) key ---------------
@@ -80,6 +84,20 @@ export async function fetchGasBuddyDieselNear(
   lng: number,
   radiusKm = 8,
 ): Promise<FuelObs[]> {
+  // Defensive: the function is exported/reusable, so don't rely on caller
+  // coordinate discipline. Invalid coords would otherwise reach toFixed()
+  // (→ "NaN" cache keys) and the query URL (→ search=NaN,NaN).
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
+    return [];
+  }
+
   const key = cacheKey(lat, lng, radiusKm);
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
@@ -107,11 +125,16 @@ export async function fetchGasBuddyDieselNear(
     }
     if (!res.ok) {
       console.warn(`[gasbuddy] HTTP ${res.status} near ${lat},${lng} — returning []`);
+      // Negative-cache so a failing host (5xx/outage) is backed off like the
+      // 403/429 path, instead of re-fetching every cron point.
+      cache.set(key, { at: Date.now(), data: [] });
       return [];
     }
     html = await res.text();
   } catch (err) {
     console.warn(`[gasbuddy] fetch failed near ${lat},${lng}:`, (err as Error).message);
+    // Negative-cache network/timeout failures too (same rationale as above).
+    cache.set(key, { at: Date.now(), data: [] });
     return [];
   }
 

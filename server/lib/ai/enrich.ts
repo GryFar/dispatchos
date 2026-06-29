@@ -79,7 +79,9 @@ export async function enrichLoadAsync<T extends Pick<InsertLoad,
     if (!carrier) return result;
     const verdict = evaluateBroker(carrier);
 
-    // Only overwrite if the AI verdict gives a non-default-ish value.
+    // On a successful FMCSA fetch we always overwrite the broker trust fields
+    // with the freshly-evaluated verdict (the fetch itself is the gate; a stale
+    // hand-typed default should never win over a live FMCSA read).
     // brokerScore: AI score 0-100 directly.
     // fraudRisk: invert (100 - score), so red brokers have high fraudRisk.
     result.load = {
@@ -88,8 +90,14 @@ export async function enrichLoadAsync<T extends Pick<InsertLoad,
       fraudRisk: Math.max(0, 100 - verdict.score),
     };
     result.brokerEnriched = true;
-  } catch {
+  } catch (err) {
     // Network errors are non-fatal — caller still gets sync-enriched load.
+    // Log so a consistently-failing MC (verification silently skipped) is
+    // visible to operators. Only the error message is logged, never the webKey.
+    console.warn(
+      `[enrich] FMCSA broker lookup failed for ${load.brokerMc} — leaving broker fields at defaults:`,
+      (err as Error).message,
+    );
   }
 
   return result;

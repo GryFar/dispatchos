@@ -77,10 +77,24 @@ interface AiBudget {
   windowStart: number;
 }
 const aiBudgets = new Map<string, AiBudget>();
+// Evict every entry whose window has fully elapsed, so the Map doesn't retain
+// one stale entry per user indefinitely. Cheap O(n) sweep, n bounded by the
+// real (authenticated) user count. Behaviour-preserving: an expired entry is
+// treated as a fresh window on the next hit anyway, so deleting it changes
+// nothing — it only frees memory. Mirrors the sweepExpired pattern in leads.ts.
+function aiSweepExpired(now: number): void {
+  const toDelete: string[] = [];
+  aiBudgets.forEach((entry, key) => {
+    if (now - entry.windowStart > AI_WINDOW_MS) toDelete.push(key);
+  });
+  toDelete.forEach((k) => aiBudgets.delete(k));
+}
 function aiRateCheck(userId: string): { allowed: boolean; retryAfterSec: number } {
   const now = Date.now();
   const b = aiBudgets.get(userId);
   if (!b || now - b.windowStart > AI_WINDOW_MS) {
+    // Opportunistically drop other users' expired windows before inserting.
+    aiSweepExpired(now);
     aiBudgets.set(userId, { count: 1, windowStart: now });
     return { allowed: true, retryAfterSec: 0 };
   }

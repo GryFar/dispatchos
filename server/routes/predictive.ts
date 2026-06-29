@@ -36,9 +36,9 @@ function ah(
 
 const createWatchSchema = z.object({
   clientId: z.string().min(1),
-  originState: z.string().length(2),
+  originState: z.string().regex(/^[A-Za-z]{2}$/),
   originCity: z.string().optional().nullable(),
-  destinationState: z.string().length(2),
+  destinationState: z.string().regex(/^[A-Za-z]{2}$/),
   destinationCity: z.string().optional().nullable(),
   minPpm: z.number().positive().optional().nullable(),
   equipment: z.string().optional().nullable(),
