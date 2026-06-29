@@ -13,6 +13,7 @@ import crypto from "node:crypto";
 import { storage } from "../storage";
 import { getIntegrationValue } from "../lib/integration-config";
 import { parseSylectusEmail, type SylectusParsed } from "../lib/parsers/sylectus";
+import { fetchWithTimeout } from "../lib/fetch-timeout";
 
 // Fire-and-forget TG alert when a parsed Sylectus posting lands. No-op
 // unless TELEGRAM_DRIVER_BOT_TOKEN + TELEGRAM_ALERT_CHAT_ID are both set.
@@ -57,16 +58,24 @@ async function notifyInboundLoad(id: string, parsed: SylectusParsed): Promise<vo
     .join("\n");
 
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chat,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-      }),
-    });
+    // Bound this fire-and-forget request: launched via void from the handler,
+    // an indefinite Telegram stall would otherwise leave promises/sockets
+    // accumulating under burst. fetchWithTimeout turns a stall into a caught
+    // AbortError instead of an infinite hang.
+    await fetchWithTimeout(
+      `https://api.telegram.org/bot${token}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chat,
+          text,
+          parse_mode: "HTML",
+          disable_web_page_preview: true,
+        }),
+      },
+      5000,
+    );
   } catch (err) {
     console.error("[inbound/email] TG notify failed:", err);
   }
@@ -147,13 +156,21 @@ export function registerInboundRoutes(app: Express): void {
       body: body.body,
     };
 
+    // Only accept receivedAt if it parses as a real timestamp; otherwise fall
+    // back to now. Prevents junk like "yesterday" or "" from being persisted
+    // and later surfaced/sorted in the review UI.
+    const receivedAt =
+      typeof body.receivedAt === "string" && !Number.isNaN(Date.parse(body.receivedAt))
+        ? new Date(body.receivedAt).toISOString()
+        : new Date().toISOString();
+
     try {
       const parsed = parseSylectusEmail(input);
       const record = storage.saveEmailIngest({
         ...input,
         to: typeof body.to === "string" ? body.to : undefined,
         messageId: typeof body.messageId === "string" ? body.messageId : undefined,
-        receivedAt: typeof body.receivedAt === "string" ? body.receivedAt : new Date().toISOString(),
+        receivedAt,
         parsed,
       });
       // Fire-and-forget alert — don't block the 201 response.
@@ -161,10 +178,10 @@ export function registerInboundRoutes(app: Express): void {
       return res.status(201).json({ id: record.id, parsed });
     } catch (err) {
       console.error("[inbound/email] persist failed:", err);
-      return res.status(500).json({
-        message: "Persist failed",
-        error: err instanceof Error ? err.message : String(err),
-      });
+      // Full error is logged server-side above. Don't echo err.message to the
+      // caller — a storage/SQLite exception can leak schema names, constraint
+      // text or file paths to whoever holds the inbound secret.
+      return res.status(500).json({ message: "Persist failed" });
     }
   });
 }

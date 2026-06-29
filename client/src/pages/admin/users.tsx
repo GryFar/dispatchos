@@ -425,8 +425,8 @@ function UserActionsMenu({
     mutationFn: () =>
       apiJson<UserPublic>("PATCH", `/api/admin/users/${user.id}`, { blocked: !user.blocked }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/admin/users"], exact: false });
-      // Also invalidate all user-list queries (with filters).
+      // Invalidate all user-list queries (keyed by the full filtered URL, so a
+      // plain ["/api/admin/users"] array key would never partial-match them).
       qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/admin/users") });
       toast({
         title: user.blocked ? t("admin.users.unblockedToast") : t("admin.users.blockedToast"),
@@ -817,7 +817,7 @@ function InviteSuccessView({
   const { t } = useT();
   const { copy, copied } = useClipboard();
   const { copy: copyUrl, copied: copiedUrl } = useClipboard();
-  const url = invite.signupUrl || `${window.location.origin}/#/signup?code=${invite.code}`;
+  const url = invite.signupUrl || `${window.location.origin}/#/signup?code=${encodeURIComponent(invite.code)}`;
 
   return (
     <>

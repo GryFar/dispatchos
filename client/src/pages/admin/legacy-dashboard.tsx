@@ -206,7 +206,10 @@ function parseFiniteNumber(value: string, min?: number, max?: number): number | 
 
 function localDateTimeToIso(value: string, fallbackMs: number) {
   if (!value) return new Date(Date.now() + fallbackMs).toISOString();
-  return new Date(value).toISOString();
+  const d = new Date(value);
+  // A non-empty but unparseable value yields Invalid Date, whose toISOString()
+  // throws RangeError; fall back instead of aborting the save.
+  return Number.isNaN(d.getTime()) ? new Date(Date.now() + fallbackMs).toISOString() : d.toISOString();
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -459,7 +462,11 @@ function OperatorForms({ clientId, clients, loads }: { clientId: string; clients
     event.preventDefault();
     const response = await apiRequest("POST", "/api/loads/import-csv", { csv: csvText });
     const result = await response.json();
-    await refresh(t("admin.legacyDashboard.statusCsvImported", { created: result.created.length, errors: result.errors.length }));
+    // Guard against a 200 with an unexpected shape (missing created/errors)
+    // so reading .length can't throw inside this unguarded handler.
+    const created = Array.isArray(result?.created) ? result.created : [];
+    const errors = Array.isArray(result?.errors) ? result.errors : [];
+    await refresh(t("admin.legacyDashboard.statusCsvImported", { created: created.length, errors: errors.length }));
   }
 
   async function fetchDrivePlan() {
@@ -1177,7 +1184,7 @@ function DispatchDashboard() {
                   <a href="/api/backup/export">{t("admin.legacyDashboard.exportJsonBackup")}</a>
                 </Button>
                 <div className="space-y-2">
-                  {auditEvents.map((event) => (
+                  {(Array.isArray(auditEvents) ? auditEvents : []).map((event) => (
                     <div className="rounded-lg border border-border bg-muted/35 p-2 text-xs" key={event.id}>
                       <p className="font-medium">{event.eventType}</p>
                       <p className="text-muted-foreground">{event.entityType} · {event.entityId}</p>

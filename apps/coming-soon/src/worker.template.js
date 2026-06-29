@@ -51,7 +51,11 @@ export default {
         await env.SUBSCRIBERS.put(key, JSON.stringify(record));
 
         const indexRaw = (await env.SUBSCRIBERS.get('_index')) || '[]';
-        let index = JSON.parse(indexRaw);
+        // Parse defensively: a corrupted _index must never turn the already-
+        // committed primary `sub:<email>` write (above) into a 400. Fall back to
+        // [] on parse failure, mirroring the !Array.isArray defense below.
+        let index;
+        try { index = JSON.parse(indexRaw); } catch { index = []; }
         if (!Array.isArray(index)) index = [];
         index.push({ email, ts: record.ts, country: record.country });
         if (index.length > 10000) index = index.slice(-10000);
@@ -74,7 +78,10 @@ export default {
       // currently unused by the live frontend (it posts to the Fly backend) —
       // prefer removing them, or switch to KV list({prefix:'sub:'}) if revived.
       const indexRaw = (await env.SUBSCRIBERS.get('_index')) || '[]';
-      return new Response(indexRaw, { headers: { 'content-type': 'application/json' }});
+      // This body is subscriber PII (emails + countries): match the rest of the
+      // app by sending no-store + SECURITY_HEADERS. Emit the raw string directly
+      // (no re-parse) so a corrupted _index can't throw here.
+      return new Response(indexRaw, { headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...SECURITY_HEADERS }});
     }
 
     if (url.pathname === '/api/health') return jsonResp({ ok: true, time: new Date().toISOString() });

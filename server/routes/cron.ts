@@ -362,17 +362,25 @@ export function registerCronRoutes(app: Express): void {
   // Safe to call hourly; idempotent and bounded.
   app.post("/api/cron/purge-old-data", (req: Request, res: Response) => {
     if (!requireCronSecret(req, res)) return;
-    const pingsDeleted = storage.purgeOldLocationPings(15);
-    const fuelDeleted = storage.purgeOldFuelObservations(90);
-    const auditDeleted = storage.purgeOldAuditEvents(180);
-    const emailDeleted = storage.purgeOldEmailIngest(180);
-    return res.json({
-      ok: true,
-      pingsDeleted,
-      fuelDeleted,
-      auditDeleted,
-      emailDeleted,
-    });
+    try {
+      const pingsDeleted = storage.purgeOldLocationPings(15);
+      const fuelDeleted = storage.purgeOldFuelObservations(90);
+      const auditDeleted = storage.purgeOldAuditEvents(180);
+      const emailDeleted = storage.purgeOldEmailIngest(180);
+      return res.json({
+        ok: true,
+        pingsDeleted,
+        fuelDeleted,
+        auditDeleted,
+        emailDeleted,
+      });
+    } catch (err) {
+      console.error("[cron/purge-old-data] failed:", err);
+      return res.status(500).json({
+        message: "Purge failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   app.post("/api/cron/refresh-fuel", async (req: Request, res: Response) => {
@@ -438,6 +446,12 @@ export function registerCronRoutes(app: Express): void {
         perPoint.push({ lat, lng, observed: 0, error: "invalid_coords" });
         continue;
       }
+      // Reject finite-but-impossible earth coordinates (mirrors track.ts and the
+      // fuel-transaction schema) so {lat:9999} never reaches the vendor scrape.
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        perPoint.push({ lat, lng, observed: 0, error: "out_of_range" });
+        continue;
+      }
       try {
         const obs = await fetchGasBuddyDieselNear(lat, lng, radiusKm);
         for (const o of obs) storage.recordFuelPriceObservation(o);
@@ -448,10 +462,17 @@ export function registerCronRoutes(app: Express): void {
       }
     }
 
-    storage.audit("fuel.gasbuddy_refresh", "fuel_price_observations", "batch", {
-      points: points.length,
-      totalObserved,
-    });
+    // Best-effort audit: a write failure here must not discard a response that
+    // describes already-committed observations (a 500 would prompt a needless
+    // re-scrape of the bot-protected vendor).
+    try {
+      storage.audit("fuel.gasbuddy_refresh", "fuel_price_observations", "batch", {
+        points: points.length,
+        totalObserved,
+      });
+    } catch (err) {
+      console.error("[cron/refresh-gasbuddy] audit failed:", err);
+    }
 
     return res.json({ ok: true, points: points.length, totalObserved, perPoint });
   });

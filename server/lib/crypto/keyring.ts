@@ -8,10 +8,11 @@
 //   DISPATCHOS_KEYRING_PRIMARY    — base64 of 32 random bytes (required)
 //   DISPATCHOS_KEYRING_SECONDARY  — same shape; only used to decrypt older rows
 //
-// Rotation:
+// Rotation (re-encryption is performed by the caller, not this module):
 //   1. Generate new key, set old primary as DISPATCHOS_KEYRING_SECONDARY
 //   2. Set new key as DISPATCHOS_KEYRING_PRIMARY
-//   3. Call rotate() — re-encrypts every secondary-tagged row with primary
+//   3. For every secondary-tagged row: decryptSecret() then encryptSecret()
+//      and persist the new ciphertext/iv/keyId ('primary')
 //   4. Unset DISPATCHOS_KEYRING_SECONDARY
 
 import crypto from "node:crypto";
@@ -32,9 +33,17 @@ function loadKey(envName: string): Buffer | null {
   const raw = process.env[envName];
   if (!raw) return null;
   try {
-    const buf = Buffer.from(raw, "base64");
+    // Buffer.from(base64) silently drops out-of-alphabet characters instead of
+    // throwing, so a typo'd key could still decode to 32 bytes. Round-trip the
+    // canonical encoding to reject anything that isn't clean base64. Trim first
+    // so surrounding whitespace/newlines (common in env files) still pass.
+    const trimmed = raw.trim();
+    const buf = Buffer.from(trimmed, "base64");
+    if (buf.toString("base64") !== trimmed) {
+      throw new Error("not valid base64");
+    }
     if (buf.length !== 32) {
-      throw new Error(`${envName} must decode to 32 bytes, got ${buf.length}`);
+      throw new Error(`must decode to 32 bytes, got ${buf.length}`);
     }
     return buf;
   } catch (err) {
@@ -104,5 +113,14 @@ export function encryptCredentials(obj: Record<string, unknown>): EncryptedSecre
 }
 
 export function decryptCredentials<T = Record<string, unknown>>(enc: EncryptedSecret): T {
-  return JSON.parse(decryptSecret(enc)) as T;
+  const plaintext = decryptSecret(enc);
+  try {
+    return JSON.parse(plaintext) as T;
+  } catch (err) {
+    // The blob decrypted cleanly (auth tag verified) but isn't JSON — most
+    // likely it was written with encryptSecret() instead of encryptCredentials().
+    throw new Error(
+      `decryptCredentials: decrypted value is not valid JSON (wrong helper or corrupt blob): ${(err as Error).message}`,
+    );
+  }
 }

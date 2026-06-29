@@ -47,6 +47,20 @@ const totpSetupLimiter = rateLimit({
   message: { message: "Too many 2FA setup attempts. Try again in 15 minutes." },
 });
 
+// POST /api/me/totp/confirm verifies a code against the pending secret, and a
+// FAILED verify never advances the replay counter (setLastUsedTotpCounter is
+// only reached after acceptedCounter !== null), so wrong guesses are otherwise
+// free. Throttle per session user — same key as the setup limiter — so it binds
+// to the targeted account and never locks out a shared-NAT office.
+const totpConfirmLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: Number(process.env.DISPATCHOS_TOTP_CONFIRM_LIMIT || 10),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.session?.userId ?? ipKeyGenerator(req.ip || "unknown"),
+  message: { message: "Too many 2FA confirmation attempts. Try again in 15 minutes." },
+});
+
 function ah(
   handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown> | unknown,
 ) {
@@ -101,6 +115,12 @@ export function registerMeTotpRoutes(app: Express): void {
             : "";
         const { ok } = verifyPassword(currentPassword, user.passwordSalt, user.passwordHash);
         if (!ok) {
+          // Audit parity with auth.login_failed / auth.confirm_signup_failed —
+          // a wrong-password attempt during 2FA re-issue is a notable auth event.
+          storage.audit("user.totp_reissue_password_failed", "user", user.id, {
+            userId: user.id,
+            actorUserId: user.id,
+          });
           return res.status(401).json({
             message: "Текущий пароль обязателен для перевыпуска 2FA.",
             code: "password_required",
@@ -126,6 +146,7 @@ export function registerMeTotpRoutes(app: Express): void {
   // separate concern handled by /api/auth/login.
   app.post(
     "/api/me/totp/confirm",
+    totpConfirmLimiter,
     ah((req, res) => {
       const user = getCurrentUser(req);
       if (!user) return res.status(401).json({ message: "Authentication required" });
@@ -168,7 +189,18 @@ export function registerMeTotpRoutes(app: Express): void {
       // a secret but no confirmation (code: "totp_setup_required"). updateUser
       // does NOT touch totp_confirmed_at, so without this the user who just
       // enabled 2FA is locked out on their very next login.
-      storage.confirmTotpSetup(user.id);
+      //
+      // confirmTotpSetup's IS-NULL-guarded UPDATE returns firstConfirm=false if a
+      // concurrent confirm already stamped it; don't emit a fresh "enabled" audit
+      // for the loser of that race (mirrors the confirm-signup path in routes.ts).
+      const { firstConfirm } = storage.confirmTotpSetup(user.id);
+      if (!firstConfirm) {
+        req.session.pendingTotpSecret = undefined;
+        return res.status(409).json({
+          message: "2FA already confirmed for this account.",
+          code: "already_confirmed",
+        });
+      }
 
       // Clear the staging field — secret is now in the DB.
       req.session.pendingTotpSecret = undefined;

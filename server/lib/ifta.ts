@@ -10,8 +10,9 @@
 // Что мы агрегируем:
 //   1) miles_by_state  — из driver_location_pings (haversine между парами
 //      пингов в одном штате; скачки > 200km игнорируем как noise)
-//   2) gallons_by_state — из fuel_transactions (используем station_lat/lng,
-//      fallback на ping rough match если станция без координат)
+//   2) gallons_by_state — из fuel_transactions (используем station_lat/lng).
+//      Транзакции БЕЗ station_lat/lng не привязываются к штату и попадают в
+//      unknownStateGallons (ping-based fallback пока не реализован).
 //
 // State lookup — offline, через bounding boxes (US 48 contiguous). Это
 // approx (~95% точности) — для production нужен point-in-polygon, но для
@@ -228,9 +229,13 @@ export function buildIftaQuarterly(
     }))
     .sort((a, b) => b.miles - a.miles);
 
-  const totalMiles = rows.reduce((s, r) => s + r.miles, 0);
-  const totalGallons = rows.reduce((s, r) => s + r.gallons, 0);
-  const totalCost = rows.reduce((s, r) => s + r.fuelCostUsd, 0);
+  // Totals are reduced from the UNROUNDED byState accumulator (not from the
+  // already-rounded `rows`), then rounded once below — summing rounded per-row
+  // values would accumulate rounding bias away from the true sum.
+  const rawTotals = Object.values(byState);
+  const totalMiles = rawTotals.reduce((s, r) => s + r.miles, 0);
+  const totalGallons = rawTotals.reduce((s, r) => s + r.gallons, 0);
+  const totalCost = rawTotals.reduce((s, r) => s + r.fuelCostUsd, 0);
 
   return {
     clientId,
@@ -251,10 +256,26 @@ export function buildIftaQuarterly(
   };
 }
 
+/**
+ * Escape a free-text value for safe inclusion in a CSV cell.
+ *
+ * Guards two things:
+ *   - CSV structure: wraps the value in quotes (doubling embedded quotes) when
+ *     it contains a comma, quote, or newline, so it can't break column layout.
+ *   - Formula injection: prefixes a single quote when the value begins with
+ *     =, +, -, or @, so spreadsheet apps don't evaluate it as a formula.
+ */
+function csvCell(value: string): string {
+  let v = value;
+  if (/^[=+\-@]/.test(v)) v = `'${v}`;
+  if (/[",\n\r]/.test(v)) v = `"${v.replace(/"/g, '""')}"`;
+  return v;
+}
+
 /** Render an IFTA report as CSV for download. */
 export function renderIftaCsv(report: IftaQuarterReport): string {
   const lines: string[] = [];
-  lines.push(`IFTA Quarterly Report,Client: ${report.clientId},${report.year} Q${report.quarter}`);
+  lines.push(`IFTA Quarterly Report,Client: ${csvCell(report.clientId)},${report.year} Q${report.quarter}`);
   lines.push(`Period,${report.periodStart},${report.periodEnd}`);
   lines.push("");
   lines.push("State,Miles,Gallons,Fuel Cost (USD)");
