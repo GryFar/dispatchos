@@ -299,13 +299,14 @@ export async function chargeAiCreditPack(
   const customer = client.stripeCustomerId;
   if (!customer) return { ok: false, reason: "no_stripe_customer" };
   try {
-    // Create the invoice FIRST (empty), attach ONLY the AI-pack item to it, then
-    // finalize. This avoids pending_invoice_items_behavior:"include" sweeping
-    // unrelated pending items (e.g. a weekly success fee) onto this charge.
+    // Isolated one-off charge: pending_invoice_items_behavior "exclude" guarantees
+    // no unrelated pending items (e.g. a weekly success fee) are swept onto this
+    // invoice; it carries ONLY the AI-pack item attached below.
     const created = await stripe.invoices.create({
       customer,
       collection_method: "charge_automatically",
       auto_advance: false,
+      pending_invoice_items_behavior: "exclude",
       metadata: { aiCreditsUserId: userId, aiCreditsPack: String(AI_CREDIT_PACK.credits) },
     });
     if (!created.id) return { ok: false, reason: "stripe_no_invoice_id" };
