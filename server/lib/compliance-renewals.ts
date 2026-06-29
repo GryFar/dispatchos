@@ -254,8 +254,13 @@ export async function runComplianceRenewalsCheck(): Promise<ComplianceAlertOutco
         continue;
       }
 
+      // Fall back to the stable id when a legacy/imported row has a missing or
+      // empty name (listClients() does a raw JSON.parse with no re-validation),
+      // so the alert never reads "⚠️ undefined — UCR ...".
+      const displayName = client.name || client.id;
+
       const text = buildAlertText({
-        clientName: client.name,
+        clientName: displayName,
         kind: line.kind,
         expiresAt: line.expiresAt,
         daysUntilExpiry: daysUntil,
@@ -274,7 +279,7 @@ export async function runComplianceRenewalsCheck(): Promise<ComplianceAlertOutco
           const r = await sendEmail({
             from: ctx.resendFromEmail ?? undefined,
             to: ctx.ownerEmail,
-            subject: `[DispatchOS] ${client.name} — ${KIND_LABEL[line.kind]} renewal`,
+            subject: `[DispatchOS] ${displayName} — ${KIND_LABEL[line.kind]} renewal`,
             text,
             html: `<pre style="font-family:inherit;white-space:pre-wrap">${text.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]!))}</pre>`,
           });
@@ -310,7 +315,7 @@ export async function runComplianceRenewalsCheck(): Promise<ComplianceAlertOutco
 
       outcomes.push({
         clientId: client.id,
-        clientName: client.name,
+        clientName: displayName,
         kind: line.kind,
         expiresAt: line.expiresAt,
         daysUntilExpiry: daysUntil,
@@ -353,7 +358,7 @@ export function listUpcomingRenewals(withinDays = 90): Array<{
       if (days > withinDays) continue;
       rows.push({
         clientId: client.id,
-        clientName: client.name,
+        clientName: client.name || client.id,
         kind: line.kind,
         expiresAt: line.expiresAt,
         daysUntilExpiry: days,

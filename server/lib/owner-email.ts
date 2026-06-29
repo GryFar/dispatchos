@@ -21,23 +21,29 @@ import { getIntegrationValue } from "./integration-config";
  * Returns null only if none of the above yields a usable address.
  */
 export function resolveOwnerEmail(explicitOverride?: string | null): string | null {
-  const configured =
-    explicitOverride ??
-    getIntegrationValue("notifications", "OWNER_EMAIL") ??
-    process.env.DISPATCHOS_OWNER_EMAIL ??
-    process.env.OWNER_EMAIL ??
-    null;
-  if (configured) return configured;
+  // Each configured source is checked in priority order; the first one that
+  // yields a usable address wins. We apply the SAME minimal validation as the
+  // admin-fallback path (trim + must contain '@') so a stray-whitespace or
+  // non-address env value falls through instead of being returned verbatim and
+  // bouncing at SMTP.
+  const sources = [
+    explicitOverride,
+    getIntegrationValue("notifications", "OWNER_EMAIL"),
+    process.env.DISPATCHOS_OWNER_EMAIL,
+    process.env.OWNER_EMAIL,
+  ];
+  for (const source of sources) {
+    if (typeof source !== "string") continue;
+    const candidate = source.trim();
+    if (candidate.includes("@")) return candidate;
+  }
 
+  // Role filter is pushed into SQL (and blocked/soft-deleted are already
+  // excluded by listUsers' defaults) so we don't materialize the full user
+  // list just to pick the first active admin. created_at ASC ordering is part
+  // of listUsers' contract, so this deterministically picks the oldest admin.
   const admin = storage
-    .listUsers()
-    .find(
-      (u) =>
-        u.role === "admin" &&
-        !u.blocked &&
-        !u.deletedAt &&
-        typeof u.email === "string" &&
-        u.email.includes("@"),
-    );
+    .listUsers({ role: "admin" })
+    .find((u) => typeof u.email === "string" && u.email.includes("@"));
   return admin?.email ?? null;
 }

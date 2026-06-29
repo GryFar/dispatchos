@@ -68,7 +68,12 @@ if (
 
 export const upload = multer({
   dest: uploadsRoot,
-  limits: { fileSize: uploadMaxMb * 1024 * 1024 },
+  // Every consumer uses `upload.single(...)`, so a single file is the only
+  // supported shape. Cap the file count at the multer layer too: without it a
+  // crafted multipart body could stream an unbounded number of part headers
+  // (each still bounded by fileSize, but the count is not), so pin it to 1 to
+  // match the single-file contract and reject extra parts early.
+  limits: { fileSize: uploadMaxMb * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
     const extension = path.extname(file.originalname).toLowerCase();
     if (!allowedUploadExtensions.has(extension)) {

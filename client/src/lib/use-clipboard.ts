@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * useClipboard — copy text to clipboard with success feedback.
@@ -10,12 +10,31 @@ import { useCallback, useState } from "react";
  */
 export function useClipboard(resetMs = 1500) {
   const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Mark as copied and schedule a reset, cancelling any pending reset first so
+  // overlapping copy() calls don't flip `copied` back to false prematurely.
+  const markCopied = useCallback(() => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+    setCopied(true);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      setCopied(false);
+    }, resetMs);
+  }, [resetMs]);
+
+  // Clear any pending timer on unmount to avoid a state update on an
+  // unmounted component.
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+    };
+  }, []);
 
   const copy = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), resetMs);
+      markCopied();
       return true;
     } catch {
       // Fallback for older browsers / non-https contexts.
@@ -28,8 +47,7 @@ export function useClipboard(resetMs = 1500) {
       ta.select();
       try {
         document.execCommand("copy");
-        setCopied(true);
-        setTimeout(() => setCopied(false), resetMs);
+        markCopied();
         return true;
       } catch {
         return false;
@@ -37,7 +55,7 @@ export function useClipboard(resetMs = 1500) {
         document.body.removeChild(ta);
       }
     }
-  }, [resetMs]);
+  }, [markCopied]);
 
   return { copied, copy };
 }

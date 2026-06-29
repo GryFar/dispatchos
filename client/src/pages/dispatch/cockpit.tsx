@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
@@ -277,15 +277,25 @@ function CarrierAiPanel({ clientId }: { clientId: string }) {
     failed?: boolean;
   }>({ loading: false });
 
+  // Guard against setState after the panel unmounts (e.g. navigation away or
+  // the carrier leaving the list) while the slow LLM call is still in flight.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   async function runAi() {
     setState({ loading: true });
     try {
       const rec = await apiJson<AiRecommendation>("POST", "/api/dispatch/ai-recommend", {
         clientId,
       });
-      setState({ loading: false, rec });
+      if (mountedRef.current) setState({ loading: false, rec });
     } catch {
-      setState({ loading: false, failed: true });
+      if (mountedRef.current) setState({ loading: false, failed: true });
     }
   }
 
@@ -402,6 +412,13 @@ function SuggestionCard({ suggestion }: { suggestion: CockpitSuggestion }) {
 
 function RelativeClock({ since }: { since: number }) {
   const { t } = useT();
+  // Re-render once a second so the relative label keeps counting up between
+  // the 30s data polls instead of freezing at the value from the last render.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
   const sec = Math.max(0, Math.round((Date.now() - since) / 1000));
   if (sec < 5) return <>{t("dispatch.cockpit.just_now")}</>;
   if (sec < 60) return <>{t("dispatch.cockpit.sec_ago", { n: sec })}</>;

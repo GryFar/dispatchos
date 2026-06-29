@@ -69,13 +69,18 @@ const DISPOSABLE_DOMAINS: ReadonlySet<string> = new Set([
 export function isDisposableEmail(email: string): boolean {
   const at = email.lastIndexOf("@");
   if (at < 0) return false;
-  // V4-008: normalize IDN / punycode / unicode lookalikes to canonical ASCII
-  // before matching. Without this, "máilinator.com", the punycode form
-  // "xn--milinator-..." , or a Turkish-İ variant ("MAİLINATOR.COM") would all
-  // slip past a plain lowercase compare against the ASCII blocklist.
-  // domainToASCII handles the IDNA mapping (and returns "" on garbage, which
-  // we treat as "not disposable" — the schema's .email() rejects bad formats).
-  const rawDomain = email.slice(at + 1).trim();
+  // V4-008: canonicalize the domain to ASCII before matching. domainToASCII
+  // performs IDNA mapping, so the punycode and unicode spellings of the SAME
+  // registrable domain compare equal against the ASCII blocklist (and it
+  // returns "" on garbage, which we treat as "not disposable" — the schema's
+  // .email() rejects bad formats). NOTE: this does NOT defend against
+  // lookalike/homograph domains — IDNA does not fold accented or confusable
+  // characters to their ASCII base letters (e.g. "máilinator.com" maps to the
+  // distinct domain "xn--milinator-01a.com", not "mailinator.com"). Homograph
+  // defense, if wanted, would need a separate confusables-skeleton map.
+  // A trailing dot (the valid FQDN form "mailinator.com.") is stripped so it
+  // canonicalizes to the dotless blocklist entry instead of bypassing it.
+  const rawDomain = email.slice(at + 1).trim().replace(/\.+$/, "");
   const asciiDomain = domainToASCII(rawDomain);
   const domain = (asciiDomain || rawDomain).toLowerCase();
   if (!domain) return false;

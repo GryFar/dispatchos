@@ -186,8 +186,10 @@ export function quoteLane(query: LaneQuery): LaneQuote {
   const lowPpm = round2(baselinePpm * 0.85);
   const highPpm = round2(baselinePpm * 1.20);
 
-  // Market quality: ranges from 50 (intra-region/fallback) to 90+ (strong lane).
-  // Strong lanes have high outbound demand (SE→NE, FL→Midwest, etc.).
+  // Market quality: clamped to [20, 100]. In practice every region-pair (incl.
+  // intra-region) is present in VAN_BASELINE_PPM, so confidence is always 80 and
+  // the reachable floor is ~62 (confidence*0.6 + Math.min(20, basePpm*8)).
+  // Strong lanes have high outbound demand (SE→NE, FL→Midwest, etc.) and score 90+.
   const isPremiumLane = isPremiumOutbound(originRegion, destRegion);
   const marketQuality = clamp(
     confidence * 0.6 + (isPremiumLane ? 30 : 0) + Math.min(20, basePpm * 8),

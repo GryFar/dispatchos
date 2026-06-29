@@ -78,7 +78,7 @@ export function requireIntegrationValue(
   envVar: string,
 ): string {
   const value = getIntegrationValue(integrationKey, envVar);
-  if (!value) {
+  if (value === undefined) {
     throw new Error(`Integration value missing: ${integrationKey}/${envVar}`);
   }
   return value;

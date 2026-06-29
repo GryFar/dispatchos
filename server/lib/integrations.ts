@@ -91,7 +91,7 @@ export const INTEGRATIONS: IntegrationDescriptor[] = [
       { envVar: "TELEGRAM_DRIVER_BOT_TOKEN", label: "Bot token", type: "secret", help: "Получить у @BotFather в Telegram" },
       { envVar: "DISPATCHOS_PUBLIC_URL", label: "Public URL", type: "url", placeholder: "https://demo.dispatchos.co" },
     ],
-    activityEvents: ["telegram.command", "telegram.webhook"],
+    activityEvents: ["telegram.command", "telegram.link", "telegram.unlink"],
     docsUrl: "https://core.telegram.org/bots#how-do-i-create-a-bot",
   },
   {
