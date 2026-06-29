@@ -34,6 +34,7 @@ import {
   hashPassword,
   requireRole,
   requireActiveBilling,
+  billingBlockReason,
   verifyPassword,
   verifyTotp,
 } from "./auth";
@@ -2004,8 +2005,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     const subUser = getCurrentUser(req);
     if (!subUser || subUser.role === "admin") return next();
+    // Union of the two billing layers: allow writes if EITHER a live per-user
+    // subscription OR the user's carrier billing is non-blocking (active/trial/
+    // grace). A non-admin with neither (e.g. self-serve: no carrier, no sub) is blocked.
     const subEndsAt = subUser.subscriptionEndsAt;
-    if (!subEndsAt || new Date(subEndsAt).getTime() > Date.now()) return next();
+    const perUserActive = !!subEndsAt && new Date(subEndsAt).getTime() > Date.now();
+    let carrierActive = false;
+    if (!perUserActive && subUser.linkedClientId) {
+      const carrier = storage.getClient(subUser.linkedClientId);
+      carrierActive = !!carrier && billingBlockReason(carrier) === null;
+    }
+    if (perUserActive || carrierActive) return next();
     return res.status(402).json({
       message: "Подписка истекла. Обратитесь к администратору для продления.",
       code: "subscription_expired",
