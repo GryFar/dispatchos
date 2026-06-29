@@ -115,6 +115,7 @@ function formatRelative(
 ): string {
   if (!iso) return "—";
   const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
   const diffMs = Date.now() - date.getTime();
   const seconds = Math.round(diffMs / 1000);
   if (seconds < 60) return t("admin.integrations.secondsAgo", { seconds });
@@ -305,7 +306,7 @@ function IntegrationSetupDialog({
 
   const setMutation = useMutation({
     mutationFn: () =>
-      apiJson("POST", `/api/admin/integrations/${item.key}/config`, { values }),
+      apiJson("POST", `/api/admin/integrations/${encodeURIComponent(item.key)}/config`, { values }),
     onSuccess: () => {
       toast({ description: t("admin.integrations.savedToast", { label: item.label }) });
       qc.invalidateQueries({ queryKey: ["/api/admin/integrations"] });
@@ -319,7 +320,7 @@ function IntegrationSetupDialog({
 
   const clearMutation = useMutation({
     mutationFn: () =>
-      apiJson("DELETE", `/api/admin/integrations/${item.key}/config`),
+      apiJson("DELETE", `/api/admin/integrations/${encodeURIComponent(item.key)}/config`),
     onSuccess: () => {
       toast({ description: t("admin.integrations.clearedToast", { label: item.label }) });
       qc.invalidateQueries({ queryKey: ["/api/admin/integrations"] });
@@ -375,7 +376,7 @@ function IntegrationSetupDialog({
                   id={meta.envVar}
                   type={meta.type === "secret" ? "password" : meta.type === "url" ? "url" : "text"}
                   placeholder={meta.placeholder ?? (src?.source !== "missing" ? t("admin.integrations.keepBlankPlaceholder") : "")}
-                  value={values[meta.envVar]}
+                  value={values[meta.envVar] ?? ""}
                   onChange={(e) =>
                     setValues((prev) => ({ ...prev, [meta.envVar]: e.target.value }))
                   }
@@ -396,7 +397,7 @@ function IntegrationSetupDialog({
               size="sm"
               className="text-destructive hover:text-destructive"
               onClick={() => clearMutation.mutate()}
-              disabled={clearMutation.isPending}
+              disabled={clearMutation.isPending || setMutation.isPending}
             >
               <Trash2 className="h-3.5 w-3.5" />
               {t("admin.integrations.clearAll")}
@@ -408,7 +409,7 @@ function IntegrationSetupDialog({
             </Button>
             <Button
               onClick={() => setMutation.mutate()}
-              disabled={!hasChanges || setMutation.isPending}
+              disabled={!hasChanges || setMutation.isPending || clearMutation.isPending}
             >
               {setMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {t("common.save")}

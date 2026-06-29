@@ -172,12 +172,17 @@ export default function LoadSourceNewPage() {
           cfg[f.key] = v;
         }
       }
+      // Clamp poll interval to the supported 1–1440 range; fall back to 15 for
+      // empty/non-numeric input (the HTML min/max attrs don't enforce typed values).
+      const pollNum = Number(pollIntervalMin);
       const body: Record<string, unknown> = {
         clientId,
         adapterKey,
         label,
         configJson: cfg,
-        pollIntervalMin: Number(pollIntervalMin) || 15,
+        pollIntervalMin: Number.isFinite(pollNum)
+          ? Math.min(1440, Math.max(1, Math.round(pollNum)))
+          : 15,
         status,
       };
       if (needsCreds) {
@@ -206,6 +211,12 @@ export default function LoadSourceNewPage() {
   // Validation per step.
   const step1Valid = adapterKey && clientId && label.trim().length > 0;
   const step3Valid = !needsCreds || shape.credentials.every((f) => (credentials[f.key] ?? "").length > 0);
+  // Poll interval: empty is fine (defaults to 15 on submit); a typed value must be
+  // a finite number within the supported 1–1440 range.
+  const pollNum = Number(pollIntervalMin);
+  const pollValid =
+    pollIntervalMin.trim() === "" ||
+    (Number.isFinite(pollNum) && pollNum >= 1 && pollNum <= 1440);
 
   function goNext() {
     const idx = steps.indexOf(step);
@@ -411,7 +422,7 @@ export default function LoadSourceNewPage() {
         {isLastStep ? (
           <Button
             onClick={() => createMutation.mutate()}
-            disabled={createMutation.isPending || !step1Valid || !step3Valid}
+            disabled={createMutation.isPending || !step1Valid || !step3Valid || !pollValid}
           >
             {createMutation.isPending ? (
               <Loader2 className="h-4 w-4 animate-spin" />

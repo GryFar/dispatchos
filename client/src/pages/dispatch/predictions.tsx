@@ -277,7 +277,7 @@ function WatchCard({
           {t("dispatch.predictions.by_dow")}
           {prediction && prediction.loadsSeen > 0 ? (
             <span className="font-normal normal-case">
-              · {t("dispatch.predictions.obs", { n: prediction.loadsSeen })} · {t("dispatch.predictions.avg", { avg: prediction.avgPpm.toFixed(2) })}
+              · {t("dispatch.predictions.obs", { n: prediction.loadsSeen })} · {t("dispatch.predictions.avg", { avg: (prediction.avgPpm ?? 0).toFixed(2) })}
             </span>
           ) : (
             <span className="font-normal normal-case">· {t("dispatch.predictions.accumulating")}</span>
@@ -335,13 +335,20 @@ function AddWatchDialog({
   const [minPpm, setMinPpm] = useState("");
   const [equipment, setEquipment] = useState("");
 
+  // Parse min-PPM safely: empty → null, otherwise only a finite, non-negative
+  // number is valid. A non-empty value that is not valid disables submit below.
+  const trimmedPpm = minPpm.trim();
+  const parsedPpm = trimmedPpm === "" ? null : Number(trimmedPpm);
+  const ppmValid =
+    parsedPpm === null || (Number.isFinite(parsedPpm) && parsedPpm >= 0);
+
   const createMutation = useMutation({
     mutationFn: () =>
       apiJson("POST", "/api/dispatch/watchlist", {
         clientId,
         originState,
         destinationState,
-        minPpm: minPpm ? Number(minPpm) : null,
+        minPpm: parsedPpm,
         equipment: equipment || null,
       }),
     onSuccess: () => {
@@ -353,7 +360,11 @@ function AddWatchDialog({
       toast({ title: t("dispatch.predictions.add_error"), description: err.message, variant: "destructive" }),
   });
 
-  const canSubmit = originState.length === 2 && destinationState.length === 2;
+  const canSubmit =
+    originState.length === 2 &&
+    destinationState.length === 2 &&
+    originState !== destinationState &&
+    ppmValid;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>

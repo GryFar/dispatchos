@@ -66,6 +66,18 @@ const DRIVER_STATUS_CLASS: Record<DispatchDriver["driverStatus"], string> = {
   off_duty: "text-muted-foreground",
 };
 
+// Typed map of check-in kinds → i18n keys. Module-scoped so both the timeline
+// and the driver-card last-checkin label resolve via the same compile-time-
+// checked mapping (no string-interpolated keys).
+const CHECKIN_LABELS_KEYS: Record<CheckinKind, string> = {
+  pickup_arrived: "dispatch.load_detail.checkin.pickup_arrived",
+  loaded: "dispatch.load_detail.checkin.loaded",
+  in_transit: "dispatch.load_detail.checkin.in_transit",
+  delivery_arrived: "dispatch.load_detail.checkin.delivery_arrived",
+  delivered: "dispatch.load_detail.checkin.delivered",
+  note: "dispatch.load_detail.checkin.note",
+};
+
 /**
  * /dispatch/loads/:id — load detail for the dispatcher. Route headline,
  * pickup/delivery stops, broker info + trust score, broker quick-feedback,
@@ -77,23 +89,15 @@ export default function DispatchLoadDetailPage() {
   const [, setLocation] = useLocation();
   const loadId = match ? params?.id : null;
 
-  // CHECKIN_LABELS_KEYS defined inside component so t() is available
-  const CHECKIN_LABELS_KEYS: Record<CheckinKind, string> = {
-    pickup_arrived: "dispatch.load_detail.checkin.pickup_arrived",
-    loaded: "dispatch.load_detail.checkin.loaded",
-    in_transit: "dispatch.load_detail.checkin.in_transit",
-    delivery_arrived: "dispatch.load_detail.checkin.delivery_arrived",
-    delivered: "dispatch.load_detail.checkin.delivered",
-    note: "dispatch.load_detail.checkin.note",
-  };
-
   const { data, isLoading, error } = useQuery<LoadFull>({
     queryKey: ["dispatch", "load", loadId],
     queryFn: () => apiJson<LoadFull>("GET", `/api/dispatch/loads/${loadId}`),
     enabled: Boolean(loadId),
   });
 
-  const { data: checkinsData } = useQuery<{ items: LoadCheckin[] }>({
+  const { data: checkinsData, error: checkinsError } = useQuery<{
+    items: LoadCheckin[];
+  }>({
     queryKey: ["dispatch", "load", loadId, "checkins"],
     queryFn: () =>
       apiJson<{ items: LoadCheckin[] }>(
@@ -116,6 +120,11 @@ export default function DispatchLoadDetailPage() {
 
   if (error) {
     const is404 = error instanceof ApiError && error.status === 404;
+    // Don't render the raw backend message into the UI — it may carry internal
+    // detail and isn't localized. Log it for debugging; show a localized title.
+    if (!is404) {
+      console.error("[dispatch/load-detail] load fetch failed:", error);
+    }
     return (
       <div className="space-y-4">
         <BackBar onClick={() => setLocation("/loads")} label={t("dispatch.load_detail.back")} />
@@ -123,9 +132,11 @@ export default function DispatchLoadDetailPage() {
           <p className="font-medium">
             {is404 ? t("dispatch.load_detail.not_found") : t("dispatch.load_detail.load_error")}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {is404 ? t("dispatch.load_detail.not_found_hint") : (error as Error).message}
-          </p>
+          {is404 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("dispatch.load_detail.not_found_hint")}
+            </p>
+          )}
         </Card>
       </div>
     );
@@ -208,7 +219,16 @@ export default function DispatchLoadDetailPage() {
       {/* Driver assignment (always shown — load can have or not have a driver) */}
       <DriverAssignmentCard load={data} />
 
-      {/* Checkins timeline */}
+      {/* Checkins timeline — surface a load failure instead of silently
+          showing nothing (which is indistinguishable from "no check-ins"). */}
+      {checkinsError && !checkinsData && (
+        <Card className="border-destructive/40 bg-destructive/5 p-4">
+          <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <Clock className="h-3.5 w-3.5" /> {t("dispatch.load_detail.timeline")}
+          </p>
+          <p className="mt-2 text-xs text-destructive">{t("common.error")}</p>
+        </Card>
+      )}
       {checkinsData && checkinsData.items.length > 0 && (
         <Card className="p-4">
           <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -617,7 +637,10 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
                 {selectedDriver.phone && (
                   <div className="flex items-center gap-2">
                     <Phone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <a href={`tel:${selectedDriver.phone}`} className="hover:text-foreground">
+                    <a
+                      href={`tel:${selectedDriver.phone.replace(/[^+\d]/g, "")}`}
+                      className="hover:text-foreground"
+                    >
                       {selectedDriver.phone}
                     </a>
                   </div>
@@ -627,7 +650,7 @@ function DriverAssignmentCard({ load }: { load: LoadFull }) {
                   <div className="flex items-start gap-2">
                     <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     <span>
-                      {t(`dispatch.load_detail.checkin.${selectedDriver.lastCheckin.kind}`)}
+                      {t(CHECKIN_LABELS_KEYS[selectedDriver.lastCheckin.kind])}
                       <span className="block text-muted-foreground">
                         {formatDateFull(selectedDriver.lastCheckin.createdAt)}
                       </span>

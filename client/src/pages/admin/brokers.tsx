@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -58,8 +58,8 @@ export default function BrokersPage() {
       const needle = q.toLowerCase();
       r = r.filter(
         (b) =>
-          b.brokerName.toLowerCase().includes(needle) ||
-          b.brokerMc.toLowerCase().includes(needle),
+          (b.brokerName ?? "").toLowerCase().includes(needle) ||
+          (b.brokerMc ?? "").toLowerCase().includes(needle),
       );
     }
     if (verdictFilter !== "all") {
@@ -156,7 +156,7 @@ function BrokersTable({ rows, loading }: { rows: BrokerRecord[]; loading: boolea
           : "verify";
         return (
           <div>
-            <StatusBadge variant={variant}>{b.authorityStatus.replace(/_/g, " ")}</StatusBadge>
+            <StatusBadge variant={variant}>{(b.authorityStatus ?? "").replace(/_/g, " ")}</StatusBadge>
             {b.authorityAgeMonths > 0 && (
               <p className="mt-0.5 text-[10px] text-muted-foreground">
                 {t("admin.brokers.months", { count: b.authorityAgeMonths })}
@@ -186,10 +186,11 @@ function BrokersTable({ rows, loading }: { rows: BrokerRecord[]; loading: boolea
     {
       key: "flags",
       header: "Flags",
-      cell: (b) =>
-        b.flags.length > 0 ? (
+      cell: (b) => {
+        const flags = b.flags ?? [];
+        return flags.length > 0 ? (
           <div className="flex flex-wrap gap-1">
-            {b.flags.slice(0, 3).map((f, i) => (
+            {flags.slice(0, 3).map((f, i) => (
               <span
                 key={i}
                 className="rounded bg-warning/10 px-1 py-0.5 text-[10px] text-warning"
@@ -197,13 +198,14 @@ function BrokersTable({ rows, loading }: { rows: BrokerRecord[]; loading: boolea
                 {f}
               </span>
             ))}
-            {b.flags.length > 3 && (
-              <span className="text-[10px] text-muted-foreground">+{b.flags.length - 3}</span>
+            {flags.length > 3 && (
+              <span className="text-[10px] text-muted-foreground">+{flags.length - 3}</span>
             )}
           </div>
         ) : (
           <span className="text-[10px] text-muted-foreground">—</span>
-        ),
+        );
+      },
       hideOnMobile: true,
     },
     {
@@ -278,11 +280,27 @@ function CheckBrokerDialog({ open, onOpenChange }: { open: boolean; onOpenChange
     },
   });
 
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // Cancel any pending deferred reset if the dialog reopens (avoids wiping
+    // freshly-typed input) or the component unmounts.
+    if (open && resetTimer.current) {
+      clearTimeout(resetTimer.current);
+      resetTimer.current = null;
+    }
+    return () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    };
+  }, [open]);
+
   function handleClose() {
     onOpenChange(false);
-    setTimeout(() => {
+    if (resetTimer.current) clearTimeout(resetTimer.current);
+    resetTimer.current = setTimeout(() => {
       form.reset();
       setResult(null);
+      resetTimer.current = null;
     }, 200);
   }
 
@@ -306,17 +324,17 @@ function CheckBrokerDialog({ open, onOpenChange }: { open: boolean; onOpenChange
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-xs uppercase tracking-wider text-muted-foreground">Authority</span>
-                <span className="text-sm capitalize">{result.authorityStatus.replace(/_/g, " ")}</span>
+                <span className="text-sm capitalize">{(result.authorityStatus ?? "").replace(/_/g, " ")}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-xs uppercase tracking-wider text-muted-foreground">Risk score</span>
                 <span className="font-mono text-sm">{result.riskScore}</span>
               </div>
-              {result.flags.length > 0 && (
+              {(result.flags ?? []).length > 0 && (
                 <div>
                   <p className="text-xs uppercase tracking-wider text-muted-foreground">Flags</p>
                   <ul className="mt-1.5 space-y-1">
-                    {result.flags.map((f, i) => (
+                    {(result.flags ?? []).map((f, i) => (
                       <li
                         key={i}
                         className="rounded bg-warning/10 px-2 py-1 text-xs text-warning"

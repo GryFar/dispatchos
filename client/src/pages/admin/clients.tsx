@@ -222,7 +222,7 @@ function ClientsTable({
       header: "Equipment",
       cell: (c) => (
         <StatusBadge variant="info" className="capitalize">
-          {c.equipment.replace("_", " ")}
+          {c.equipment.replace(/_/g, " ")}
         </StatusBadge>
       ),
       width: "140px",
@@ -233,7 +233,7 @@ function ClientsTable({
       align: "right",
       cell: (c) => (
         <div className="font-mono tabular-nums text-xs">
-          <div><PpmCell value={c.targetPpm} target={c.targetPpm} /></div>
+          <div><PpmCell value={c.targetPpm} target={c.minimumPpm} /></div>
           <div className="text-muted-foreground">min {formatPpm(c.minimumPpm)}</div>
         </div>
       ),

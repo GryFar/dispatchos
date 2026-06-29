@@ -432,8 +432,8 @@ function IssueDialog({
       apiJson("POST", "/api/me/issues", {
         loadId,
         severity,
-        title,
-        description: description || undefined,
+        title: title.trim(),
+        description: description.trim() || undefined,
       }),
     onSuccess: () => {
       toast({
@@ -502,7 +502,7 @@ function IssueDialog({
           </Button>
           <Button
             onClick={() => mutation.mutate()}
-            disabled={mutation.isPending || title.length < 3}
+            disabled={mutation.isPending || title.trim().length < 3}
           >
             {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {t("common.send")}

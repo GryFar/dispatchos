@@ -213,7 +213,7 @@ function LoadsTable({ rows, loading }: { rows: Load[]; loading: boolean }) {
     {
       key: "equipment",
       header: t("admin.loads.colType"),
-      cell: (l) => <span className="text-xs capitalize">{l.equipment.replace("_", " ")}</span>,
+      cell: (l) => <span className="text-xs capitalize">{l.equipment.replace(/_/g, " ")}</span>,
       width: "90px",
       hideOnMobile: true,
     },

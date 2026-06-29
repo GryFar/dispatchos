@@ -61,13 +61,24 @@ const DOC_TYPE_LABELS: Record<DriverDocumentType, string> = {
   dq_annual_review: "Annual driving review (§391.25c)",
 };
 
+// Mirrors the server default cap (server/upload.ts: 10 MB) and the UI label
+// "up to 10 MB". A pre-flight check avoids uploading a file the backend will
+// reject; the server remains the authoritative gate.
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
 function fmtExpiry(
   expiresAt: string | null,
   t: (key: string, vars?: Record<string, string | number>) => string,
 ): { label: string; tone: "ok" | "soon" | "expired" } {
   if (!expiresAt) return { label: t("driver.documents.no_expiry"), tone: "ok" };
-  const exp = new Date(`${expiresAt}T00:00:00Z`);
-  const days = Math.round((exp.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+  // Compare whole calendar days in the viewer's local timezone. `expiresAt` is a
+  // bare YYYY-MM-DD; anchoring both it and "today" to local midnight avoids the
+  // off-by-one that arises from mixing a UTC-midnight parse with a local now().
+  const [y, m, d] = expiresAt.split("-").map(Number);
+  const exp = new Date(y, (m || 1) - 1, d || 1);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((exp.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
   if (days <= 0) return { label: t("driver.documents.expired"), tone: "expired" };
   if (days <= 30) return { label: t("driver.documents.expires", { date: expiresAt }), tone: "soon" };
   return { label: t("driver.documents.expires", { date: expiresAt }), tone: "ok" };
@@ -96,8 +107,19 @@ export default function DriverDocumentsPage() {
         credentials: "include",
       });
       if (!res.ok) {
-        const msg = await res.text();
-        throw new ApiError(res.status, msg || "Upload failed", null);
+        // Surface a server-provided JSON `message` when present, but never leak a
+        // raw HTML error page or other non-JSON body into the driver-facing toast.
+        const raw = await res.text();
+        let msg = "";
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && typeof parsed.message === "string") {
+            msg = parsed.message;
+          }
+        } catch {
+          // Non-JSON body (HTML page, plain dump): fall back to the generic title.
+        }
+        throw new ApiError(res.status, msg, null);
       }
       return res.json();
     },
@@ -113,7 +135,7 @@ export default function DriverDocumentsPage() {
       toast({
         variant: "destructive",
         title: t("driver.documents.upload_error"),
-        description: err.message,
+        description: err.message || undefined,
       });
     },
   });
@@ -138,6 +160,10 @@ export default function DriverDocumentsPage() {
     e.preventDefault();
     const file = fileRef.current?.files?.[0];
     if (!file) {
+      toast({ variant: "destructive", title: t("common.error") });
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
       toast({ variant: "destructive", title: t("common.error") });
       return;
     }

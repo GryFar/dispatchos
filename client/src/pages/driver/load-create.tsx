@@ -118,7 +118,11 @@ export default function DriverLoadCreatePage() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const rate = parseFloat(form.rate);
+    const parsedRate = parseFloat(form.rate);
+    // Round to cents and reject non-finite values (e.g. "Infinity", trailing garbage)
+    const rate = Number.isFinite(parsedRate)
+      ? Math.round(parsedRate * 100) / 100
+      : NaN;
     if (!form.originCity || !form.originState) {
       toast({ title: "Origin city and state are required", variant: "destructive" });
       return;
