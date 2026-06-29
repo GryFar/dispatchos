@@ -287,7 +287,16 @@ export async function fetchByMc(mcNumber: string, options: FmcsaApiOptions): Pro
  * The API wraps the carrier in `{ content: [{ carrier: {...} }] }`. We extract
  * the first match and normalize fields.
  */
-export function parseMobileApiResponse(mcNumber: string, raw: unknown): FmcsaCarrier | null {
+export function parseMobileApiResponse(
+  mcNumber: string,
+  raw: unknown,
+  /**
+   * Wall-clock epoch (ms) used for `fetchedAt` and authority-age math. Defaults
+   * to the current time; injectable so tests can pin the clock and keep this
+   * module deterministic (per the pure/testable design noted at the top).
+   */
+  nowMs: number = Date.now(),
+): FmcsaCarrier | null {
   if (!raw || typeof raw !== "object") return null;
   // The API has multiple possible shapes — handle both `content: [...]` and
   // direct carrier object.
@@ -336,7 +345,7 @@ export function parseMobileApiResponse(mcNumber: string, raw: unknown): FmcsaCar
       freightForwarder: hasActiveAuthority(carrier, "freightForwarderStatus", "freightForwarder"),
     };
 
-    const authorityAgeYears = parseAuthorityAge(carrier);
+    const authorityAgeYears = parseAuthorityAge(carrier, nowMs);
 
     const safetyRatingRaw = pickString(carrier, "safetyRating") ?? "";
     let safetyRating: FmcsaCarrier["safetyRating"] = "NONE";
@@ -363,7 +372,7 @@ export function parseMobileApiResponse(mcNumber: string, raw: unknown): FmcsaCar
       safetyRating: safetyRating === "NONE" ? undefined : safetyRating,
       powerUnits: pickNumber(carrier, "totalPowerUnits") ?? undefined,
       drivers: pickNumber(carrier, "totalDrivers") ?? undefined,
-      fetchedAt: new Date().toISOString(),
+      fetchedAt: new Date(nowMs).toISOString(),
     };
 
     // Gate the hand-built object through the exported schema so drift between
@@ -496,7 +505,7 @@ function pickFlag(obj: Record<string, unknown>, ...keys: string[]): boolean | un
   return undefined;
 }
 
-function parseAuthorityAge(carrier: Record<string, unknown>): number | null {
+function parseAuthorityAge(carrier: Record<string, unknown>, nowMs: number = Date.now()): number | null {
   // The mobile API exposes "mcs150Date" which is the last MCS-150 update — not
   // the original authority date. The original authority date is in "carrier"
   // SAFER scrape but missing from the JSON API. We approximate using the
@@ -505,7 +514,13 @@ function parseAuthorityAge(carrier: Record<string, unknown>): number | null {
   if (snapshot) {
     const date = Date.parse(snapshot);
     if (!Number.isNaN(date)) {
-      return Math.round(((Date.now() - date) / (365.25 * 24 * 60 * 60 * 1000)) * 10) / 10;
+      const ageYears = Math.round(((nowMs - date) / (365.25 * 24 * 60 * 60 * 1000)) * 10) / 10;
+      // A future / clock-skewed snapshotDate yields a negative age, which would
+      // satisfy the `< 0.5` fresh-authority branch in evaluateBroker and render
+      // nonsense like "-3 months old". Treat a non-sensical (negative) age as
+      // unknown rather than as a brand-new (high-risk) authority.
+      if (ageYears < 0) return null;
+      return ageYears;
     }
   }
   return null;

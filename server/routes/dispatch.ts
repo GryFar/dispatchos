@@ -319,13 +319,16 @@ export function registerDispatchRoutes(app: Express): void {
     ah((req, res) => {
       const me = getCurrentUser(req);
       if (!me) return res.status(401).json({ message: "Authentication required" });
-      const status = req.query.status as
-        | "open"
-        | "in_progress"
-        | "resolved"
-        | "dismissed"
-        | "all"
-        | undefined;
+      // Validate status at runtime instead of a bare TS cast — a typo'd value
+      // (e.g. "in_progres") would otherwise flow into the SQL filter and return
+      // an empty list with 200 OK, hiding the dispatcher's work queue. 400 on
+      // invalid, consistent with the /loads endpoint's zod filters.
+      const statusParse = z
+        .enum(["open", "in_progress", "resolved", "dismissed", "all"])
+        .optional()
+        .safeParse(req.query.status);
+      if (!statusParse.success) return send400Validation(res, statusParse.error);
+      const status = statusParse.data;
       const limit = parseLimit(req.query.limit);
       const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
       const out = storage.listApprovalTasksForDispatcher(me.id, {
@@ -477,9 +480,12 @@ export function registerDispatchRoutes(app: Express): void {
               }
             : null;
 
-          const online = Boolean(
-            u.lastSeenAt && nowMs - new Date(u.lastSeenAt).getTime() < ONLINE_WINDOW_MS,
-          );
+          // Parse defensively: a non-parseable lastSeenAt yields NaN, and
+          // `nowMs - NaN < ONLINE_WINDOW_MS` is false, silently reading an
+          // actually-online driver as offline. Number.isFinite gates that out.
+          const lastSeenMs = u.lastSeenAt ? Date.parse(u.lastSeenAt) : NaN;
+          const online =
+            Number.isFinite(lastSeenMs) && nowMs - lastSeenMs < ONLINE_WINDOW_MS;
 
           const capacity =
             nominalCapacity !== null

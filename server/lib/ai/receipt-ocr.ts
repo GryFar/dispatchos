@@ -86,6 +86,13 @@ export async function parseReceipt(
     console.warn("[receipt-ocr] empty/too-small image — skipping");
     return null;
   }
+  // Fail fast on oversized images: the Anthropic API rejects base64 image
+  // payloads above its ~5MB limit, so anything beyond this threshold would only
+  // waste an up-to-45s round-trip before the remote error path. Bail locally.
+  if (imageBase64.length > 6_500_000) {
+    console.warn("[receipt-ocr] image too large — skipping");
+    return null;
+  }
 
   let res: Response;
   // Audit V2-15 — cap Anthropic call at 45s. Without it a stalled vendor hangs

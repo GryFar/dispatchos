@@ -37,14 +37,21 @@ export interface BrokerEmailParsed {
 
 const FIELD_LINE = /^\s*([A-Za-z][A-Za-z \\/.#-]{1,30}?)\s*[:#-]\s*(.+?)\s*$/;
 
+// A real field label: starts with a letter and stays within FIELD_LINE's label
+// class and length cap. Used to reject prose/URL/time lines (e.g. "http", "12")
+// that merely happen to contain a colon, which would otherwise mint a spurious
+// field and — with first-occurrence-wins — shadow a genuine later value.
+const LABEL = /^\s*[A-Za-z][A-Za-z \\/.#-]{0,30}\s*$/;
+
 // Split a body line into [label, value]. Prefer the first colon (the dominant
 // separator) so labels that themselves contain '#' or '-' — e.g. "Load #" —
 // aren't mis-split; fall back to FIELD_LINE for '-'/'#'-delimited lines.
 function splitField(line: string): [string, string] | null {
   const colon = line.indexOf(":");
   if (colon > 0) {
+    const label = line.slice(0, colon);
     const value = line.slice(colon + 1).trim();
-    if (value) return [line.slice(0, colon), value];
+    if (value && LABEL.test(label)) return [label, value];
   }
   const m = line.match(FIELD_LINE);
   return m ? [m[1], m[2].trim()] : null;
@@ -116,10 +123,13 @@ function parseMoney(value: string): number | undefined {
 }
 
 function parseInt0(value: string): number | undefined {
-  const m = value.match(/-?\d[\d,]*/);
+  // Used for miles/weight/pieces — all physical quantities where zero or a
+  // dash-captured negative is garbage. Match unsigned digits and reject
+  // non-positive results, mirroring parseMoney's `n > 0` guard.
+  const m = value.match(/\d[\d,]*/);
   if (!m) return undefined;
   const n = Number(m[0].replace(/,/g, ""));
-  return Number.isFinite(n) ? n : undefined;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 function parseDate(value?: string): string | undefined {

@@ -29,12 +29,18 @@ export const TWILIO_VERIFY_CONFIGURED = Boolean(
   accountSid && apiKeySid && apiKeySecret && serviceSid,
 );
 
+// Fail-fast request timeout (ms). Well below the SDK's ~30s default so a
+// stalled Twilio endpoint quickly surfaces as an error and the graceful
+// degradation path engages instead of piling up open verify requests.
+const TWILIO_REQUEST_TIMEOUT_MS = 10_000;
+
 let _client: ReturnType<typeof twilio> | null = null;
 function getClient(): ReturnType<typeof twilio> | null {
   if (!TWILIO_VERIFY_CONFIGURED) return null;
   if (!_client) {
     _client = twilio(apiKeySid as string, apiKeySecret as string, {
       accountSid: accountSid as string,
+      timeout: TWILIO_REQUEST_TIMEOUT_MS,
     });
   }
   return _client;
@@ -99,7 +105,15 @@ export async function checkVerificationCode(
     const v = await c.verify.v2
       .services(serviceSid!)
       .verificationChecks.create({ to: phoneE164, code });
-    return { ok: v.status === "approved", status: v.status };
+    const approved = v.status === "approved";
+    // On the non-throwing failure path (wrong/expired/canceled code) Twilio
+    // returns status without throwing, so error would otherwise stay undefined
+    // and callers forwarding result.error would leak nothing useful. Surface
+    // the (non-sensitive) Verify status enum so the client can distinguish
+    // wrong-code vs expired vs canceled.
+    return approved
+      ? { ok: true, status: v.status }
+      : { ok: false, status: v.status, error: v.status };
   } catch (e: any) {
     return { ok: false, error: twilioErrorCode(e, "checkVerificationCode") };
   }
@@ -141,7 +155,14 @@ export async function checkEmailVerificationCode(
     const v = await c.verify.v2
       .services(serviceSid!)
       .verificationChecks.create({ to: email, code });
-    return { ok: v.status === "approved", status: v.status };
+    const approved = v.status === "approved";
+    // See checkVerificationCode: surface the non-sensitive Verify status enum
+    // on the non-throwing failure path so error isn't undefined. These status
+    // values (pending/expired/canceled) never collide with the thrown-error
+    // code 'email_channel_not_configured' the route branches on.
+    return approved
+      ? { ok: true, status: v.status }
+      : { ok: false, status: v.status, error: v.status };
   } catch (e: any) {
     return { ok: false, error: twilioErrorCode(e, "checkEmailVerificationCode") };
   }

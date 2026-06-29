@@ -59,6 +59,13 @@ export interface ChainOptions {
   horizonHours?: number; // ignore loads picking up beyond this; default 168 (1 week)
 }
 
+// A coordinate pair usable as a real point: both finite and within the valid
+// lat/lng range. Range comparisons are false for NaN, so this also rejects the
+// non-finite / un-geocoded case (preserving the prior finite-only behavior).
+function inLatLng(lat: number, lng: number): boolean {
+  return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+
 function haversineMiles(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const R = 3958.8;
   const dLat = ((bLat - aLat) * Math.PI) / 180;
@@ -96,7 +103,18 @@ export function planLoadChain(
       const p = Date.parse(l.pickupAt);
       const d = Date.parse(l.deliveryAt);
       return (
-        Number.isFinite(p) && Number.isFinite(d) && d >= p && l.loadedMiles >= 0 && p <= horizonCap
+        Number.isFinite(p) &&
+        Number.isFinite(d) &&
+        d >= p &&
+        l.loadedMiles >= 0 &&
+        p <= horizonCap &&
+        // Reject un-geocoded loads up front. NaN coords already vanish from the
+        // plan (haversine→NaN poisons every comparison), but filtering them here
+        // keeps NaN out of the DP arithmetic and is output-equivalent. Also
+        // require coords in valid lat/lng range so out-of-range garbage can't
+        // produce a phantom multi-thousand-mile deadhead that tanks the chain.
+        inLatLng(l.originLat, l.originLng) &&
+        inLatLng(l.destinationLat, l.destinationLng)
       );
     })
     .sort((a, b) => Date.parse(a.pickupAt) - Date.parse(b.pickupAt) || a.id.localeCompare(b.id));

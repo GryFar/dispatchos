@@ -17,38 +17,25 @@ function notImplemented(label: string): BoardAdapter["fetchLoads"] {
   };
 }
 
-function emptyNormalize(row: LoadSourceRow): NormalizedLoad {
-  return {
-    sourceId: row.id,
-    sourceExternalId: "",
-    clientId: row.clientId,
-    source: row.adapterKey,
-    originCity: "",
-    originState: "",
-    originLat: 0,
-    originLng: 0,
-    destinationCity: "",
-    destinationState: "",
-    destinationLat: 0,
-    destinationLng: 0,
-    rate: 0,
-    loadedMiles: 0,
-    pickupAt: "",
-    deliveryAt: "",
-    equipment: "sprinter_van",
-    brokerName: "",
-    brokerMc: "",
-  };
-}
-
 function makeStub(key: AdapterKey, label: string, requiresCredentials: boolean): BoardAdapter {
   return {
     key,
     label,
     requiresCredentials,
-    async authenticate() {},
+    // Stubs have no real fetcher yet, so fail loudly at every entry point rather
+    // than silently "succeeding". authenticate() throws so the "not implemented"
+    // signal surfaces at the contract's validation step (types.ts:85), and
+    // normalizeToLoad() throws instead of returning a zero-filled NormalizedLoad
+    // (empty dedup key, $0 rate, 0,0 coords) — so a future half-built adapter
+    // that gains fetchLoads but forgets to replace normalizeToLoad fails loudly
+    // instead of upserting garbage loads.
+    async authenticate() {
+      throw new Error(`${label}: adapter not yet implemented`);
+    },
     fetchLoads: notImplemented(label),
-    normalizeToLoad: (_raw: RawLoad, row: LoadSourceRow) => emptyNormalize(row),
+    normalizeToLoad: (_raw: RawLoad, _row: LoadSourceRow): NormalizedLoad => {
+      throw new Error(`${label}: adapter not yet implemented`);
+    },
   };
 }
 

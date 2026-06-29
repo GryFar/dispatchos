@@ -78,7 +78,7 @@ export function makeBrokerEmailAdapter(opts: {
       // otherwise it would ingest every broker's mail from the shared store.
       if (!cfg.inboundAddress && opts.senderDomains.length === 0 && !cfg.senderDomains?.length) {
         throw new Error(
-          "config.inboundAddress is required (e.g. loads+ivan@dispatchos.co)",
+          "Provide config.inboundAddress (e.g. loads+ivan@dispatchos.co) and/or config.senderDomains so emails can be scoped to this source",
         );
       }
     },

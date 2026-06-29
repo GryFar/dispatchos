@@ -69,6 +69,42 @@ function asNumber(v: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+// Devices (or anyone holding a tracking_token) can submit absurd telemetry
+// — batteryPct=9999, negative speed, headingDeg=99999, negative accuracy —
+// which previously persisted verbatim and skewed cockpit/metric displays
+// (audit: ping numeric fields had no range validation). These coercers drop
+// out-of-range values to undefined so they're stored as NULL, exactly like a
+// missing field, keeping behavior identical for in-range input.
+
+/** Clamp to [0,100] %, else drop. */
+function asBatteryPct(v: unknown): number | undefined {
+  const n = asNumber(v);
+  if (n === undefined) return undefined;
+  return n >= 0 && n <= 100 ? n : undefined;
+}
+
+/** Normalize a compass heading into [0,360); drop non-finite input. */
+function asHeadingDeg(v: unknown): number | undefined {
+  const n = asNumber(v);
+  if (n === undefined) return undefined;
+  const wrapped = ((n % 360) + 360) % 360;
+  return wrapped;
+}
+
+/** Non-negative speed with a generous sane cap (~1000 km/h), else drop. */
+function asSpeedKmh(v: unknown): number | undefined {
+  const n = asNumber(v);
+  if (n === undefined) return undefined;
+  return n >= 0 && n <= 1000 ? n : undefined;
+}
+
+/** Non-negative GPS accuracy in meters, else drop. */
+function asAccuracyM(v: unknown): number | undefined {
+  const n = asNumber(v);
+  if (n === undefined) return undefined;
+  return n >= 0 ? n : undefined;
+}
+
 /**
  * Reject the GPS «null island» (0°, 0°) — a tiny patch of ocean off the
  * coast of Africa. Real driver fixes there are vanishingly rare, but a GPS
@@ -114,13 +150,15 @@ export function registerTrackRoutes(app: Express): void {
         userId: user.id,
         lat,
         lng,
-        accuracyM: asNumber(req.query.accuracy ?? req.query.hdop),
+        accuracyM: asAccuracyM(req.query.accuracy ?? req.query.hdop),
         // Traccar reports speed in knots by default, but Android client sends m/s.
         // We accept either via `speed` (m/s) or `speed_kmh` if the user wired it.
-        speedKmh: asNumber(req.query.speed_kmh)
-          ?? (asNumber(req.query.speed) !== undefined ? asNumber(req.query.speed)! * 3.6 : undefined),
-        headingDeg: asNumber(req.query.bearing ?? req.query.heading),
-        batteryPct: asNumber(req.query.batt ?? req.query.battery),
+        speedKmh: asSpeedKmh(
+          asNumber(req.query.speed_kmh)
+            ?? (asNumber(req.query.speed) !== undefined ? asNumber(req.query.speed)! * 3.6 : undefined),
+        ),
+        headingDeg: asHeadingDeg(req.query.bearing ?? req.query.heading),
+        batteryPct: asBatteryPct(req.query.batt ?? req.query.battery),
         source: "osmand",
         capturedAt: parseTimestamp(req.query.timestamp),
       });
@@ -170,10 +208,10 @@ export function registerTrackRoutes(app: Express): void {
         userId: user.id,
         lat,
         lng,
-        accuracyM: asNumber(body.acc),
-        speedKmh: asNumber(body.vel),  // Owntracks reports km/h directly
-        headingDeg: asNumber(body.cog),
-        batteryPct: asNumber(body.batt),
+        accuracyM: asAccuracyM(body.acc),
+        speedKmh: asSpeedKmh(body.vel),  // Owntracks reports km/h directly
+        headingDeg: asHeadingDeg(body.cog),
+        batteryPct: asBatteryPct(body.batt),
         source: "owntracks",
         capturedAt: parseTimestamp(body.tst),
       });
