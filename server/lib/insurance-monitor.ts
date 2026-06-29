@@ -162,7 +162,15 @@ export async function runInsuranceCheck(
   const clients = storage.listClients();
   const tgBotToken =
     getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN") ?? null;
-  const tgChatId = process.env.TELEGRAM_ALERT_CHAT_ID ?? null;
+  // Resolve the alert chat id through the same integration-config path as the
+  // bot token (canonical telegram_driver_bot key) so an operator who configures
+  // telegram via the admin UI — with no env var — still gets a chat id instead
+  // of a silent null that suppresses all Telegram alerts. Mirrors
+  // compliance-renewals / trial-expiry / inbound.
+  const tgChatId =
+    getIntegrationValue("telegram_driver_bot", "TELEGRAM_ALERT_CHAT_ID") ??
+    process.env.TELEGRAM_ALERT_CHAT_ID ??
+    null;
 
   // Owner email — unified resolver (override > integration > env > first admin).
   const ownerEmail = resolveOwnerEmail(ownerEmailOverride);

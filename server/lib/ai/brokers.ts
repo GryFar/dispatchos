@@ -43,7 +43,7 @@ export const brokerEventSchema = z.object({
   brokerMc: z.string(),                    // normalized e.g. "MC-470488"
   eventType: brokerEventTypeSchema,
   loadId: z.string().optional(),           // link to load if event is load-specific
-  amountUsd: z.number().optional(),        // for payment / rate events
+  amountUsd: z.number().finite().nonnegative().optional(), // for payment / rate events
   notes: z.string().optional(),
   loggedByUserId: z.string(),              // dispatcher who logged it
   loggedAt: z.string(),                    // ISO timestamp
@@ -60,7 +60,11 @@ export const brokerHistorySchema = z.object({
   loadsCompleted: z.number(),
   /** Loads cancelled by broker. */
   loadsCancelled: z.number(),
-  /** Total gross paid by this broker (across all loads). */
+  /**
+   * Total gross booked with this broker (across all loads). Accrued from
+   * `load_booked` event amounts — this is the booked value, not necessarily
+   * the amount actually paid (see `totalLost` for non-payments/disputes).
+   */
   totalGross: z.number(),
   /** Total amount lost to non-payment / disputes. */
   totalLost: z.number(),
