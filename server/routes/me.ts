@@ -45,6 +45,7 @@ import { parseReceipt } from "../lib/ai/receipt-ocr";
 import { parseLimit } from "../lib/query";
 import { getCurrentUser, requireRole, requireActiveBilling } from "../auth";
 import { storage, uploadsRoot } from "../storage";
+import { chargeAiCreditPack, AI_CREDIT_PACK } from "../lib/stripe";
 import { upload } from "../upload";
 import { todayInState } from "../lib/us-state-tz";
 
@@ -243,6 +244,29 @@ function clampFuelOccurredAt(raw: string | undefined): string {
 
 export function registerMeRoutes(app: Express): void {
   const driver = requireRole("driver");
+
+  // Variant 2: the driver buys an AI-credit pack; charged to their carrier's
+  // Stripe customer. Credits are granted on the invoice.payment_succeeded
+  // webhook (not here) so a failed charge never hands out free requests.
+  app.post(
+    "/api/me/ai-credits/purchase",
+    driver,
+    ah(async (req: Request, res: Response) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      if (!user.linkedClientId) {
+        return res.status(400).json({
+          message: "Нет привязанной компании для оплаты — обратитесь к администратору.",
+          code: "no_carrier",
+        });
+      }
+      const result = await chargeAiCreditPack(user.id, user.linkedClientId);
+      if (!result.ok) {
+        return res.status(402).json({ message: "Оплата не оформлена.", code: result.reason });
+      }
+      return res.json({ ok: true, pack: AI_CREDIT_PACK.credits, priceCents: AI_CREDIT_PACK.priceCents });
+    }),
+  );
 
   // -------------------------------------------------------------------------
   // GET /api/me/dashboard
