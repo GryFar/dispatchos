@@ -894,6 +894,15 @@ export function registerMeRoutes(app: Express): void {
             retryAfterSec: budget.retryAfterSec,
           });
         }
+        // Persistent per-user daily AI quota (50/day) + purchased credits, on top
+        // of the in-memory hourly/daily burst guard above.
+        const quota = storage.consumeAiQuota(user.id);
+        if (!quota.ok) {
+          return res.status(429).json({
+            message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
+            code: "ai_quota_exceeded",
+          });
+        }
         const imageBase64 = fs.readFileSync(file.path).toString("base64");
         const ocr = await parseReceipt(imageBase64, mediaType);
         // Audit the attempt (not the image) so we can see OCR usage/hit-rate.

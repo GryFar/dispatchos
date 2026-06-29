@@ -105,6 +105,11 @@ function rowToBrokerEvent(row: Record<string, unknown>): BrokerEvent {
 }
 
 const sqlite = new Database(process.env.DISPATCHOS_DB_PATH || "dispatchos-unified.db");
+
+// Per-user daily AI request quota (free tier). Beyond it, purchased ai_credits
+// are consumed (see consumeAiQuota). Haiku 4.5 ~ $0.003/call, so 50/day ~ $2/mo
+// worst case; the cap is mainly anti-abuse, not per-user cost.
+export const AI_DAILY_FREE_QUOTA = 50;
 sqlite.pragma("journal_mode = WAL");
 // better-sqlite3 defaults to a 0ms busy timeout, so a writer hitting a
 // momentarily-locked DB (e.g. the 5-min load-sources poll upserting while a user
@@ -920,6 +925,20 @@ sqlite.exec("CREATE INDEX IF NOT EXISTS idx_lane_watchlist_active ON lane_watchl
 // Indexes cover the hot query paths: list-by-owner with created_at DESC, and
 // list-by-load for checkins/expenses.
 // ---------------------------------------------------------------------------
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS ai_usage (
+    user_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day)
+  );
+  CREATE TABLE IF NOT EXISTS ai_credits (
+    user_id TEXT PRIMARY KEY,
+    balance INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT
+  );
+`);
+
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS driver_documents (
     id TEXT PRIMARY KEY,
@@ -6900,6 +6919,64 @@ export const storage = {
         "SELECT id, full_name AS fullName, driver_status AS driverStatus FROM users WHERE role = 'driver' AND blocked = 0 AND deleted_at IS NULL AND linked_client_id = ? ORDER BY full_name ASC",
       )
       .all(clientId) as Array<{ id: string; fullName: string; driverStatus: string | null }>;
+  },
+
+  // --- AI usage quota (persistent, per-user, per-day) + purchased credits ----
+  consumeAiQuota(
+    userId: string,
+    dailyFree = AI_DAILY_FREE_QUOTA,
+  ): { ok: boolean; source: "free" | "credit" | null; remainingToday: number; credits: number } {
+    const day = new Date().toISOString().slice(0, 10);
+    const tx = sqlite.transaction((): { ok: boolean; source: "free" | "credit" | null; remainingToday: number; credits: number } => {
+      const row = sqlite
+        .prepare("SELECT count FROM ai_usage WHERE user_id = ? AND day = ?")
+        .get(userId, day) as { count: number } | undefined;
+      const used = row?.count ?? 0;
+      if (used < dailyFree) {
+        sqlite
+          .prepare("INSERT INTO ai_usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1")
+          .run(userId, day);
+        return { ok: true, source: "free", remainingToday: dailyFree - used - 1, credits: this.getAiCredits(userId) };
+      }
+      const credRow = sqlite
+        .prepare("SELECT balance FROM ai_credits WHERE user_id = ?")
+        .get(userId) as { balance: number } | undefined;
+      const bal = credRow?.balance ?? 0;
+      if (bal > 0) {
+        sqlite
+          .prepare("UPDATE ai_credits SET balance = balance - 1, updated_at = ? WHERE user_id = ?")
+          .run(new Date().toISOString(), userId);
+        return { ok: true, source: "credit", remainingToday: 0, credits: bal - 1 };
+      }
+      return { ok: false, source: null, remainingToday: 0, credits: 0 };
+    });
+    return tx();
+  },
+
+  getAiCredits(userId: string): number {
+    const r = sqlite
+      .prepare("SELECT balance FROM ai_credits WHERE user_id = ?")
+      .get(userId) as { balance: number } | undefined;
+    return r?.balance ?? 0;
+  },
+
+  addAiCredits(userId: string, amount: number): number {
+    sqlite
+      .prepare("INSERT INTO ai_credits (user_id, balance, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + excluded.balance, updated_at = excluded.updated_at")
+      .run(userId, amount, new Date().toISOString());
+    return this.getAiCredits(userId);
+  },
+
+  getAiQuotaStatus(
+    userId: string,
+    dailyFree = AI_DAILY_FREE_QUOTA,
+  ): { usedToday: number; dailyFree: number; remainingToday: number; credits: number } {
+    const day = new Date().toISOString().slice(0, 10);
+    const row = sqlite
+      .prepare("SELECT count FROM ai_usage WHERE user_id = ? AND day = ?")
+      .get(userId, day) as { count: number } | undefined;
+    const used = row?.count ?? 0;
+    return { usedToday: used, dailyFree, remainingToday: Math.max(0, dailyFree - used), credits: this.getAiCredits(userId) };
   },
 
   listLoadsForClientIds(

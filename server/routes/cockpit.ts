@@ -269,6 +269,16 @@ export function registerCockpitRoutes(app: Express): void {
         });
       }
 
+      // Persistent per-user daily AI quota (50/day) + purchased credits, on top
+      // of the in-memory hourly burst guard above.
+      const quota = storage.consumeAiQuota(me.id);
+      if (!quota.ok) {
+        return res.status(429).json({
+          message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
+          code: "ai_quota_exceeded",
+        });
+      }
+
       const rec = await getAiRecommendation(client, top);
       if (!rec) {
         return res.status(503).json({ message: "AI advisor unavailable", code: "ai_unavailable" });
