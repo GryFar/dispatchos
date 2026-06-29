@@ -2874,6 +2874,33 @@ try {
   }
   console.log("[OK] P4 P0 GET /api/dispatch/clients (assigned clients only)");
 
+  // -- AI-credits buy-more: pre-charge guards only (no Stripe needed). Locks the
+  //    tenant gate + required-field check on the money endpoint against regression.
+  let aiBuyNoClient = 0;
+  try {
+    await request("/api/dispatch/ai-credits/purchase", { method: "POST", body: {} });
+  } catch (err) {
+    aiBuyNoClient = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (aiBuyNoClient !== 400) {
+    throw new Error(`ai-credits/purchase without clientId should be 400, got ${aiBuyNoClient}`);
+  }
+  console.log("[OK] POST /api/dispatch/ai-credits/purchase without clientId -> 400");
+
+  let aiBuyCrossTenant = 0;
+  try {
+    await request("/api/dispatch/ai-credits/purchase", {
+      method: "POST",
+      body: { clientId: "definitely-not-assigned" },
+    });
+  } catch (err) {
+    aiBuyCrossTenant = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (aiBuyCrossTenant !== 404) {
+    throw new Error(`ai-credits/purchase for an unassigned client should be 404, got ${aiBuyCrossTenant}`);
+  }
+  console.log("[OK] POST /api/dispatch/ai-credits/purchase rejects unassigned carrier (404)");
+
 // -- P0 /api/dispatch/loads scoping --------------------------------------
   // dispUser is assigned to someClient (= ivan-enclosed-01). driverALoad lives on
   // that same client → MUST be visible. Create a "leak load" on a different client
