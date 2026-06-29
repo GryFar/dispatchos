@@ -1958,6 +1958,23 @@ try {
     throw new Error(`self-serve signup redirect expected "/d", got ${selfServe.redirect}`);
   }
   console.log("[OK] self-serve signup without invite (role=driver, no carrier yet)");
+
+  // Regression: a self-serve user (no carrier, no per-user subscription) must be
+  // BLOCKED from mutations by the union subscription gate — this is the bypass we
+  // closed. Confirm the signup to get a live session, then attempt a non-exempt
+  // mutation and assert 402. (Restored to driverA's session immediately after.)
+  await confirmTotpSignup(selfServe.pendingConfirmationToken, selfServe.totpSecret);
+  let selfServeBlocked = 0;
+  try {
+    await request("/api/me/status", { method: "POST", body: { status: "available" } });
+  } catch (err) {
+    selfServeBlocked = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (selfServeBlocked !== 402) {
+    throw new Error(`self-serve (no carrier/sub) mutation should be 402, got ${selfServeBlocked}`);
+  }
+  console.log("[OK] self-serve (no carrier/sub) blocked from mutations -> 402 (bypass closed)");
+
   cookieHeader = driverACookie;
 
   // GET /api/me — driverStatus + linkedClientId surfaced via toUserPublic
