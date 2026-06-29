@@ -70,7 +70,7 @@ export default function DispatchQueuePage() {
     return `/api/dispatch/approval-tasks?${params.toString()}`;
   }, [status]);
 
-  const { data, isLoading } = useQuery<ListResponse>({
+  const { data, isLoading, isError } = useQuery<ListResponse>({
     queryKey: [query],
     queryFn: () => apiJson("GET", query),
     refetchInterval: 30_000,
@@ -101,6 +101,11 @@ export default function DispatchQueuePage() {
       {isLoading ? (
         <Card className="flex h-32 items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </Card>
+      ) : isError && !data ? (
+        <Card className="flex h-32 flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+          <AlertTriangle className="h-6 w-6 text-destructive" />
+          {t("common.error")}
         </Card>
       ) : !data || data.items.length === 0 ? (
         <Card className="p-2">
@@ -277,7 +282,13 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
         </div>
       )}
 
-      <Dialog open={resolveOpen} onOpenChange={setResolveOpen}>
+      <Dialog
+        open={resolveOpen}
+        onOpenChange={(open) => {
+          setResolveOpen(open);
+          if (!open) setResolution("");
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t("dispatch.queue.resolve_dialog.title")}</DialogTitle>
@@ -297,7 +308,13 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setResolveOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setResolveOpen(false);
+                setResolution("");
+              }}
+            >
               {t("common.cancel")}
             </Button>
             <Button
@@ -316,7 +333,13 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={dismissOpen} onOpenChange={setDismissOpen}>
+      <Dialog
+        open={dismissOpen}
+        onOpenChange={(open) => {
+          setDismissOpen(open);
+          if (!open) setResolution("");
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t("dispatch.queue.dismiss_dialog.title")}</DialogTitle>
@@ -336,7 +359,13 @@ function TaskCard({ task }: { task: ApprovalTaskEnriched }) {
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDismissOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDismissOpen(false);
+                setResolution("");
+              }}
+            >
               {t("common.cancel")}
             </Button>
             <Button

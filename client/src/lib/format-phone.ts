@@ -20,13 +20,20 @@
  *
  * Examples:
  *   "1234567890"   → "(123) 456-7890"
+ *   "11234567890"  → "(123) 456-7890"  (leading US country code stripped)
  *   "123"          → "(123"      (mid-type — keeps parens open)
  *   "1234"         → "(123) 4"
  *   "123456"       → "(123) 456"
  */
 export function formatUsPhone(value: string): string {
-  // Remove everything that is not a digit, keep only the first 10 digits.
-  const digits = value.replace(/\D/g, "").slice(0, 10);
+  let raw = value.replace(/\D/g, "");
+  // Drop a leading US country-code "1" on 11-digit pastes (e.g. "1 (123) 456-7890")
+  // so the real 10-digit number is kept instead of being truncated to the wrong one.
+  if (raw.length === 11 && raw.startsWith("1")) {
+    raw = raw.slice(1);
+  }
+  // Keep only the first 10 digits.
+  const digits = raw.slice(0, 10);
 
   if (digits.length < 4) {
     // 0–3 digits: just show them (prefix with "(" once we have at least 1).
@@ -72,6 +79,10 @@ export function toE164Us(displayed: string): string | null {
  */
 export function fromE164Us(e164: string | null | undefined): string {
   if (!e164 || !e164.startsWith("+1")) return "";
-  // Remove the +1 country code, then format the remaining 10 digits.
-  return formatUsPhone(e164.slice(2));
+  // Remove the +1 country code; only format when exactly 10 digits remain so a
+  // malformed stored value yields "" (empty input) instead of a silently-wrong
+  // number. This keeps it a true inverse of toE164Us (which requires 10 digits).
+  const rest = e164.slice(2);
+  if (!/^\d{10}$/.test(rest)) return "";
+  return formatUsPhone(rest);
 }

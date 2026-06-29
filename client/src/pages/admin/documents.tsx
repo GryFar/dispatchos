@@ -32,7 +32,9 @@ import { useT } from "@/lib/i18n";
 function safeHttpUrl(raw: string | null | undefined): string | null {
   if (!raw) return null;
   try {
-    const u = new URL(raw, window.location.origin);
+    // No base argument: relative/garbage values (e.g. "/admin/clients", "../foo",
+    // "report") then throw instead of resolving to a valid same-origin link.
+    const u = new URL(raw);
     return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
   } catch {
     return null;
@@ -155,11 +157,15 @@ export default function DocumentsPage() {
           </Select>
         </div>
 
-        {docsQuery.error ? (
+        {docsQuery.error && (
           <Alert variant="destructive">
             <AlertDescription>{t("admin.documents.loadError", { message: (docsQuery.error as Error).message })}</AlertDescription>
           </Alert>
-        ) : (
+        )}
+
+        {/* Keep the last successfully loaded archive visible on a transient
+            refetch error; only the alert above signals the failure. */}
+        {!(docsQuery.error && !docsQuery.data) && (
           <DocumentsTable rows={rows} loading={docsQuery.isLoading} clientMap={clientMap} />
         )}
 

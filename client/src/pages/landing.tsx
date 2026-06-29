@@ -304,14 +304,25 @@ function SubscribeForm() {
     | { kind: "err"; message: string }
   >({ kind: "idle" });
 
+  // Abort any in-flight request on unmount so a late setState / hung request
+  // can't leave the button stuck in "submitting".
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!email || state.kind === "submitting") return;
     setState({ kind: "submitting" });
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const timer = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch("/api/public/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           email,
           lang: typeof navigator !== "undefined" ? navigator.language?.slice(0, 8) : undefined,
@@ -329,7 +340,12 @@ function SubscribeForm() {
       const data = (await res.json()) as { duplicate?: boolean };
       setState({ kind: "ok", duplicate: !!data.duplicate });
     } catch (err) {
+      // AbortError fires on unmount/timeout — don't surface it as an error.
+      if ((err as Error).name === "AbortError") return;
       setState({ kind: "err", message: (err as Error).message });
+    } finally {
+      clearTimeout(timer);
+      if (abortRef.current === controller) abortRef.current = null;
     }
   }
 
@@ -420,14 +436,37 @@ function ContactModal({ onClose }: { onClose: () => void }) {
     | { kind: "err"; message: string }
   >({ kind: "idle" });
 
+  // Track the in-flight request so we can abort it if the modal unmounts
+  // mid-submit (otherwise a hung request leaves the button stuck and a late
+  // setState would run on an unmounted component).
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Lock background scroll while the modal overlay is open; restore on close.
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, []);
+
+  // Abort any in-flight request when the modal unmounts.
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (state.kind === "submitting") return;
     setState({ kind: "submitting" });
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const timer = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch("/api/public/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           email,
           name: name || undefined,
@@ -447,7 +486,13 @@ function ContactModal({ onClose }: { onClose: () => void }) {
       const data = (await res.json()) as { duplicate?: boolean };
       setState({ kind: "ok", duplicate: !!data.duplicate });
     } catch (err) {
+      // AbortError fires on unmount/timeout — the component may be gone, so
+      // don't setState; otherwise surface the failure.
+      if ((err as Error).name === "AbortError") return;
       setState({ kind: "err", message: (err as Error).message });
+    } finally {
+      clearTimeout(timer);
+      if (abortRef.current === controller) abortRef.current = null;
     }
   }
 

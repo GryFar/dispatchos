@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRoute, useLocation } from "wouter";
 import { TrustBadge } from "@/components/dispatch/TrustBadge";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import type { CheckinKind, LoadCheckin, LoadFull, AuditEvent } from "@shared/schema";
 import { apiJson, ApiError } from "@/lib/queryClient";
-import { formatMoney, formatDateFull, formatMiles, formatMc } from "@/lib/format";
+import { formatMoney, formatMoneyCents, formatDateFull, formatMiles, formatMc } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
@@ -298,7 +298,7 @@ export default function AdminLoadDetailPage() {
                   <div className="text-sm font-semibold text-amber-700 dark:text-amber-400">
                     ${(ev.amountCents / 100).toFixed(2)}
                   </div>
-                  <div className="text-[11px] text-muted-foreground">{ev.billableHours}h × ${(ev.ratePerHourCents / 100).toFixed(0)}/h</div>
+                  <div className="text-[11px] text-muted-foreground">{ev.billableHours}h × {formatMoneyCents(ev.ratePerHourCents / 100)}/h</div>
                 </div>
               </li>
             ))}
@@ -406,9 +406,13 @@ function DriverAssignmentCard({
   const [editing, setEditing] = useState(false);
   const [selectedId, setSelectedId] = useState<string>("");
 
-  useEffect(() => {
-    if (editing) setSelectedId(driverId ?? "");
-  }, [editing, driverId]);
+  // Initialize the dropdown from the current driver only when edit mode opens.
+  // Reacting to `driverId` here would let a background parent refetch clobber
+  // the admin's in-progress selection mid-edit.
+  function openEdit() {
+    setSelectedId(driverId ?? "");
+    setEditing(true);
+  }
 
   type DriverRow = { id: string; fullName: string; email: string; driverStatus: string };
   const driversQuery = useQuery<{ drivers: DriverRow[] }>({
@@ -456,7 +460,7 @@ function DriverAssignmentCard({
             size="sm"
             variant="outline"
             className="h-7 gap-1.5 px-2.5 text-xs"
-            onClick={() => setEditing(true)}
+            onClick={openEdit}
             data-testid="button-reassign-driver"
           >
             <Pencil className="h-3 w-3" />

@@ -554,7 +554,7 @@ function ContextCard({
               </p>
               {dispatcher.phone ? (
                 <a
-                  href={`tel:${dispatcher.phone}`}
+                  href={`tel:${dispatcher.phone.replace(/[^+\d]/g, "")}`}
                   className="font-mono text-[11px] text-primary hover:underline"
                 >
                   {dispatcher.phone}

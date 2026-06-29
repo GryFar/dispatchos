@@ -872,8 +872,18 @@ function InsuranceDateField({
   const { t } = useT();
   let badge: { text: string; cls: string } | null = null;
   if (value) {
-    const expiry = new Date(`${value}T00:00:00`).getTime();
-    const daysUntil = Math.round((expiry - Date.now()) / (24 * 3600 * 1000));
+    // Compare calendar dates at UTC midnight on both sides so the day count
+    // reflects whole days and never shifts with the viewer's local time-of-day
+    // or timezone offset (a `${value}T00:00:00` literal is parsed as *local*
+    // midnight, which made the round boundary flip near midnight).
+    const expiry = new Date(`${value}T00:00:00Z`).getTime();
+    const now = new Date();
+    const todayUtcMidnight = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+    );
+    const daysUntil = Math.round((expiry - todayUtcMidnight) / (24 * 3600 * 1000));
     if (daysUntil < 0) {
       badge = { text: t("admin.clientDetail.expiredDaysAgo", { days: Math.abs(daysUntil) }), cls: "text-destructive border-destructive/40 bg-destructive/5" };
     } else if (daysUntil === 0) {
@@ -1008,9 +1018,33 @@ function FuelTab({ client }: { client: Client }) {
       </Card>
     );
   }
-  if (!q.data) return null;
+  if (q.isError) {
+    return (
+      <Card>
+        <CardContent className="flex items-center gap-2 py-6 text-sm text-rose-500">
+          <AlertTriangle className="h-4 w-4" />
+          {t("admin.clientDetail.loadError")}
+        </CardContent>
+      </Card>
+    );
+  }
 
-  const s = q.data;
+  // A missing/empty response is treated exactly like a zeroed summary so the
+  // period switcher and onboarding empty-state card still render (previously
+  // `if (!q.data) return null` blanked the whole tab, hiding both).
+  const s: FuelSummary = q.data ?? {
+    clientId: client.id,
+    windowDays: days,
+    sinceIso: "",
+    totalMiles: 0,
+    gallons: 0,
+    spendCents: 0,
+    actualMpg: null,
+    expectedMpg: null,
+    transactionCount: 0,
+    overpayTotalDollars: 0,
+    overpayAlerts: [],
+  };
   const hasData = s.transactionCount > 0 || s.totalMiles > 0;
 
   const actualMpgFmt = s.actualMpg != null ? s.actualMpg.toFixed(2) : "—";

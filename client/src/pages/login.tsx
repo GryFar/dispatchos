@@ -90,11 +90,16 @@ export default function LoginPage() {
 
   async function onSubmit(values: FormValues) {
     setGlobalError(null);
+    // Normalize the TOTP code the same way the resume-setup field does: strip
+    // any non-digit characters and cap at 6. inputMode/maxLength on the field
+    // are soft hints and do not block a pasted " 123456" or "12-34-56", which
+    // the backend would otherwise reject despite the digits being correct.
+    const normalizedToken = (values.token || "").replace(/\D/g, "").slice(0, 6);
     try {
       const data = await apiJson<LoginResponse>("POST", "/api/auth/login", {
         email: values.email,
         password: values.password,
-        token: values.token || undefined,
+        token: normalizedToken || undefined,
       });
       // Wipe any cached data from a previous session on this tab before routing
       // the freshly-authenticated user into their (tenant-scoped) views.
@@ -145,7 +150,11 @@ export default function LoginPage() {
           setGlobalError(t("login.errorBlocked"));
           return;
         }
-        setGlobalError(err.message);
+        // Unhandled status (e.g. 500): show a generic localized message rather
+        // than err.message, which can echo raw server `message`/body text
+        // (parseErrorBody falls back to the raw response text) into the UI of
+        // an unauthenticated visitor.
+        setGlobalError(t("login.errorNetwork"));
         return;
       }
       setGlobalError(t("login.errorNetwork"));
