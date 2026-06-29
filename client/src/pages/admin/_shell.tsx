@@ -34,6 +34,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/dispatch/ThemeToggle";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { RoleBadge } from "@/components/dispatch/RoleBadge";
 import { BillingBanner } from "@/components/BillingBanner";
 import { cn } from "@/lib/utils";
@@ -255,6 +256,7 @@ function Topbar({ onMobileMenu }: { onMobileMenu: () => void }) {
 
       <div className="flex-1" />
 
+      <LanguageSwitcher variant="inline" />
       <ThemeToggle />
 
       <DropdownMenu>
