@@ -80,5 +80,62 @@ const d1 = planLoadChain(start, [A, B, C], { costPerMile: 0.55 });
 const d2 = planLoadChain(start, [C, B, A], { costPerMile: 0.55 }); // different input order
 assert("result is order-independent / deterministic", JSON.stringify(d1.legs.map((l) => l.loadId)) === JSON.stringify(d2.legs.map((l) => l.loadId)));
 
+// --- REGRESSION: inLatLng() guard rejects un-geocoded / out-of-range coords --
+// Pre-fix, the filter used only Number.isFinite, so placeholder/garbage coords
+// (e.g. lat 999 / lng -9999, or lat 91 / lng 200) passed straight through and
+// poisoned the haversine math — producing a multi-thousand-mile phantom
+// deadhead that either tanked the chain or, worse, looked like a wildly
+// profitable lane. The fix adds a valid-range check (lat∈[-90,90],
+// lng∈[-180,180]). Each assertion below PASSES on current code and would FAIL
+// on the pre-fix Number.isFinite-only behavior.
+
+const lats = (r: ReturnType<typeof planLoadChain>) => r.legs.map((l) => l.loadId);
+
+// (1) Out-of-range DESTINATION coords on the only candidate -> unscoreable, so
+// the planner recommends no load (empty chain). Pre-fix this load was chained
+// with a phantom-geocoded destination (net "1371"). Regression: must be empty.
+const BAD_DEST_ONLY: ChainCandidate = {
+  id: "BAD_DEST", originCity: "Dallas", originState: "TX", destinationCity: "Nowhere", destinationState: "??",
+  originLat: DALLAS.lat, originLng: DALLAS.lng, destinationLat: 91, destinationLng: 200, // lat>90, lng>180
+  pickupAt: iso(2), deliveryAt: iso(16), rate: 1800, loadedMiles: 780,
+};
+const badDestOnly = planLoadChain(start, [BAD_DEST_ONLY], { costPerMile: 0.55 });
+// PASSES now (excluded); pre-fix the chain was ["BAD_DEST"] -> FAIL.
+assert("out-of-range destination coords are rejected (empty chain)", badDestOnly.legs.length === 0, lats(badDestOnly).join(","));
+
+// (2) A garbage out-of-range-destination load with a FATTER rate must never be
+// chosen over a valid load; the valid candidate is still considered & wins.
+const BAD_DEST_HI: ChainCandidate = {
+  id: "BAD_DEST", originCity: "Dallas", originState: "TX", destinationCity: "Nowhere", destinationState: "??",
+  originLat: DALLAS.lat, originLng: DALLAS.lng, destinationLat: 91, destinationLng: 200,
+  pickupAt: iso(2), deliveryAt: iso(16), rate: 5000, loadedMiles: 780, // rate 5000 >> A's 1800
+};
+const validVsGarbage = planLoadChain(start, [A, BAD_DEST_HI], { costPerMile: 0.55 });
+// PASSES now (picks valid A); pre-fix it picked the higher-rate ["BAD_DEST"] -> FAIL.
+assert("valid coords still considered & win over higher-rate out-of-range load", lats(validVsGarbage).join(",") === "A", lats(validVsGarbage).join(","));
+
+// (3) Out-of-range ORIGIN coords. With a non-finite carrier availableAt the
+// start-time feasibility gate is open, so pre-fix a lat 999 / lng -9999 origin
+// was reachable and produced a ~10744-mi phantom deadhead at a huge bogus
+// netValue. Post-fix it's excluded outright. Use a fresh start with no time.
+const startNoTime = { lat: DALLAS.lat, lng: DALLAS.lng, availableAt: "not-a-real-date" };
+const BAD_ORIG_HI: ChainCandidate = {
+  id: "BAD_ORIG", originCity: "Nowhere", originState: "??", destinationCity: "Atlanta", destinationState: "GA",
+  originLat: 999, originLng: -9999, destinationLat: ATLANTA.lat, destinationLng: ATLANTA.lng, // lat>90, lng<-180
+  pickupAt: iso(2), deliveryAt: iso(16), rate: 99999, loadedMiles: 10, // absurd rate to dominate if not rejected
+};
+const origVsGarbage = planLoadChain(startNoTime, [A, BAD_ORIG_HI], { costPerMile: 0.55 });
+// PASSES now (picks valid A); pre-fix it picked ["BAD_ORIG"] with dh 10744 -> FAIL.
+assert("out-of-range origin coords are rejected even when start-time gate is open", lats(origVsGarbage).join(",") === "A", lats(origVsGarbage).join(","));
+// Defense-in-depth: no leg in the planned chain carries a phantom multi-thousand-mile
+// deadhead. Pre-fix the chosen BAD_ORIG leg had deadheadMiles ~10744 -> FAIL.
+assert("no leg has a phantom multi-thousand-mile deadhead", origVsGarbage.legs.every((l) => l.deadheadMiles < 5000), origVsGarbage.legs.map((l) => l.deadheadMiles).join(","));
+
+// (4) Out-of-range origin as the SOLE candidate (non-finite start) -> empty.
+const origOnly = planLoadChain(startNoTime, [BAD_ORIG_HI], { costPerMile: 0.55 });
+// PASSES now (empty); pre-fix the chain was ["BAD_ORIG"] (net 94084) -> FAIL.
+assert("a lone out-of-range-origin load is unscoreable (empty chain)", origOnly.legs.length === 0, lats(origOnly).join(","));
+assert("rejected-only input yields netValue 0", origOnly.netValue === 0, `${origOnly.netValue}`);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
