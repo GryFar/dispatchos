@@ -39,18 +39,23 @@ const driver = storage.createUser({
   linkedClientId: clientId,
 });
 
-// 6000 pings, 1s apart, all in Q2 2026, drifting north through TX in tiny
-// steps (~0.0069 mi each — well under the 200km GPS-jump filter). 6000 > the
-// old 5000 cap, so the bug would drop the last ~1000 steps.
+// 6000 pings, 30s apart, all in Q2 2026, driving north through TX. Each step is
+// ~0.0667 km (66.7 m) — above the 50m stationary-jitter floor and below the
+// 200km GPS-jump cap — at an implied ~8 km/h, well under the 200 km/h teleport
+// cap. These thresholds match storage.computeDriverDistanceMiles, so the steps
+// represent real movement that the mileage filters must KEEP. 6000 > the old
+// 5000 cap, so the pagination bug would drop the last ~1000 steps.
 const N = 6000;
+const STEP_DEG = 0.0006; // ~66.7 m per step at this latitude
+const CADENCE_MS = 30_000; // 30s between pings → ~8 km/h implied speed
 const baseMs = Date.UTC(2026, 3, 10, 8, 0, 0); // 2026-04-10T08:00:00Z (Q2)
 for (let i = 0; i < N; i++) {
   storage.recordLocationPing({
     userId: driver.id,
-    lat: 31.5 + i * 0.0001, // 31.5 -> 32.1, stays inside TX
+    lat: 31.5 + i * STEP_DEG, // 31.5 -> ~35.1, stays inside TX
     lng: -98.0,
     source: "manual",
-    capturedAt: new Date(baseMs + i * 1000).toISOString(),
+    capturedAt: new Date(baseMs + i * CADENCE_MS).toISOString(),
   });
 }
 
@@ -70,18 +75,26 @@ for (let i = 1; i < windowPings.length; i++) {
 }
 assert("window pings are captured_at-ordered (no keyset gap/loop)", ordered);
 
-// The report now reflects every step. Each ~0.0069mi step × 5999 ≈ 41.4 mi.
-// With the old cap it would be ~5000 steps ≈ 34.5 mi. We assert the count of
-// attributed steps via miles being meaningfully above the capped figure.
+// The report now reflects every step. Each ~0.04146mi step × 5999 ≈ 248.7 mi.
+// With the old cap it would be ~5000 steps ≈ 207 mi. We assert the count of
+// attributed steps via miles being meaningfully above the capped figure — and
+// that the jitter/teleport filters did NOT drop these legitimate steps.
+const STEP_MILES = 0.04146; // ~66.7 m per step in miles
 const q2 = buildIftaQuarterly(clientId, 2026, 2);
-const tx = q2.rows.find((r) => r.state === "TX");
-assert("TX row present", !!tx);
-// Expected ≈ (N-1) steps × stepMiles. stepMiles ≈ haversine(0.0001 deg lat).
-const expectedMiles = (N - 1) * 0.0069; // ~41.4
+// The lat 31.5 -> 35.1 path crosses the TX/OK border (~lat 33.6 at lng -98 per
+// the state bounding-box resolver), so the miles split across TX + OK rows.
+// Assert on the TOTAL across all states — that proves every step was counted
+// (the jitter/teleport filters KEPT all real movement) and is robust to which
+// state the resolver attributes each segment to. (Empirically TX 146.5 + OK
+// 102.2 = 248.7, exactly (N-1) steps; with the old 5000-ping cap it would be
+// ~207.) Lower bound (5200 steps) proves we counted past the old cap.
+assert("at least one state row present", q2.rows.length > 0, String(q2.rows.length));
+const totalMiles = q2.rows.reduce((s, r) => s + r.miles, 0);
+const expectedMiles = (N - 1) * STEP_MILES;
 assert(
-  "TX miles reflect >5000 steps (not truncated)",
-  !!tx && tx.miles > 5200 * 0.0069 && tx.miles < expectedMiles * 1.15,
-  tx ? `${tx.miles}` : "no TX row",
+  "total miles reflect >5000 steps (not truncated)",
+  totalMiles > 5200 * STEP_MILES && totalMiles < expectedMiles * 1.15,
+  `${totalMiles.toFixed(1)} across ${q2.rows.map((r) => r.state).join("+")}`,
 );
 
 console.log(`\n${pass} passed, ${fail} failed`);

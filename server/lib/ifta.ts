@@ -9,7 +9,9 @@
 //
 // Что мы агрегируем:
 //   1) miles_by_state  — из driver_location_pings (haversine между парами
-//      пингов в одном штате; скачки > 200km игнорируем как noise)
+//      пингов в одном штате; отбрасываем дрожание < 50m (стоянка), скачки
+//      > 200km и физически невозможную скорость > 200 km/h как noise —
+//      те же фильтры, что и storage.computeDriverDistanceMiles)
 //   2) gallons_by_state — из fuel_transactions (используем station_lat/lng).
 //      Транзакции БЕЗ station_lat/lng не привязываются к штату и попадают в
 //      unknownStateGallons (ping-based fallback пока не реализован).
@@ -172,6 +174,17 @@ export function buildIftaQuarterly(
   const drivers = allDrivers.filter((u) => u.linkedClientId === clientId);
 
   // ---- 2) Miles per state — from location pings ----------------------------
+  // Movement-plausibility filters so stationary GPS jitter and teleport noise
+  // don't inflate a legal (IFTA) tax mileage figure. These MUST match the
+  // thresholds in storage.computeDriverDistanceMiles so the two surfaces agree:
+  //   - MIN_STEP_KM: ignore sub-50m steps — a parked truck's GPS drifts a few
+  //     meters between pings, which would otherwise accumulate phantom miles.
+  //   - MAX_STEP_KM: ignore single jumps > 200km (driver flew / GPS glitch).
+  //   - MAX_SPEED_KMH: ignore steps whose implied speed exceeds 200 km/h given
+  //     the captured_at delta (a teleport between two close-in-time pings).
+  const MIN_STEP_KM = 0.05;
+  const MAX_STEP_KM = 200;
+  const MAX_SPEED_KMH = 200;
   for (const drv of drivers) {
     // Paginate over the FULL quarter window — listLocationPings caps at 5000,
     // which silently truncates high-frequency pingers (~26k pings/quarter at a
@@ -182,7 +195,16 @@ export function buildIftaQuarterly(
       const a = pings[i - 1];
       const b = pings[i];
       const stepKm = haversineKm(a.lat, a.lng, b.lat, b.lng);
-      if (stepKm > 200) continue; // GPS jump / flight noise — ignore
+      // Drop stationary jitter (too small) and flight/GPS-glitch jumps (too big).
+      if (stepKm < MIN_STEP_KM || stepKm > MAX_STEP_KM) continue;
+      // When timestamps are usable, reject physically-impossible (teleport)
+      // speeds; when they're missing/non-monotonic (dtMs <= 0 or NaN) fall back
+      // to the distance caps above rather than dropping the step.
+      const dtMs = Date.parse(b.captured_at) - Date.parse(a.captured_at);
+      if (Number.isFinite(dtMs) && dtMs > 0) {
+        const speedKmh = stepKm / (dtMs / 3_600_000);
+        if (speedKmh > MAX_SPEED_KMH) continue;
+      }
       const miles = stepKm * 0.621371;
       // Attribute step to state of the *latter* ping (movement INTO a state).
       const state = lookupState(b.lat, b.lng);
