@@ -145,8 +145,15 @@ export function registerInboundRoutes(app: Express): void {
       return res.status(400).json({ message: "from and body are required strings" });
     }
     // Bound sizes so a leaked inbound secret can't write multi-MB blobs (DoS).
+    // The body cap mirrors EMAIL_BODY_MAX (64 KB) used by emailIngestSchema on
+    // the sibling /api/email/ingest path: a ~1 MB all-letter / '<'-bomb body fed
+    // into the synchronous O(n^2) HTML-strip + greedy lane regex would freeze the
+    // event loop (ReDoS), so both ingest paths must share the same 64 KB bound.
+    // The CF Email Worker already truncates forwarded mail to 32 KB, so this
+    // never rejects a legitimate forwarded email.
+    const EMAIL_BODY_MAX = 64 * 1024; // keep in sync with EMAIL_BODY_MAX in shared/schema.ts
     const subjectStr = typeof body.subject === "string" ? body.subject : "";
-    if (body.from.length > 998 || subjectStr.length > 998 || body.body.length > 1_000_000) {
+    if (body.from.length > 998 || subjectStr.length > 998 || body.body.length > EMAIL_BODY_MAX) {
       return res.status(413).json({ message: "email fields exceed size limits" });
     }
 

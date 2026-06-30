@@ -90,12 +90,17 @@ export default {
       // Only forward mail addressed to our known ingest address(es), so a
       // misconfigured catch-all route can't pipe arbitrary mail into ingest.
       const to = String(message.to || "").toLowerCase();
-      // Strip any plus-tag sub-address (loads+<clientId>@x -> loads@x) so the
-      // per-carrier addresses the app generates are matched against the base
+      // Strip any plus-tag sub-address (loads+<token>@x -> loads@x) so the
+      // per-source addresses the app auto-generates are matched against the base
       // allowlist instead of being silently rejected (every inbound load email
-      // was dropped otherwise).
+      // was dropped otherwise). The app mints loads+<token>@<DISPATCHOS_INBOUND_DOMAIN>
+      // (default inbound.dispatchos.co — see server/storage.ts createLoadSource),
+      // so the default allowlist below includes that base address; keep these in
+      // sync with INBOUND_ALLOWED_TO in wrangler.toml.
       const toBase = to.replace(/\+[^@]*(?=@)/, "");
-      const allowed = String(env.INBOUND_ALLOWED_TO || "loads@dispatchos.co")
+      const allowed = String(
+        env.INBOUND_ALLOWED_TO || "loads@dispatchos.co,loads@inbound.dispatchos.co",
+      )
         .split(",")
         .map((s) => s.trim().toLowerCase())
         .filter(Boolean);

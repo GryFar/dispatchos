@@ -358,6 +358,17 @@ function ProfileTab({ client }: { client: Client }) {
     }
     for (const c of numericChecks) {
       if (c.optional && (c.raw === "" || c.raw == null)) continue;
+      // Always-sent economics fields are sent on every save, so a blank input must
+      // be rejected — NOT coerced to 0 via Number("")===0, which would silently zero
+      // minimumPpm/fuelPrice/targetPpm and corrupt load scoring. Reuse the same toast.
+      if (!c.optional && (c.raw === "" || c.raw == null)) {
+        toast({
+          title: t("common.error"),
+          description: t("admin.clientDetail.invalidNumber", { field: c.field }),
+          variant: "destructive",
+        });
+        return;
+      }
       const n = Number(c.raw);
       if (!Number.isFinite(n) || n < 0 || n > c.max) {
         toast({
@@ -540,7 +551,7 @@ function ProfileTab({ client }: { client: Client }) {
               type="number"
               step="0.01"
               value={form.targetPpm}
-              onChange={(e) => setForm({ ...form, targetPpm: Number(e.target.value) })}
+              onChange={(e) => setForm({ ...form, targetPpm: e.target.value as any })}
             />
           </Field>
           <Field label="Minimum PPM ($/mile)">
@@ -548,7 +559,7 @@ function ProfileTab({ client }: { client: Client }) {
               type="number"
               step="0.01"
               value={form.minimumPpm}
-              onChange={(e) => setForm({ ...form, minimumPpm: Number(e.target.value) })}
+              onChange={(e) => setForm({ ...form, minimumPpm: e.target.value as any })}
             />
           </Field>
           <Field label={t("admin.clientDetail.avgMpgLabel")}>
@@ -565,7 +576,7 @@ function ProfileTab({ client }: { client: Client }) {
               type="number"
               step="0.01"
               value={form.fuelPrice}
-              onChange={(e) => setForm({ ...form, fuelPrice: Number(e.target.value) })}
+              onChange={(e) => setForm({ ...form, fuelPrice: e.target.value as any })}
             />
           </Field>
           <Field label="Fixed cost / mile">
@@ -573,7 +584,7 @@ function ProfileTab({ client }: { client: Client }) {
               type="number"
               step="0.01"
               value={form.fixedCostPerMile}
-              onChange={(e) => setForm({ ...form, fixedCostPerMile: Number(e.target.value) })}
+              onChange={(e) => setForm({ ...form, fixedCostPerMile: e.target.value as any })}
             />
           </Field>
           <Field label="Tolls / mile (optional, default 0)">

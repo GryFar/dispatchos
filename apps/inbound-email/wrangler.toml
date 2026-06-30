@@ -15,9 +15,17 @@ workers_dev = false
 # Vars (plain config, can be in this file):
 #   INGEST_URL          — full URL to POST parsed emails to
 #   INBOUND_ALLOWED_TO  — comma-separated recipient allowlist (worker drops others)
+#
+# NOTE: the app auto-generates a per-source inbound address
+#   loads+<token>@<DISPATCHOS_INBOUND_DOMAIN>   (default DISPATCHOS_INBOUND_DOMAIN
+# = inbound.dispatchos.co — see server/storage.ts createLoadSource). The worker
+# strips the plus-tag to a base address before matching, so the allowlist must
+# contain that base `loads@inbound.dispatchos.co` or every self-serve email
+# source's mail is dropped. If you override DISPATCHOS_INBOUND_DOMAIN, add the
+# matching base address here too (and ensure CF Email Routing forwards it).
 [vars]
 INGEST_URL = "https://demo.dispatchos.co/api/inbound/email"
-INBOUND_ALLOWED_TO = "loads@dispatchos.co"
+INBOUND_ALLOWED_TO = "loads@dispatchos.co,loads@inbound.dispatchos.co"
 
 # Per-sender rate-limit KV. WITHOUT this binding, checkRateLimit() no-ops and the
 # 30/hr cap is effectively OFF. Create + bind once:
