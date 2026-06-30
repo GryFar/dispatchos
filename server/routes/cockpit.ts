@@ -268,12 +268,15 @@ export function registerCockpitRoutes(app: Express): void {
         status: "available",
         limit: 200,
       });
-      // PERF (N+1 fix): one memoized lane-average resolver for this request so the
-      // per-load scoring below dedups getLaneAvgPpm across the carrier's loads.
-      // persist defaults to true here (single carrier, on-demand) — unchanged.
-      const laneAvg = createLaneAvgResolver();
+      // CORRECTNESS: this is the persist=true path — each scoreLoadForClient READS
+      // the lane avg then WRITES a lane observation (recordLaneObservation). A
+      // shared per-request memoized resolver would return the stale pre-write value
+      // for a second same-lane load, subtly changing the ranking vs the original
+      // (uncached) scorer. Omit the resolver so the default fresh
+      // (o,d)=>storage.getLaneAvgPpm(o,d) is used and reads reflect prior writes.
+      // (Read-only persist=false paths keep the memoized resolver — no writes there.)
       const top = available.items
-        .map((load: Load) => scoreLoadForClient(client, load, true, laneAvg))
+        .map((load: Load) => scoreLoadForClient(client, load, true))
         .filter((l): l is ScoredLoad => Boolean(l))
         .sort((a, b) => b.dispatchScore - a.dispatchScore)
         .slice(0, 5);

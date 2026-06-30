@@ -132,6 +132,17 @@ function parseInt0(value: string): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+// Like parseDate, but rejects values that don't resolve to a real calendar
+// date. Used for the bare 'pickup' field, which the origin parser also reads
+// for a LOCATION ("Pickup: Atlanta, GA"): a city string must NOT be stored as
+// pickupAt (downstream Date.parse -> NaN would drop/garble the load). Returns
+// undefined unless parseDate produced a value Date.parse can read.
+function parseDateStrict(value?: string): string | undefined {
+  const parsed = parseDate(value);
+  if (parsed === undefined) return undefined;
+  return Number.isNaN(Date.parse(parsed)) ? undefined : parsed;
+}
+
 function parseDate(value?: string): string | undefined {
   if (!value) return undefined;
   const raw = value.trim();
@@ -238,7 +249,13 @@ export function parseBrokerEmail(input: {
   const pieces = parseInt0(get("pieces", "qty", "quantity", "units", "count") ?? "");
   const equipmentRaw = get("equipment", "equipmenttype", "trailer", "trailertype", "truck", "trucktype", "mode");
   const equipment = mapEquipment(equipmentRaw);
-  const pickupAt = parseDate(get("pickup", "pickupdate", "pickupat", "pickupdatetime", "pu", "pudate", "readydate"));
+  // 'pickup' is shared with the ORIGIN parser (which reads it as a LOCATION,
+  // e.g. "Pickup: Atlanta, GA"). Prefer date-specific aliases here; only fall
+  // back to the bare 'pickup' field when it actually parses to a calendar date,
+  // so a city string is never stored as pickupAt (downstream Date.parse->NaN).
+  const pickupAt =
+    parseDate(get("pickupdate", "pickupat", "pickupdatetime", "pu", "pudate", "readydate")) ??
+    parseDateStrict(get("pickup"));
   const deliveryAt = parseDate(get("delivery", "deliverydate", "deliveryat", "del", "deldate", "dropdate"));
   const postedAt = parseDate(get("posted", "postedat", "datetime"));
   const reference = get("reference", "ref", "loadid", "load", "loadnumber", "loadref", "ordernumber", "ordernum", "pro", "shipmentid");

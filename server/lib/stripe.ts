@@ -373,14 +373,22 @@ export async function chargeAiCreditPack(
   if (!customer) return { ok: false, reason: "no_stripe_customer" };
   // Deterministic idempotency key for this purchase. There is no pre-existing
   // DispatchOS invoice id to key on (the Stripe invoice IS the purchase record),
-  // so we derive a stable identity from (userId, clientId, pack, coarse minute
+  // so we derive a stable identity from (userId, clientId, pack, coarse time
   // bucket). A double-clicked button or a succeeded-but-client-timed-out retry
-  // within the same minute therefore collapses onto ONE Stripe invoice instead
+  // within the same bucket therefore collapses onto ONE Stripe invoice instead
   // of minting a second one — which would both double-charge the carrier's card
   // and (via two distinct invoice ids) double-grant credits in the webhook.
   // Mirrors chargeInvoiceViaStripe's dos_inv_X keys. A deliberate repeat
-  // purchase in a later minute still gets a fresh invoice, as intended.
-  const bucket = Math.floor(Date.now() / 60000);
+  // purchase in a later bucket still gets a fresh invoice, as intended.
+  //
+  // Bucket is 10 minutes (not 1): a 1-minute window let a double-submit that
+  // straddled the minute boundary (e.g. t=59.9s and t=60.1s) land in two
+  // buckets, mint two invoices, and double-charge+double-grant. A coarser,
+  // stable window closes that race. NOTE: this is still a best-effort dedup —
+  // the fully robust fix is a CLIENT-SUPPLIED request id threaded into the
+  // idempotency key, so any retry of the SAME user action collapses regardless
+  // of wall-clock timing. The 10-minute bucket is the minimal stop-gap.
+  const bucket = Math.floor(Date.now() / 600000);
   const idemBase = `ai_pack_${userId}_${clientId}_${AI_CREDIT_PACK.credits}_${bucket}`;
   try {
     // Create the invoice FIRST (empty), attach ONLY the AI-pack item to it, then
@@ -809,8 +817,61 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
           if (!dosInvoice.stripeInvoiceId && invoice.id) {
             storage.setInvoiceStripeId(dosInvoice.id, invoice.id);
           }
-          const result = storage.updateInvoice(dosInvoice.id, { status: "paid" });
-          if ("invoice" in result) dosInvoice = result.invoice;
+          // Normalize a stuck 'draft' before paying. The status machine only
+          // allows draft->[sent,void] and sent->[paid,void], so a direct
+          // draft->paid is an invalidTransition and the row would stay 'draft'
+          // FOREVER while Stripe (auto_advance) has already collected. This
+          // happens when chargeInvoiceViaStripe stamped the Stripe id but then
+          // finalize threw, so admin.ts generate took the charge_skipped else
+          // branch and never advanced draft->sent. Step through the legal
+          // draft->sent->paid path so this webhook reconciles instead of
+          // orphaning the money as locally-uncollected.
+          if (dosInvoice.status === "draft") {
+            const norm = storage.updateInvoice(dosInvoice.id, { status: "sent" });
+            if ("invoice" in norm) {
+              dosInvoice = norm.invoice;
+            } else if ("invalidTransition" in norm) {
+              // Surface (don't swallow) — a stuck reconciliation must be visible.
+              console.error(
+                `[stripe] invoice.payment_succeeded could not normalize draft->sent for ` +
+                  `dispatchosInvoice=${dosInvoice.id} (stripeInvoice=${invoice.id ?? "?"}): ` +
+                  `invalidTransition ${norm.from}->${norm.to}. Stripe has collected but the ` +
+                  `local row is stuck — manual reconciliation required.`,
+              );
+              storage.audit("billing.invoice_paid_transition_failed", "invoice", dosInvoice.id, {
+                dispatchosInvoiceId: dosInvoice.id,
+                clientId: dosInvoice.clientId,
+                stripeInvoiceId: invoice.id,
+                from: norm.from,
+                to: norm.to,
+                step: "draft_to_sent",
+              });
+            }
+          }
+          // Pay (sent->paid). If we just normalized draft->sent this now succeeds.
+          if (dosInvoice.status !== "paid" && dosInvoice.status !== "void") {
+            const result = storage.updateInvoice(dosInvoice.id, { status: "paid" });
+            if ("invoice" in result) {
+              dosInvoice = result.invoice;
+            } else if ("invalidTransition" in result) {
+              // Surface (don't swallow) — the money is collected in Stripe but the
+              // local row didn't advance to 'paid'; make the divergence visible.
+              console.error(
+                `[stripe] invoice.payment_succeeded could not flip to 'paid' for ` +
+                  `dispatchosInvoice=${dosInvoice.id} (stripeInvoice=${invoice.id ?? "?"}): ` +
+                  `invalidTransition ${result.from}->${result.to}. Stripe has collected but the ` +
+                  `local row is stuck — manual reconciliation required.`,
+              );
+              storage.audit("billing.invoice_paid_transition_failed", "invoice", dosInvoice.id, {
+                dispatchosInvoiceId: dosInvoice.id,
+                clientId: dosInvoice.clientId,
+                stripeInvoiceId: invoice.id,
+                from: result.from,
+                to: result.to,
+                step: "sent_to_paid",
+              });
+            }
+          }
         }
         storage.audit("billing.invoice_paid", "invoice", dosInvoice.id, {
           dispatchosInvoiceId: dosInvoice.id,
