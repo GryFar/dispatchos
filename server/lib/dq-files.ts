@@ -168,7 +168,24 @@ export function computeDqStatusForDriver(userId: string): DriverDqStatus {
   const user = storage.getUserById(userId);
   const driverName = user?.fullName ?? null;
 
-  const docs = storage.listDriverDocumentsForUser(userId, { limit: 200 }).items;
+  // Gather ALL of this driver's documents, not just the newest page. The store
+  // caps a single page at 200 rows (newest-first); a long-tenured driver can
+  // have an in-window doc of some type that's expired while an older, still-valid
+  // doc of the same type sits beyond row 200 — paging the whole set keeps
+  // pickLatestDoc from falsely flagging non_compliant. We follow the cursor with
+  // a hard page cap so this stays bounded even for pathological document counts.
+  const docs: DriverDocument[] = [];
+  let cursor: string | null = null;
+  const MAX_DOC_PAGES = 50; // 50 * 200 = 10k docs; far beyond any real driver
+  for (let page = 0; page < MAX_DOC_PAGES; page++) {
+    const res = storage.listDriverDocumentsForUser(userId, {
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    });
+    docs.push(...res.items);
+    if (!res.hasMore || !res.nextCursor) break;
+    cursor = res.nextCursor;
+  }
   const today = new Date().toISOString();
 
   const lines: DqLineStatus[] = DQ_REQUIREMENTS.map((req) => {

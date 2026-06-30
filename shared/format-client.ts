@@ -24,8 +24,12 @@ export function formatClientDisplay(c: {
   name: string;
   contactPersonName?: string | null;
 }): string {
-  if (c.contactPersonName && c.contactPersonName.trim()) {
-    return `${c.name} \u2014 ${c.contactPersonName.trim()}`;
+  const name = (c.name ?? "").trim();
+  const contact = c.contactPersonName ? c.contactPersonName.trim() : "";
+  if (contact) {
+    // Only join with the em-dash when there is a company name on the left;
+    // otherwise a blank name would yield a dangling " \u2014 John Smith".
+    return name ? `${name} \u2014 ${contact}` : contact;
   }
-  return c.name;
+  return name;
 }

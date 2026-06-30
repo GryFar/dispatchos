@@ -116,7 +116,11 @@ export const sylectusEmailAdapter: BoardAdapter = {
       // keys on the stable message identity. With messageId-based ingest dedup
       // upstream the ingestId is now also stable, but keying on messageId first
       // means a re-ingest under a new ingestId still maps to the same load.
-      sourceExternalId: String(raw.messageId ?? parsed.reference ?? raw.ingestId ?? Date.now()),
+      // Deterministic dedup identity only: messageId > broker reference >
+      // per-row ingestId, else "". Never Date.now() — a non-deterministic final
+      // fallback would mint a fresh id every poll and re-insert the same email
+      // as a new load. Mirrors broker-email.ts so both adapters dedup alike.
+      sourceExternalId: String(raw.messageId ?? parsed.reference ?? raw.ingestId ?? ""),
       clientId: row.clientId,
       source: "sylectus_email",
       originCity: parsed.origin?.city ?? "",

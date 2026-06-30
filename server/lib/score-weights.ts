@@ -54,8 +54,10 @@ export function resolveScoreWeights(
   if (overrides && typeof overrides === "object") {
     for (const k of KEYS) {
       const v = (overrides as Record<string, unknown>)[k];
-      const n = typeof v === "number" ? v : Number.parseFloat(String(v));
-      if (Number.isFinite(n) && n >= 0) merged[k] = n;
+      // Only accept genuine finite, non-negative numbers. parseFloat-style
+      // coercion would partial-parse numeric-prefixed junk ("5abc" -> 5,
+      // "12px" -> 12), contradicting the "garbage is ignored" guarantee above.
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) merged[k] = v;
     }
   }
   const sum = KEYS.reduce((acc, k) => acc + merged[k], 0);

@@ -4,7 +4,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { ChevronRight, Package } from "lucide-react";
 import type { LoadFull, MeLoadsResponse } from "@shared/schema";
 import { apiJson } from "@/lib/queryClient";
-import { formatMoney, formatRelativeAgo } from "@/lib/format";
+import { formatMoney, formatDate } from "@/lib/format";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -169,7 +169,7 @@ function LoadRow({ load }: { load: LoadFull }) {
             {load.destinationState}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {load.brokerName} · {formatRelativeAgo(load.pickupAt)}
+            {load.brokerName} · {formatDate(load.pickupAt)}
           </p>
           <div className="mt-2">
             <StatusBadge variant={isBooked ? "active" : "info"}>
