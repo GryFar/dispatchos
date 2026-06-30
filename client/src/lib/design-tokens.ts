@@ -30,8 +30,10 @@ export const palette = {
 } as const;
 
 /**
- * Chart colors keyed by series index (1..5). Same in light/dark — Tailwind
- * config remaps them via CSS vars, but for recharts you can pass hex.
+ * Chart colors keyed by series index (1..5). These are theme-agnostic hex
+ * fallbacks for recharts; the canonical tokens live in the --chart-* CSS vars,
+ * which are lightened slightly in dark mode (see index.css). Prefer reading
+ * those CSS vars when you need the per-theme values.
  */
 export const chartColors = ["#10b981", "#3b82f6", "#f59e0b", "#a855f7", "#dc2626"] as const;
 

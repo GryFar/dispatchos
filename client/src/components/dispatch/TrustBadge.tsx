@@ -87,7 +87,9 @@ export function TrustBadge({
   }
 
   // Successful fetch with no signals yet — show a muted "no data" chip.
-  if (!data || data.totalSignals === 0) {
+  // A malformed score (NaN/null/non-numeric) is also treated as "no data" so a
+  // bad payload never renders as e.g. "Trust: NaN".
+  if (!data || data.totalSignals === 0 || !Number.isFinite(data.score)) {
     return (
       <span
         className={cn(
@@ -114,7 +116,7 @@ export function TrustBadge({
         negative: data.negativeCount,
       })}
     >
-      {t("dispatch.TrustBadge.trustLabel")}: {data.score}
+      {t("dispatch.TrustBadge.trustLabel")}: {Math.round(Math.min(100, Math.max(0, data.score)))}
     </StatusBadge>
   );
 }

@@ -4,11 +4,11 @@
  * Usage:
  *   const cls = densityClass(density, { compact: "h-8", comfortable: "h-9" });
  *
- * Or with the React context if you wrap a subtree in <DensityProvider>:
- *   const density = useDensity();
+ * Wrap a subtree in <DensityProvider value="compact"> to advertise the active
+ * density to descendants via context.
  */
 
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, type ReactNode } from "react";
 
 export type Density = "compact" | "comfortable";
 
@@ -22,10 +22,6 @@ export function DensityProvider({
   children: ReactNode;
 }) {
   return <DensityContext.Provider value={value}>{children}</DensityContext.Provider>;
-}
-
-export function useDensity(): Density {
-  return useContext(DensityContext);
 }
 
 export function densityClass(
