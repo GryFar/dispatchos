@@ -532,6 +532,10 @@ export const inviteSchema = z.object({
   // Per-user subscription length (days), copied onto the user at signup.
   // Optional for legacy invites created before this field existed.
   subscriptionDays: z.number().int().optional(),
+  // SECURITY (tg-02): set once when this (consumed) invite is first redeemed to
+  // establish a Telegram chat binding. Marks the one-shot link slot as spent so
+  // the shared invite code can't later rebind the account to a different chat.
+  telegramLinkedAt: z.string().optional(),
 });
 
 export const createInviteSchema = z.object({

@@ -184,6 +184,16 @@ function chatRateCheck(chatId: string): boolean {
 // -----------------------------------------------------------------------------
 
 async function handleUpdate(botToken: string, update: TgUpdate): Promise<void> {
+  // SECURITY (tg-03): replay/dedup gate. Telegram retries an update until the
+  // webhook 200s, and a replayed update body would otherwise re-run the command
+  // (duplicate broker-trust signals on /no, duplicate /nego approval tasks).
+  // Record each update_id exactly once and drop replays. A non-finite/missing
+  // update_id is treated as un-dedupable and processed (TG always sends one;
+  // this only guards against a malformed body, not against legit traffic).
+  if (typeof update.update_id === "number" && Number.isFinite(update.update_id)) {
+    if (!storage.markTelegramUpdateProcessed(update.update_id)) return;
+  }
+
   const msg = update.message ?? update.edited_message;
   if (!msg) return;
 
@@ -237,29 +247,28 @@ async function handleUpdate(botToken: string, update: TgUpdate): Promise<void> {
 
     // Invite needs to be valid, not consumed, and targeted at a driver.
     if (invite.consumedAt) {
-      // Already used — but we still want to link if the chat user matches the
-      // consuming user. Look up the consumer via invite.consumedByUserId.
+      // Already used at signup — the consumed code is the ONLY proof we have, and
+      // it is a shared secret (emailed, shown in the admin UI, embedded in audit
+      // payloads). Look up the consumer via invite.consumedByUserId.
       const consumerId = invite.consumedByUserId;
       if (consumerId) {
         const consumer = storage.getUserById(consumerId);
-        // SECURITY (audit C1): a consumed invite code is a shared secret — it is
-        // emailed, shown in the admin UI, and stored in audit payloads. This path
-        // may ONLY perform a FIRST-time link for the driver who consumed it, and
-        // must never OVERWRITE an existing binding; otherwise anyone who learns the
-        // code could rebind the victim's account to their own chat and take over
-        // /loc /yes /no /nego /status. Also require an active (non-blocked) account
-        // and an unexpired invite.
+        // SECURITY (audit C1 / tg-02): this path may bind a NEW chat to the
+        // consuming driver AT MOST ONCE, and must never overwrite an existing
+        // binding; otherwise anyone who learns the code could bind THEIR chat to
+        // the (possibly unlinked) victim and take over /loc /yes /no /nego
+        // /status. Require an active driver account and an unexpired invite.
         const expired = Date.parse(invite.expiresAt) < Date.now();
         const alreadyLinkedElsewhere =
           !!consumer?.telegramChatId && consumer.telegramChatId !== chatId;
-        if (
-          consumer?.role === "driver" &&
-          !consumer.blocked &&
-          !expired &&
-          !alreadyLinkedElsewhere
-        ) {
-          storage.setUserTelegramChatId(consumer.id, chatId);
-          storage.audit("telegram.link", "user", consumer.id, { chatId, via: "consumed_invite_recheck" });
+        const eligible =
+          consumer?.role === "driver" && !consumer.blocked && !expired;
+
+        // Idempotent re-affirm: the consumer is already bound to THIS exact chat.
+        // No new binding happens, so this is safe to allow even after the
+        // one-shot link slot is spent (e.g. a blocked account re-sending the code
+        // won't reach here via getUserByTelegramChatId, but defend anyway).
+        if (eligible && consumer && consumer.telegramChatId === chatId) {
           await tgSend(
             botToken,
             chatId,
@@ -267,8 +276,39 @@ async function handleUpdate(botToken: string, update: TgUpdate): Promise<void> {
           );
           return;
         }
+
+        // First-time link from this consumed invite: allowed ONLY if the
+        // consumer isn't already linked to a different chat AND the invite's
+        // single Telegram-link slot is still free. The redemption is atomic and
+        // one-shot — it stamps telegram_linked_at and clears the chat from any
+        // prior owner, so a later attacker who knows the same code can no longer
+        // rebind the account. A lost race (slot already spent) falls through to
+        // the "already used" rejection below.
+        if (eligible && consumer && !alreadyLinkedElsewhere) {
+          const linked = storage.redeemConsumedInviteForTelegramLink({
+            code: invite.code,
+            userId: consumer.id,
+            chatId,
+          });
+          if (linked) {
+            storage.audit("telegram.link", "user", consumer.id, {
+              chatId,
+              via: "consumed_invite_first_link",
+            });
+            await tgSend(
+              botToken,
+              chatId,
+              `✅ Welcome, <b>${escapeHtml(consumer.fullName)}</b>. This chat is now linked.\n\n${HELP_LINKED}`,
+            );
+            return;
+          }
+        }
       }
-      await tgSend(botToken, chatId, "⚠️ This invite was already used. Ask dispatch for a fresh one.");
+      await tgSend(
+        botToken,
+        chatId,
+        "⚠️ This invite was already used to link a chat. Ask dispatch for a fresh one.",
+      );
       return;
     }
 

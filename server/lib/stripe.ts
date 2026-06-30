@@ -291,6 +291,69 @@ export async function chargeInvoiceViaStripe(
 }
 
 // ---------------------------------------------------------------------------
+// Voiding a success-fee charge.
+//
+// When an operator voids a DispatchOS invoice that was already charged (it has a
+// stripeInvoiceId), the local row flipping to 'void' is NOT enough: Stripe is
+// still collecting flat+3% from the carrier's card (auto_advance). We must also
+// cancel the open Stripe invoice so the carrier is not billed for a fee the
+// operator cancelled.
+//
+// This helper inspects the live Stripe invoice and:
+//   - voids it (stripe.invoices.voidInvoice) when it is still OPEN/uncollected
+//     (status draft|open|uncollectible) → the carrier is NOT charged;
+//   - treats already-void as a no-op success (idempotent);
+//   - REFUSES (ok:false, reason:"already_paid") when Stripe already collected —
+//     the caller must NOT auto-refund; an operator issues a refund/credit note
+//     manually before voiding;
+//   - no-ops to ok:true when Stripe is unconfigured (tests / self-host without
+//     Stripe) so the local void still proceeds for never-really-charged rows.
+//
+// Returns { ok, voided?, status?, reason? }:
+//   - ok:true, voided:true   — Stripe invoice was voided (or already void).
+//   - ok:true, voided:false  — nothing to void (Stripe off); proceed locally.
+//   - ok:false, reason:"already_paid" — refuse the local void (paid in Stripe).
+//   - ok:false, reason:<msg> — Stripe error; caller should NOT void locally
+//     (better to leave the row consistent with the still-open Stripe charge).
+// ---------------------------------------------------------------------------
+export async function voidStripeInvoice(
+  stripeInvoiceId: string,
+): Promise<{ ok: boolean; voided?: boolean; status?: string; reason?: string }> {
+  const stripe = stripeClient();
+  // Stripe not configured (e.g. tests, or a self-host without billing): there is
+  // no remote charge to cancel, so let the local void proceed.
+  if (!stripe) return { ok: true, voided: false, reason: "stripe_not_configured" };
+
+  try {
+    const remote = await stripe.invoices.retrieve(stripeInvoiceId);
+    const status = remote.status ?? undefined;
+
+    // Already collected — do NOT auto-refund. Refuse so the operator handles the
+    // refund/credit note manually and the carrier charge isn't silently orphaned.
+    if (status === "paid") {
+      return { ok: false, status, reason: "already_paid" };
+    }
+
+    // Already void — nothing to do; treat as success so the local void is allowed.
+    if (status === "void") {
+      return { ok: true, voided: true, status };
+    }
+
+    // Open / draft / uncollectible — finalizing collection is still pending, so
+    // voiding stops the charge. (A draft can't be voided until finalized; but our
+    // charge path finalizes immediately, so in practice it's 'open'. We still try
+    // voidInvoice and let Stripe reject a not-yet-finalizable draft, which the
+    // catch surfaces as a reason rather than a silent local-only void.)
+    const voided = await stripe.invoices.voidInvoice(stripeInvoiceId);
+    return { ok: true, voided: true, status: voided.status ?? status };
+  } catch (err) {
+    // Surface the error; the caller must NOT flip the local row to 'void' while
+    // the Stripe invoice may still be collecting — that's the exact bug we fix.
+    return { ok: false, reason: (err as Error).message };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AI credit packs (Variant 2: user buys, charged to their carrier's Stripe
 // customer). Granted on the invoice.payment_succeeded webhook below.
 // ---------------------------------------------------------------------------

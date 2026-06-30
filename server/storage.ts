@@ -756,6 +756,13 @@ ensureUserDriverColumns();
   if (!_ucols.has("subscription_ends_at")) sqlite.exec("ALTER TABLE users ADD COLUMN subscription_ends_at TEXT");
   const _icols = new Set((sqlite.prepare("PRAGMA table_info(invites)").all() as Array<{ name: string }>).map((c) => c.name));
   if (!_icols.has("subscription_days")) sqlite.exec("ALTER TABLE invites ADD COLUMN subscription_days INTEGER");
+  // SECURITY (tg-02): one-shot Telegram-link redemption marker on the invite.
+  // A consumed invite code is a shared secret (emailed, shown in admin UI, in
+  // audit payloads). The bot's consumed-invite path may establish a NEW chat
+  // binding for the consuming driver at most ONCE; this column records that the
+  // single link slot was used so a later attacker who learns the same code can
+  // no longer bind their own chat to the (possibly unlinked) victim account.
+  if (!_icols.has("telegram_linked_at")) sqlite.exec("ALTER TABLE invites ADD COLUMN telegram_linked_at TEXT");
 }
 // Compliance documents — add optional client_id scope so admins can attach a
 // doc to the carrier instead of a specific user. NULL = per-driver only.
@@ -787,6 +794,19 @@ function ensureDriverDocumentsColumns() {
 sqlite.exec(
   "CREATE INDEX IF NOT EXISTS users_telegram_chat_id_idx ON users(telegram_chat_id)",
 );
+
+// SECURITY (tg-03): webhook update_id replay/dedup ledger. Telegram retries an
+// update until the webhook 200s, and a malicious replay of the same update body
+// would otherwise re-run the command (duplicating broker-trust signals and
+// /nego approval tasks). We record each processed update_id exactly once; a
+// replayed update becomes a no-op. update_id is monotonic per bot, so a bounded
+// retention sweep keeps this table small without losing dedup for recent traffic.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS telegram_processed_updates (
+    update_id INTEGER PRIMARY KEY,
+    processed_at TEXT NOT NULL
+  );
+`);
 
 // ---------------------------------------------------------------------------
 // FMCSA Drug & Alcohol Clearinghouse query log (paid compliance feature).
@@ -1744,6 +1764,108 @@ export const storage = {
       .prepare("UPDATE users SET telegram_chat_id = ?, updated_at = ? WHERE id = ?")
       .run(chatId, now(), userId);
     return this.getUserById(userId);
+  },
+
+  // SECURITY (tg-04): clear a Telegram chat binding from EVERY user except an
+  // optional keeper. telegram_chat_id is not DB-unique, so without this a relink
+  // can leave the chat bound to a prior owner (two users resolving from one chat,
+  // or a stale link that keeps receiving the new driver's load alerts). Called
+  // right before binding a chat so the chat maps to at most one account.
+  clearTelegramChatIdEverywhere(chatId: string, exceptUserId?: string): number {
+    const ts = now();
+    const res = exceptUserId
+      ? sqlite
+          .prepare(
+            "UPDATE users SET telegram_chat_id = NULL, updated_at = ? WHERE telegram_chat_id = ? AND id != ?",
+          )
+          .run(ts, chatId, exceptUserId)
+      : sqlite
+          .prepare(
+            "UPDATE users SET telegram_chat_id = NULL, updated_at = ? WHERE telegram_chat_id = ?",
+          )
+          .run(ts, chatId);
+    return res.changes;
+  },
+
+  /**
+   * SECURITY (tg-02 + tg-04): atomically establish a NEW Telegram chat binding
+   * for the driver who consumed an invite — at most ONCE per invite code.
+   *
+   * The consumed invite code is a shared secret (emailed, shown in the admin UI,
+   * embedded in audit payloads). The pre-tg-02 bot allowed the consumed-invite
+   * path to bind an arbitrary chat to the consumer whenever the consumer wasn't
+   * currently linked, so anyone who learned the code could bind THEIR chat to an
+   * unlinked victim and take over /loc /yes /no /nego /status. This method makes
+   * the link a one-shot consumable: the first redemption stamps telegram_linked_at
+   * (conditional WHERE → only the winner of the race succeeds); any later attempt
+   * with the same code returns false. We also clear the chat from any prior owner
+   * so the chat maps to exactly one account.
+   *
+   * Returns true only when this call actually created the binding. Idempotent
+   * re-affirmation of an existing same-chat link is handled by the caller and
+   * does NOT come through here.
+   */
+  redeemConsumedInviteForTelegramLink(input: {
+    code: string;
+    userId: string;
+    chatId: string;
+  }): boolean {
+    const ts = now();
+    const txn = sqlite.transaction(() => {
+      // Win the one-shot link slot. Only succeeds if the invite is consumed by
+      // THIS user and the slot is still free (telegram_linked_at IS NULL).
+      const claim = sqlite
+        .prepare(
+          `UPDATE invites SET telegram_linked_at = ?
+             WHERE code = ?
+               AND consumed_by_user_id = ?
+               AND telegram_linked_at IS NULL`,
+        )
+        .run(ts, input.code, input.userId);
+      if (claim.changes === 0) return false;
+      // Detach the chat from any other account, then bind it to this user.
+      sqlite
+        .prepare(
+          "UPDATE users SET telegram_chat_id = NULL, updated_at = ? WHERE telegram_chat_id = ? AND id != ?",
+        )
+        .run(ts, input.chatId, input.userId);
+      sqlite
+        .prepare("UPDATE users SET telegram_chat_id = ?, updated_at = ? WHERE id = ?")
+        .run(input.chatId, ts, input.userId);
+      return true;
+    });
+    return txn();
+  },
+
+  // SECURITY (tg-03): record a webhook update_id exactly once. Returns true the
+  // first time and false for any replay of the same update_id, so a replayed
+  // Telegram update is a no-op (no duplicate broker-trust signals / approval
+  // tasks). INSERT OR IGNORE on the PRIMARY KEY makes the claim atomic.
+  markTelegramUpdateProcessed(updateId: number): boolean {
+    const res = sqlite
+      .prepare(
+        "INSERT OR IGNORE INTO telegram_processed_updates (update_id, processed_at) VALUES (?, ?)",
+      )
+      .run(updateId, now());
+    if (res.changes === 0) return false;
+    // Bounded retention: update_id is monotonic per bot, so keep only the most
+    // recent window of ids. Pruning here (not on a timer) keeps the table small
+    // without an extra scheduler. The retained window dwarfs Telegram's retry
+    // horizon, so recent replays are still caught.
+    try {
+      sqlite
+        .prepare(
+          `DELETE FROM telegram_processed_updates
+             WHERE update_id <= (
+               SELECT update_id FROM telegram_processed_updates
+               ORDER BY update_id DESC LIMIT 1 OFFSET 5000
+             )`,
+        )
+        .run();
+    } catch {
+      /* prune is best-effort; never block the command path on it */
+    }
+    return true;
   },
 
   // P0.5 — recipients for a carrier's matched-load push. Everyone linked to the
@@ -2871,6 +2993,7 @@ export const storage = {
       linkedClientId: row.linked_client_id ?? undefined,
       createdAt: row.created_at,
       createdByUserId: row.created_by_user_id,
+      telegramLinkedAt: row.telegram_linked_at ?? undefined,
     };
   },
 
