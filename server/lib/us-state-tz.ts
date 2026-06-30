@@ -19,6 +19,10 @@ const STATE_TO_IANA: Record<string, string> = {
   TX: "America/Chicago",   UT: "America/Denver",    VT: "America/New_York",
   VA: "America/New_York",  WA: "America/Los_Angeles", WV: "America/New_York",
   WI: "America/Chicago",   WY: "America/Denver",    DC: "America/New_York",
+  // US territories (valid USPS codes carrying freight) — without these they
+  // fall through to the UTC fallback, off by up to a full calendar day.
+  PR: "America/Puerto_Rico", VI: "America/St_Thomas", GU: "Pacific/Guam",
+  AS: "Pacific/Pago_Pago", MP: "Pacific/Saipan",
 };
 
 /**

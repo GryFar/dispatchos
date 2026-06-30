@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
@@ -11,7 +11,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { Briefcase, Headset, Link2, Network, Trash2, X } from "lucide-react";
+import { Briefcase, Headset, Link2, Network, Trash2 } from "lucide-react";
 import type { Assignment, Client, UserPublic } from "@shared/schema";
 import { apiJson } from "@/lib/queryClient";
 import { useT } from "@/lib/i18n";
@@ -356,8 +356,8 @@ function DraggableClient({ client }: { client: Client }) {
       )}
     >
       <p className="text-xs font-medium">{client.name}</p>
-      {(client as any).contactPersonName && (
-        <p className="text-[10px] text-muted-foreground">{(client as any).contactPersonName}</p>
+      {client.contactPersonName && (
+        <p className="text-[10px] text-muted-foreground">{client.contactPersonName}</p>
       )}
       <p className="text-[10px] text-muted-foreground">
         <McCell value={client.mc} />
@@ -397,5 +397,3 @@ function DispatcherDropZone({
     </div>
   );
 }
-
-void X;

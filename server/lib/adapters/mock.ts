@@ -38,7 +38,10 @@ function seedRng(seed: string): () => number {
       h = crypto.createHash("sha256").update(h).digest();
       i = 0;
     }
-    const n = h.readUInt32BE(i) / 0xffffffff;
+    // Divide by 2^32 (not 2^32-1) so the result is uniform on the half-open
+    // [0, 1) range. readUInt32BE returns the inclusive [0, 2^32-1] range, so
+    // dividing by 0xffffffff would let rng() return exactly 1.0.
+    const n = h.readUInt32BE(i) / 0x100000000;
     i += 4;
     return n;
   };

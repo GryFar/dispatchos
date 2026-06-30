@@ -105,7 +105,11 @@ function parseInt0(value: string): number | undefined {
   const m = value.match(/-?\d[\d,]*/);
   if (!m) return undefined;
   const n = Number(m[0].replace(/,/g, ""));
-  return Number.isFinite(n) ? n : undefined;
+  // Reject negatives: miles/weight/pieces are never negative, and a negative
+  // miles would flow into RPM math (rate / miles) as a negative denominator,
+  // yielding a negative RPM in dispatcher alerts. Zero is left as-is so callers
+  // can distinguish a parsed "0" from an absent (undefined) field.
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
 // Normalize a date field to ISO when we recognize the shape, else return the
@@ -221,7 +225,13 @@ export function parseSylectusEmail(input: {
   const reference = get("reference", "ref", "loadid", "loadnumber", "loadref");
 
   const broker = {
-    name: get("broker", "brokername", "carrier", "company"),
+    // Strip a trailing "(MC# 123456)" parenthetical so the name isn't rendered
+    // with the MC number duplicated (mcNumber is extracted separately below and
+    // re-appended by downstream renderers, e.g. inbound.ts's "(MC# …)" suffix).
+    name: get("broker", "brokername", "carrier", "company")?.replace(
+      /\s*\(?\s*MC\s*#?\s*\d{3,8}\s*\)?\s*$/i,
+      "",
+    ).trim() || undefined,
     mcNumber: (() => {
       const v = get("mc", "mcnumber", "mcno", "broker") ?? "";
       const m = v.match(/MC\s*#?\s*(\d{3,8})/i);

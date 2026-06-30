@@ -14,8 +14,11 @@
  * once per milestone is enforced by the caller's per-threshold anti-dupe
  * record, so this stays a pure function.
  *
- * Returns null when the countdown is still above every milestone (too early)
- * or below the last one (alerts exhausted) — same null contract as before.
+ * Returns null only when the countdown is still above every milestone (too
+ * early). Once it reaches the smallest threshold it stays clamped there
+ * forever — being below the last milestone does NOT return null, because the
+ * "expired" buckets (e.g. -1, -7) must keep firing past their day. The
+ * per-threshold anti-dupe record in the caller stops them repeating.
  */
 export function pickAlertThreshold(
   daysUntil: number,
