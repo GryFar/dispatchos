@@ -395,11 +395,49 @@ function calculatePickupFeasibility(client: Client, load: Load, deadheadMiles: n
   return { pickupFeasibility: "not_feasible" as const, bufferMinutes };
 }
 
+// Resolver for the per-lane observed-rate lookup. Pure read keyed only on the
+// (originState, destState) pair; lane_history is stable within a single
+// request. Defaults to the raw storage method so single-load callers behave
+// exactly as before; bulk callers (cockpit/board, weekly report) inject a
+// per-request memoized resolver (createLaneAvgResolver) so each distinct lane
+// pair hits SQLite at most once per request instead of O(carriers × loads).
+type LaneAvgResolver = (
+  originState: string,
+  destState: string,
+) => ReturnType<typeof storage.getLaneAvgPpm>;
+
+// Per-REQUEST memoization. getLaneAvgPpm is pure for a given (origin, dest) and
+// uppercases both states internally, so we key on the uppercased pair to match
+// its lookup semantics and maximize cache hits. Returns the EXACT value
+// getLaneAvgPpm would (including `undefined`), so scoring is byte-for-byte
+// identical — this is purely a query-dedup, not a behavior change. Create one
+// fresh per request (never share across requests) so it can't go stale.
+function createLaneAvgResolver(): LaneAvgResolver {
+  const cache = new Map<string, ReturnType<typeof storage.getLaneAvgPpm>>();
+  return (originState, destState) => {
+    const key = `${originState.toUpperCase()}|${destState.toUpperCase()}`;
+    if (cache.has(key)) return cache.get(key);
+    const value = storage.getLaneAvgPpm(originState, destState);
+    cache.set(key, value);
+    return value;
+  };
+}
+
 // persist=false skips the two synchronous DB writes below (lane_history +
 // load_scores). Read-only callers that score many (client, load) pairs per
 // request — e.g. the auto-refreshing cockpit — must pass false, or each page
 // render fires N×loads synchronous SQLite writes that block the event loop.
-export function scoreLoadForClient(client: Client, load: Load, persist = true): ScoredLoad | null {
+//
+// laneAvgResolver: optional injected lookup for observed lane rates. Defaults
+// to the raw (uncached) storage method, so single-load callers are unchanged.
+// Bulk callers pass createLaneAvgResolver() once per request to dedup the
+// O(carriers × loads) getLaneAvgPpm queries down to one per distinct lane pair.
+export function scoreLoadForClient(
+  client: Client,
+  load: Load,
+  persist = true,
+  laneAvgResolver: LaneAvgResolver = (o, d) => storage.getLaneAvgPpm(o, d),
+): ScoredLoad | null {
   // -------------------------------------------------------------------------
   // Phase 5 hard filters — these reject before scoring even starts. Skipping
   // means the load never appears in dispatcher view (different from verdict
@@ -495,7 +533,7 @@ export function scoreLoadForClient(client: Client, load: Load, persist = true): 
   const laneObsWeight = Number.isFinite(laneObsWeightRaw) ? clamp(laneObsWeightRaw, 0, 2) : 1;
   let laneScore = load.marketQuality;
   if (laneObsWeight > 0) {
-    const observed = storage.getLaneAvgPpm(load.originState, load.destinationState);
+    const observed = laneAvgResolver(load.originState, load.destinationState);
     const adj = observedLaneQualityAdjustment(
       load.originState, load.destinationState, load.equipment, observed, load.pickupAt,
     );
@@ -641,13 +679,16 @@ function buildDispatchBoard(clientId?: string): DispatchBoard {
   const clients = storage.listClients();
   const loads = storage.listLoads();
   const selectedClient = clients.find((client) => client.id === clientId) ?? clients[0];
+  // One memoized lane-avg resolver for the whole board render so getLaneAvgPpm
+  // is queried at most once per distinct lane pair, not once per load.
+  const laneAvg = createLaneAvgResolver();
   const scoredLoads = loads
     // persist=false: this is a read path (GET /api/dispatch-board). Passing true
     // here fired 2 synchronous SQLite writes per load (recordLaneObservation +
     // upsertLoadScore) on the single better-sqlite3 writer on every render,
     // serializing concurrent requests and inflating lane_history. Only the
     // cron/poller path should persist scores.
-    .map((load) => scoreLoadForClient(selectedClient, load, false))
+    .map((load) => scoreLoadForClient(selectedClient, load, false, laneAvg))
     .filter((load): load is ScoredLoad => Boolean(load))
     .sort((a, b) => b.dispatchScore - a.dispatchScore);
 
@@ -1043,12 +1084,15 @@ function buildSystemStatus() {
 function buildWeeklyReport(clientId: string) {
   const client = storage.getClient(clientId);
   if (!client) return undefined;
+  // One memoized lane-avg resolver for the whole report so getLaneAvgPpm is
+  // queried at most once per distinct lane pair, not once per load.
+  const laneAvg = createLaneAvgResolver();
   const loads = storage
     .listLoads()
     .filter((load) => load.equipment === client.equipment)
     // persist=false: weekly report is a read path; scoring many loads here must
     // not fire per-load synchronous SQLite writes (see buildDispatchBoard).
-    .map((load) => scoreLoadForClient(client, load, false))
+    .map((load) => scoreLoadForClient(client, load, false, laneAvg))
     .filter((load): load is ScoredLoad => Boolean(load))
     .sort((a, b) => b.dispatchScore - a.dispatchScore)
     .slice(0, 10);
