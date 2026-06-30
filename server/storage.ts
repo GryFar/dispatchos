@@ -968,8 +968,20 @@ sqlite.exec(`
     count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, day)
   );
+  -- AI credit-pack balances. Historically keyed on user_id alone (one bucket per
+  -- user). VALUE-MISATTRIBUTION FIX: credits are now SCOPED to the carrier they
+  -- were purchased for via an additive client_id column, so a dispatcher who
+  -- bought a pack billed to carrier-A can't spend it while working for carrier-B.
+  -- A NULL client_id is a LEGACY/unscoped bucket: pre-existing balances migrate
+  -- to NULL and stay spendable for ANY carrier (no behavior change for current
+  -- balances). The effective identity is (user_id, COALESCE(client_id,'')),
+  -- enforced by ai_credits_user_client_uidx below (NOT a table PRIMARY KEY, so a
+  -- user can hold one legacy NULL bucket PLUS one bucket per client). The old
+  -- user_id PRIMARY KEY is rebuilt away by the migration block right after this
+  -- exec (idempotent, row-preserving). Fresh DBs get the new shape directly.
   CREATE TABLE IF NOT EXISTS ai_credits (
-    user_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    client_id TEXT,
     balance INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT
   );
@@ -989,6 +1001,56 @@ sqlite.exec(`
     granted_at TEXT NOT NULL
   );
 `);
+
+// ---------------------------------------------------------------------------
+// ai_credits per-carrier scoping migration (additive, row-preserving).
+//
+// Older DBs created ai_credits with `user_id TEXT PRIMARY KEY` — exactly one
+// bucket per user. To scope credits to the carrier they were bought for we need
+// (a) a client_id column and (b) the ability to hold MULTIPLE rows per user (one
+// legacy NULL bucket + one per client). Adding the column is a plain ALTER, but
+// the PRIMARY KEY on user_id alone can't be dropped in place, so we rebuild the
+// table once: rename → create new shape → copy every existing row with
+// client_id=NULL (legacy/unscoped — no balance lost, no behavior change) → drop
+// the old table. Idempotent: detected by the absence of the client_id column, so
+// it runs at most once and is a no-op on already-migrated and fresh DBs. The
+// whole rebuild runs in a single transaction so a crash mid-migration can't lose
+// rows. A UNIQUE index on (user_id, COALESCE(client_id,'')) then enforces the new
+// effective key and powers the scoped UPSERTs (ON CONFLICT on that expression).
+{
+  const _aicCols = new Set(
+    (sqlite.prepare("PRAGMA table_info(ai_credits)").all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    ),
+  );
+  if (!_aicCols.has("client_id")) {
+    const migrate = sqlite.transaction(() => {
+      sqlite.exec("ALTER TABLE ai_credits RENAME TO ai_credits_legacy_pk");
+      sqlite.exec(`
+        CREATE TABLE ai_credits (
+          user_id TEXT NOT NULL,
+          client_id TEXT,
+          balance INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT
+        )
+      `);
+      sqlite.exec(
+        "INSERT INTO ai_credits (user_id, client_id, balance, updated_at) " +
+          "SELECT user_id, NULL, balance, updated_at FROM ai_credits_legacy_pk",
+      );
+      sqlite.exec("DROP TABLE ai_credits_legacy_pk");
+    });
+    migrate();
+  }
+  // Effective uniqueness key for both fresh and migrated DBs: one bucket per
+  // (user, client), with NULL coalesced to '' so the legacy bucket is a single
+  // distinct slot. This index — not a table PRIMARY KEY — is the ON CONFLICT
+  // target for the scoped credit UPSERTs.
+  sqlite.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS ai_credits_user_client_uidx " +
+      "ON ai_credits(user_id, COALESCE(client_id, ''))",
+  );
+}
 
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS driver_documents (
@@ -7275,9 +7337,19 @@ export const storage = {
   },
 
   // --- AI usage quota (persistent, per-user, per-day) + purchased credits ----
+  //
+  // Credits live in ai_credits keyed by (user_id, client_id). A NULL client_id is
+  // the LEGACY/unscoped bucket (pre-scoping balances, admin grants) spendable for
+  // ANY carrier; a non-NULL client_id is a bucket scoped to the carrier the pack
+  // was purchased for. consumeAiQuota prefers the active client's scoped bucket
+  // and falls back to the legacy bucket, so credits a dispatcher bought for
+  // carrier-A can't be silently spent while working for carrier-B (that's the
+  // value-misattribution this fixes), yet old/unscoped credits still work
+  // everywhere.
   consumeAiQuota(
     userId: string,
     dailyFree = AI_DAILY_FREE_QUOTA,
+    activeClientId?: string,
   ): { ok: boolean; source: "free" | "credit" | null; remainingToday: number; credits: number } {
     const day = new Date().toISOString().slice(0, 10);
     const tx = sqlite.transaction((): { ok: boolean; source: "free" | "credit" | null; remainingToday: number; credits: number } => {
@@ -7286,36 +7358,73 @@ export const storage = {
         .get(userId, day) as { count: number } | undefined;
       const used = row?.count ?? 0;
       if (used < dailyFree) {
+        // Free daily slot — unchanged + still strictly per-user (NOT per-client).
         sqlite
           .prepare("INSERT INTO ai_usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1")
           .run(userId, day);
         return { ok: true, source: "free", remainingToday: dailyFree - used - 1, credits: this.getAiCredits(userId) };
       }
-      const credRow = sqlite
-        .prepare("SELECT balance FROM ai_credits WHERE user_id = ?")
-        .get(userId) as { balance: number } | undefined;
-      const bal = credRow?.balance ?? 0;
-      if (bal > 0) {
-        sqlite
-          .prepare("UPDATE ai_credits SET balance = balance - 1, updated_at = ? WHERE user_id = ?")
-          .run(new Date().toISOString(), userId);
-        return { ok: true, source: "credit", remainingToday: 0, credits: bal - 1 };
+      // Free tier exhausted → spend a purchased credit. Prefer the active
+      // client's scoped bucket FIRST (so a carrier's purchased credits are used
+      // for that carrier's work), then fall back to the legacy NULL bucket so old
+      // unscoped balances keep working everywhere. Each UPDATE is guarded with
+      // `balance > 0` so it atomically decrements only a non-empty bucket and we
+      // read changes>0 to know which bucket paid.
+      const now = new Date().toISOString();
+      if (activeClientId) {
+        const scoped = sqlite
+          .prepare(
+            "UPDATE ai_credits SET balance = balance - 1, updated_at = ? WHERE user_id = ? AND client_id = ? AND balance > 0",
+          )
+          .run(now, userId, activeClientId);
+        if (scoped.changes > 0) {
+          return { ok: true, source: "credit", remainingToday: 0, credits: this.getAiCredits(userId) };
+        }
+      }
+      const legacy = sqlite
+        .prepare(
+          "UPDATE ai_credits SET balance = balance - 1, updated_at = ? WHERE user_id = ? AND client_id IS NULL AND balance > 0",
+        )
+        .run(now, userId);
+      if (legacy.changes > 0) {
+        return { ok: true, source: "credit", remainingToday: 0, credits: this.getAiCredits(userId) };
       }
       return { ok: false, source: null, remainingToday: 0, credits: 0 };
     });
     return tx();
   },
 
-  getAiCredits(userId: string): number {
+  /**
+   * Total purchased credits for a user. With no clientId this SUMS every bucket
+   * (legacy NULL + all scoped) — this is the badge total the frontend shows, and
+   * it equals the old single-bucket value for any user that never bought a scoped
+   * pack. With a clientId it returns only what is spendable for THAT carrier: the
+   * carrier's scoped bucket plus the always-spendable legacy NULL bucket.
+   */
+  getAiCredits(userId: string, clientId?: string): number {
+    if (clientId === undefined) {
+      const r = sqlite
+        .prepare("SELECT COALESCE(SUM(balance), 0) AS total FROM ai_credits WHERE user_id = ?")
+        .get(userId) as { total: number };
+      return r.total;
+    }
     const r = sqlite
-      .prepare("SELECT balance FROM ai_credits WHERE user_id = ?")
-      .get(userId) as { balance: number } | undefined;
-    return r?.balance ?? 0;
+      .prepare(
+        "SELECT COALESCE(SUM(balance), 0) AS total FROM ai_credits WHERE user_id = ? AND (client_id = ? OR client_id IS NULL)",
+      )
+      .get(userId, clientId) as { total: number };
+    return r.total;
   },
 
+  // Admin / test grant — lands in the LEGACY (unscoped) NULL bucket so it stays
+  // spendable for any carrier, exactly as before scoping existed. Scoped purchase
+  // grants go through grantAiCreditsForInvoice with a clientId instead.
   addAiCredits(userId: string, amount: number): number {
     sqlite
-      .prepare("INSERT INTO ai_credits (user_id, balance, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + excluded.balance, updated_at = excluded.updated_at")
+      .prepare(
+        "INSERT INTO ai_credits (user_id, client_id, balance, updated_at) VALUES (?, NULL, ?, ?) " +
+          "ON CONFLICT(user_id, COALESCE(client_id, '')) DO UPDATE SET balance = balance + excluded.balance, updated_at = excluded.updated_at",
+      )
       .run(userId, amount, new Date().toISOString());
     return this.getAiCredits(userId);
   },
@@ -7335,14 +7444,22 @@ export const storage = {
    *
    * Returns { granted, balance }: granted=false means this invoice was already
    * credited (skip the side effects / audit-as-duplicate); balance is always the
-   * current authoritative balance either way.
+   * current authoritative TOTAL balance either way.
+   *
+   * `clientId` SCOPES the grant to the carrier the pack was purchased for (the
+   * Stripe AI-pack invoice resolves it from the purchaser's linked carrier). When
+   * omitted/undefined the pack lands in the LEGACY NULL bucket (spendable for any
+   * carrier) — preserving the pre-scoping behavior for any path that has no
+   * clientId.
    */
   grantAiCreditsForInvoice(
     invoiceId: string,
     userId: string,
     amount: number,
+    clientId?: string,
   ): { granted: boolean; balance: number } {
     const ts = new Date().toISOString();
+    const scopeClientId = clientId ?? null;
     const tx = sqlite.transaction((): { granted: boolean; balance: number } => {
       const claim = sqlite
         .prepare(
@@ -7353,26 +7470,42 @@ export const storage = {
         // Already credited for this invoice — do NOT bump the balance again.
         return { granted: false, balance: this.getAiCredits(userId) };
       }
+      // UPSERT into the (user_id, client_id) bucket. The unique index on
+      // (user_id, COALESCE(client_id,'')) is the conflict target so a repeat
+      // grant to the SAME scope accumulates instead of erroring, while a NULL
+      // (legacy) and a scoped bucket for the same user remain distinct rows.
       sqlite
         .prepare(
-          "INSERT INTO ai_credits (user_id, balance, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + excluded.balance, updated_at = excluded.updated_at",
+          "INSERT INTO ai_credits (user_id, client_id, balance, updated_at) VALUES (?, ?, ?, ?) " +
+            "ON CONFLICT(user_id, COALESCE(client_id, '')) DO UPDATE SET balance = balance + excluded.balance, updated_at = excluded.updated_at",
         )
-        .run(userId, amount, ts);
+        .run(userId, scopeClientId, amount, ts);
       return { granted: true, balance: this.getAiCredits(userId) };
     });
     return tx();
   },
 
+  // Badge contract: called WITHOUT a clientId, `credits` is the user's TOTAL
+  // across all buckets (legacy + every scoped) — identical to what the frontend
+  // badge has always shown. Pass a clientId to get the per-carrier spendable view
+  // (that carrier's scoped bucket + the legacy NULL bucket). Daily-quota fields
+  // are per-user and unchanged either way.
   getAiQuotaStatus(
     userId: string,
     dailyFree = AI_DAILY_FREE_QUOTA,
+    clientId?: string,
   ): { usedToday: number; dailyFree: number; remainingToday: number; credits: number } {
     const day = new Date().toISOString().slice(0, 10);
     const row = sqlite
       .prepare("SELECT count FROM ai_usage WHERE user_id = ? AND day = ?")
       .get(userId, day) as { count: number } | undefined;
     const used = row?.count ?? 0;
-    return { usedToday: used, dailyFree, remainingToday: Math.max(0, dailyFree - used), credits: this.getAiCredits(userId) };
+    return {
+      usedToday: used,
+      dailyFree,
+      remainingToday: Math.max(0, dailyFree - used),
+      credits: this.getAiCredits(userId, clientId),
+    };
   },
 
   listLoadsForClientIds(

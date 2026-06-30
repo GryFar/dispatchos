@@ -306,7 +306,12 @@ export function registerCockpitRoutes(app: Express): void {
       // worse, a PURCHASED credit for zero value. Consuming only on success keeps
       // the happy path identical (exactly one unit per successful rec) while never
       // charging the dispatcher for an unavailable advisor.
-      const quotaStatus = storage.getAiQuotaStatus(me.id);
+      // Pass the scored carrier (clientId) so a purchased credit is spent from
+      // that carrier's scoped bucket first (then the legacy unscoped bucket) —
+      // credits bought for one carrier aren't silently consumed for another. The
+      // per-client credit view here only gates entry; the badge total elsewhere
+      // is unaffected.
+      const quotaStatus = storage.getAiQuotaStatus(me.id, undefined, clientId);
       if (quotaStatus.remainingToday <= 0 && quotaStatus.credits <= 0) {
         return res.status(429).json({
           message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
@@ -321,7 +326,8 @@ export function registerCockpitRoutes(app: Express): void {
 
       // Only now that we have a usable recommendation do we spend a unit (free
       // daily slot first, then a purchased credit) — atomically inside storage.
-      const quota = storage.consumeAiQuota(me.id);
+      // Scope the credit spend to the carrier being dispatched for.
+      const quota = storage.consumeAiQuota(me.id, undefined, clientId);
       if (!quota.ok) {
         // Lost the tiny race against a concurrent request that drained the last
         // unit between the gate above and here. Don't hand back a result we can't

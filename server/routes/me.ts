@@ -929,7 +929,12 @@ export function registerMeRoutes(app: Express): void {
         // null result (no API key / API error) returns { ocr: null } and must
         // NOT charge a daily slot or a purchased credit. Abusive empty retries
         // are still bounded by the in-memory ocrRateCheck guard above.
-        const quotaStatus = storage.getAiQuotaStatus(user.id);
+        // Scope credit spend to the driver's linked carrier (the carrier their
+        // AI packs are purchased for): spend that carrier's scoped bucket first,
+        // then the legacy unscoped bucket. undefined linkedClientId → legacy-only
+        // behavior (exactly as before scoping existed).
+        const activeClientId = user.linkedClientId ?? undefined;
+        const quotaStatus = storage.getAiQuotaStatus(user.id, undefined, activeClientId);
         if (quotaStatus.remainingToday <= 0 && quotaStatus.credits <= 0) {
           return res.status(429).json({
             message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
@@ -947,7 +952,7 @@ export function registerMeRoutes(app: Express): void {
           // commit fails (ok=false) and we must NOT hand back a billable OCR we
           // couldn't charge for. Surface the same quota-exhausted 429 as the
           // sibling cockpit.ts path.
-          const quota = storage.consumeAiQuota(user.id);
+          const quota = storage.consumeAiQuota(user.id, undefined, activeClientId);
           if (!quota.ok) {
             return res.status(429).json({
               message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",

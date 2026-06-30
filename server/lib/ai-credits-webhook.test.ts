@@ -116,5 +116,72 @@ const exactEvt = {
 await handleWebhookEvent(exactEvt);
 assert("exact pack price grants -> 100 credits", storage.getAiCredits(U3) === 100, String(storage.getAiCredits(U3)));
 
+// ---------------------------------------------------------------------------
+// VALUE-MISATTRIBUTION FIX: a pack carrying aiCreditsClientId is SCOPED to that
+// carrier. A scoped credit is spent FIRST for its own carrier; for a DIFFERENT
+// carrier only the legacy NULL bucket is reachable. We use a tiny free tier (0)
+// so consumeAiQuota goes straight to credits.
+const US = "u-scoped";
+const CARRIER_A = "carrier-A";
+const CARRIER_B = "carrier-B";
+
+// Grant a scoped pack billed to carrier-A.
+const scopedEvt = {
+  id: "evt_scoped",
+  type: "invoice.payment_succeeded",
+  data: {
+    object: {
+      id: "in_scoped_A",
+      amount_paid: 500,
+      metadata: { aiCreditsUserId: US, aiCreditsPack: "100", aiCreditsClientId: CARRIER_A },
+    },
+  },
+} as unknown as Parameters<typeof handleWebhookEvent>[0];
+const scoped = await handleWebhookEvent(scopedEvt);
+assert("scoped grant handled+granted", scoped.handled === true && (scoped.changes as { granted?: boolean })?.granted === true, JSON.stringify(scoped.changes));
+// Badge total (no clientId) sees the scoped pack.
+assert("scoped: badge total = 100", storage.getAiCredits(US) === 100, String(storage.getAiCredits(US)));
+// Per-carrier view: carrier-A sees its 100; carrier-B sees 0 (no legacy bucket yet).
+assert("scoped: carrier-A view = 100", storage.getAiCredits(US, CARRIER_A) === 100, String(storage.getAiCredits(US, CARRIER_A)));
+assert("scoped: carrier-B view = 0 (can't see A's pack)", storage.getAiCredits(US, CARRIER_B) === 0, String(storage.getAiCredits(US, CARRIER_B)));
+
+// Spend for carrier-B (free tier 0): MUST be denied — B can't reach A's credits.
+const spendB = storage.consumeAiQuota(US, 0, CARRIER_B);
+assert("scoped: spend for carrier-B DENIED (no misattribution)", spendB.ok === false && spendB.source === null, JSON.stringify(spendB));
+assert("scoped: A's balance untouched after B attempt = 100", storage.getAiCredits(US) === 100, String(storage.getAiCredits(US)));
+
+// Spend for carrier-A: consumes A's scoped credit.
+const spendA = storage.consumeAiQuota(US, 0, CARRIER_A);
+assert("scoped: spend for carrier-A OK from credit", spendA.ok === true && spendA.source === "credit", JSON.stringify(spendA));
+assert("scoped: carrier-A view now 99", storage.getAiCredits(US, CARRIER_A) === 99, String(storage.getAiCredits(US, CARRIER_A)));
+
+// ---------------------------------------------------------------------------
+// LEGACY FALLBACK: an unscoped (admin/legacy NULL) grant is spendable for ANY
+// carrier, and a scoped bucket prefers itself before falling back to legacy.
+const UL = "u-legacy";
+storage.addAiCredits(UL, 2); // lands in the legacy NULL bucket
+assert("legacy: badge total = 2", storage.getAiCredits(UL) === 2, String(storage.getAiCredits(UL)));
+assert("legacy: any-carrier view sees it", storage.getAiCredits(UL, "any-carrier") === 2, String(storage.getAiCredits(UL, "any-carrier")));
+// Spend for some carrier with no scoped bucket → falls back to legacy NULL.
+const legSpend = storage.consumeAiQuota(UL, 0, "carrier-X");
+assert("legacy: spend falls back to NULL bucket", legSpend.ok === true && legSpend.source === "credit", JSON.stringify(legSpend));
+assert("legacy: balance now 1", storage.getAiCredits(UL) === 1, String(storage.getAiCredits(UL)));
+// And a spend with NO clientId (undefined) still works off legacy — unchanged old behavior.
+const legSpend2 = storage.consumeAiQuota(UL, 0);
+assert("legacy: spend with undefined clientId works", legSpend2.ok === true && legSpend2.source === "credit", JSON.stringify(legSpend2));
+assert("legacy: balance now 0", storage.getAiCredits(UL) === 0, String(storage.getAiCredits(UL)));
+
+// Scoped-prefers-self-then-legacy: a user with BOTH a scoped (1) and legacy (1)
+// bucket spends scoped first, then legacy.
+const UB = "u-both";
+storage.grantAiCreditsForInvoice("in_both_scoped", UB, 1, CARRIER_A); // scoped to A
+storage.addAiCredits(UB, 1); // legacy NULL
+assert("both: badge total = 2", storage.getAiCredits(UB) === 2, String(storage.getAiCredits(UB)));
+const both1 = storage.consumeAiQuota(UB, 0, CARRIER_A);
+assert("both: first spend hits scoped bucket", both1.ok === true && storage.getAiCredits(UB, CARRIER_A) === 1, JSON.stringify({ ok: both1.ok, aView: storage.getAiCredits(UB, CARRIER_A) }));
+const both2 = storage.consumeAiQuota(UB, 0, CARRIER_A);
+assert("both: second spend falls back to legacy", both2.ok === true, JSON.stringify(both2));
+assert("both: balance now 0", storage.getAiCredits(UB) === 0, String(storage.getAiCredits(UB)));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

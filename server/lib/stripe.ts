@@ -399,7 +399,16 @@ export async function chargeAiCreditPack(
         customer,
         collection_method: "charge_automatically",
         auto_advance: false,
-        metadata: { aiCreditsUserId: userId, aiCreditsPack: String(AI_CREDIT_PACK.credits) },
+        // aiCreditsClientId scopes the granted pack to the carrier whose card is
+        // paying (the purchaser's linked carrier) — read back in the
+        // invoice.payment_succeeded webhook so the credits are spendable for THIS
+        // carrier's work, not silently carried to a different carrier the
+        // dispatcher later works for.
+        metadata: {
+          aiCreditsUserId: userId,
+          aiCreditsPack: String(AI_CREDIT_PACK.credits),
+          aiCreditsClientId: clientId,
+        },
       },
       { idempotencyKey: idemBase },
     );
@@ -864,6 +873,10 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       // re-delivery under a fresh event id can't double-grant.
       const aiCreditsUserId = invoice.metadata?.aiCreditsUserId;
       const aiCreditsPack = Number(invoice.metadata?.aiCreditsPack ?? 0);
+      // Carrier the pack was purchased for (set by chargeAiCreditPack). May be
+      // absent on pre-scoping invoices in flight at deploy time → grant lands in
+      // the legacy NULL bucket (spendable anywhere), exactly as before.
+      const aiCreditsClientId = invoice.metadata?.aiCreditsClientId || undefined;
       if (aiCreditsUserId && aiCreditsPack > 0) {
         // MONEY GATE: only grant the pack if the carrier actually PAID for it.
         // invoice.amount_paid (integer cents) is what Stripe collected AFTER any
@@ -901,11 +914,13 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
           grantKey,
           aiCreditsUserId,
           aiCreditsPack,
+          aiCreditsClientId,
         );
         if (granted) {
           storage.audit("ai.credits_purchased", "user", aiCreditsUserId, {
             pack: aiCreditsPack,
             balance,
+            clientId: aiCreditsClientId ?? null,
             stripeInvoiceId: invoice.id,
           });
         } else {
