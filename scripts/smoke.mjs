@@ -3998,6 +3998,517 @@ try {
   }
   console.log("[OK] onboarding MC claim distinguishes distinct dockets");
 
+  // ===========================================================================
+  // audit-2026-06-30 regression locks
+  // ===========================================================================
+  // HTTP-level regression tests locking in four just-merged production-bug fixes
+  // so a future refactor cannot silently revert them. Each block is independent:
+  // it sets its own session cookie (capturing/restoring an admin cookie around
+  // the admin-only setup) so it is order-safe and does not depend on the global
+  // cookie state left by the suite above. New fixtures are created here rather
+  // than reused, so a change to an earlier block can never leak into these.
+  // ---------------------------------------------------------------------------
+
+  // --- Regression #1: DISPATCHER-GATE CARRIER FALLBACK (the lockout fix) ------
+  // server/routes.ts per-user subscription gate (app.use("/api", ...)): an
+  // admin-CREATED dispatcher has subscriptionEndsAt=NULL (only invite-signup
+  // stamps a 30-day clock). Without the carrier fallback such a dispatcher fails
+  // perUserActive and is 402'd out of every mutating /api/dispatch route even
+  // though the carrier they dispatch for is fully paid. The fix lets ANY assigned
+  // carrier with billingBlockReason===null carry the write. We assert the POSITIVE
+  // case here: admin-created dispatcher + active carrier => PATCH reassign is NOT
+  // 402. (The negative case — a billing-blocked carrier yielding 402
+  // 'subscription_expired' — is recorded as SKIPPED: see note at the end of this
+  // block. billingStatus is owned by the Stripe webhook pipeline and is a
+  // protected field on both POST /api/clients and PATCH /api/admin/clients/:id,
+  // so the harness has no API path to push a carrier into expired/canceled.)
+  cookieHeader = adminCookieHeader; // admin sets up the fixtures
+  const rl1AdminCookie = cookieHeader;
+
+  // Active carrier (fresh create => billingStatus defaults to trial =>
+  // billingBlockReason === null). Reuse the same client shape the suite uses.
+  const rl1Carrier = await request("/api/clients", {
+    method: "POST",
+    body: {
+      name: "RegLock1 Active Carrier",
+      mc: "MC-REGLOCK-1",
+      equipment: "hotshot_flatbed",
+      targetPpm: 2.2,
+      minimumPpm: 1.9,
+      mpg: 10,
+      fuelPrice: 3.6,
+      fixedCostPerMile: 0.35,
+      preferredLanes: ["TX → Midwest"],
+      avoidStates: [],
+      currentLocation: {
+        city: "Dallas",
+        state: "TX",
+        lat: 32.7767,
+        lng: -96.797,
+        source: "manual_checkin",
+        updatedAt: new Date().toISOString(),
+        status: "empty",
+        availableAt: new Date().toISOString(),
+      },
+    },
+  });
+  if (!rl1Carrier.id) throw new Error("reglock1: carrier create failed");
+
+  // Driver linked to that carrier (needed to assign on the reassign path).
+  const rl1Driver = await request("/api/admin/users", {
+    method: "POST",
+    body: {
+      email: "reglock1.driver@example.com",
+      fullName: "RegLock1 Driver",
+      role: "driver",
+      linkedClientId: rl1Carrier.id,
+    },
+  });
+  if (rl1Driver.role !== "driver") throw new Error("reglock1: driver create failed");
+
+  // A load on that carrier (so the dispatcher has something to reassign).
+  const rl1Load = await request("/api/loads", {
+    method: "POST",
+    body: makeBookableLoad({
+      rate: 1450,
+      bookedAt: "2026-08-04",
+      clientId: rl1Carrier.id,
+      originCity: "Dallas",
+      destinationCity: "Memphis",
+    }),
+  });
+  if (!rl1Load.id) throw new Error("reglock1: load create failed");
+
+  // Admin-CREATED dispatcher => subscriptionEndsAt is NULL (the lockout trigger).
+  const rl1Disp = await request("/api/admin/users", {
+    method: "POST",
+    body: {
+      email: "reglock1.dispatcher@example.com",
+      fullName: "RegLock1 Dispatcher",
+      role: "dispatcher",
+    },
+  });
+  if (rl1Disp.role !== "dispatcher") throw new Error("reglock1: dispatcher create failed");
+  // Admin-created users carry a sentinel password; mint a real one to log in.
+  const rl1DispReset = await request(`/api/admin/users/${rl1Disp.id}/reset-password`, {
+    method: "POST",
+    body: {},
+  });
+  if (!rl1DispReset.temporaryPassword) throw new Error("reglock1: reset-password gave no temp pw");
+
+  // Assign the dispatcher to the active carrier (this is the fallback the gate
+  // must honor — dispatchers have no linkedClientId, only assignments).
+  const rl1Assign = await request("/api/admin/assignments", {
+    method: "POST",
+    body: { clientId: rl1Carrier.id, dispatcherUserId: rl1Disp.id },
+  });
+  if (!rl1Assign.id) throw new Error("reglock1: assignment create failed");
+
+  // Log in as the admin-created dispatcher (no TOTP => email+password only).
+  cookieHeader = "";
+  const rl1DispLogin = await request("/api/auth/login", {
+    method: "POST",
+    body: { email: "reglock1.dispatcher@example.com", password: rl1DispReset.temporaryPassword },
+  });
+  if (rl1DispLogin.redirect !== "/dispatch") {
+    throw new Error(`reglock1: dispatcher login redirect should be /dispatch, got ${rl1DispLogin.redirect}`);
+  }
+  // Sanity: this user really has a NULL per-user subscription. /api/me exposes
+  // subscriptionEndsAt — confirm it is null so the test exercises the carrier
+  // fallback path (not an accidentally-live per-user sub).
+  const rl1DispMe = await request("/api/me");
+  if (rl1DispMe.subscriptionEndsAt != null) {
+    throw new Error(
+      `reglock1: admin-created dispatcher should have null subscriptionEndsAt, got ${rl1DispMe.subscriptionEndsAt}`,
+    );
+  }
+
+  // The mutating reassign. If the carrier fallback regressed, the per-user gate
+  // would 402 here BEFORE the handler runs. A 200 with the driver assigned proves
+  // the fallback carried the write. (driverId null current => expectedDriverId
+  // null; assign requires the optimistic-concurrency token.)
+  const rl1Reassign = await request(`/api/dispatch/loads/${rl1Load.id}`, {
+    method: "PATCH",
+    body: { driverId: rl1Driver.id, expectedDriverId: null },
+  });
+  if (rl1Reassign.driverId !== rl1Driver.id) {
+    throw new Error(
+      `reglock1: reassign should assign driver via carrier fallback, got ${JSON.stringify({
+        driverId: rl1Reassign.driverId,
+      })}`,
+    );
+  }
+  console.log(
+    "[OK] regression#1: admin-created dispatcher (sub=null) + active carrier => PATCH reassign NOT 402 (carrier fallback)",
+  );
+  // NOTE (skipped): the negative case (only-assigned carrier billing-blocked =>
+  // 402 'subscription_expired') is not reachable in this harness — there is no
+  // API to set client.billingStatus to expired/canceled/past_due (Stripe-webhook
+  // owned + protected field on create/patch). Recorded under skipped.
+  cookieHeader = rl1AdminCookie;
+
+  // --- Regression #2: RESET-TOTP RE-ENROLL (totp_confirmed_at cleared) --------
+  // admin POST /api/admin/users/:id/reset-totp {disable:true} must clear
+  // totp_confirmed_at (not just totp_secret). If it didn't, the user's
+  // self-service re-enroll (POST /api/me/totp/setup then /confirm) would hit the
+  // IS-NULL guard in confirmTotpSetup and 409 'already_confirmed' forever,
+  // locking them out of ever turning 2FA back on. We run the FULL re-enroll after
+  // a disable and assert it returns { enabled: true }, not 409.
+  cookieHeader = adminCookieHeader;
+  const rl2AdminCookie = cookieHeader;
+
+  // Fresh user we can fully control (own password, own 2FA lifecycle).
+  const rl2User = await request("/api/admin/users", {
+    method: "POST",
+    body: {
+      email: "reglock2.user@example.com",
+      fullName: "RegLock2 User",
+      role: "dispatcher",
+    },
+  });
+  if (rl2User.role !== "dispatcher") throw new Error("reglock2: user create failed");
+  const rl2Reset = await request(`/api/admin/users/${rl2User.id}/reset-password`, {
+    method: "POST",
+    body: {},
+  });
+  if (!rl2Reset.temporaryPassword) throw new Error("reglock2: reset-password gave no temp pw");
+
+  // This dispatcher is admin-created (subscriptionEndsAt=null). The per-user
+  // subscription gate 402s ANY non-GET /api call (including /api/me/totp/setup)
+  // for a non-admin with neither a live per-user sub nor a non-blocking carrier.
+  // Assign them to an active carrier so the carrier fallback lets the 2FA-setup
+  // writes through — exactly the realistic state for a working dispatcher.
+  const rl2Carrier = await request("/api/clients", {
+    method: "POST",
+    body: {
+      name: "RegLock2 Active Carrier",
+      mc: "MC-REGLOCK-2",
+      equipment: "hotshot_flatbed",
+      targetPpm: 2.2,
+      minimumPpm: 1.9,
+      mpg: 10,
+      fuelPrice: 3.6,
+      fixedCostPerMile: 0.35,
+      preferredLanes: [],
+      avoidStates: [],
+      currentLocation: {
+        city: "Atlanta",
+        state: "GA",
+        lat: 33.749,
+        lng: -84.388,
+        source: "manual_checkin",
+        updatedAt: new Date().toISOString(),
+        status: "empty",
+        availableAt: new Date().toISOString(),
+      },
+    },
+  });
+  if (!rl2Carrier.id) throw new Error("reglock2: carrier create failed");
+  const rl2Assign = await request("/api/admin/assignments", {
+    method: "POST",
+    body: { clientId: rl2Carrier.id, dispatcherUserId: rl2User.id },
+  });
+  if (!rl2Assign.id) throw new Error("reglock2: assignment create failed");
+
+  // Log in (no TOTP yet) and enroll 2FA the first time so totp_confirmed_at IS set.
+  cookieHeader = "";
+  await request("/api/auth/login", {
+    method: "POST",
+    body: { email: "reglock2.user@example.com", password: rl2Reset.temporaryPassword },
+  });
+  const rl2Setup1 = await request("/api/me/totp/setup", { method: "POST", body: {} });
+  if (!rl2Setup1.secret) throw new Error("reglock2: first setup returned no secret");
+  const rl2Confirm1 = await request("/api/me/totp/confirm", {
+    method: "POST",
+    body: { token: totp(rl2Setup1.secret) },
+  });
+  if (rl2Confirm1.enabled !== true) {
+    throw new Error(`reglock2: first confirm should enable 2FA, got ${JSON.stringify(rl2Confirm1)}`);
+  }
+  // Sanity: a SECOND confirm in the same enrollment (no new setup) is the
+  // already-confirmed 409 — proves the guard is real and that the re-enroll
+  // success below is meaningful, not a no-op endpoint.
+  let rl2DoubleConfirm = 0;
+  let rl2DoubleCode = "";
+  try {
+    await request("/api/me/totp/confirm", { method: "POST", body: { token: totp(rl2Setup1.secret) } });
+  } catch (err) {
+    rl2DoubleConfirm = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    rl2DoubleCode = /already_confirmed/.test(String(err.message)) ? "already_confirmed" : "";
+  }
+  if (rl2DoubleConfirm !== 400 && !(rl2DoubleConfirm === 409 && rl2DoubleCode === "already_confirmed")) {
+    // confirm requires a pending secret; without a new setup it's a 400
+    // "no setup in progress". Either way it must NOT silently succeed.
+    throw new Error(`reglock2: re-confirm without new setup should fail, got ${rl2DoubleConfirm}`);
+  }
+
+  // Admin disables this user's 2FA. This also bumps the session epoch (forces
+  // re-auth), so we must log in again afterward.
+  cookieHeader = rl2AdminCookie;
+  const rl2Disable = await request(`/api/admin/users/${rl2User.id}/reset-totp`, {
+    method: "POST",
+    body: { disable: true },
+  });
+  if (rl2Disable.totpDisabled !== true) {
+    throw new Error(`reglock2: reset-totp disable=true should report totpDisabled, got ${JSON.stringify(rl2Disable)}`);
+  }
+
+  // Re-login (2FA now off => no token) and run the FULL self-service re-enroll.
+  cookieHeader = "";
+  await request("/api/auth/login", {
+    method: "POST",
+    body: { email: "reglock2.user@example.com", password: rl2Reset.temporaryPassword },
+  });
+  const rl2Setup2 = await request("/api/me/totp/setup", { method: "POST", body: {} });
+  if (!rl2Setup2.secret) throw new Error("reglock2: re-enroll setup returned no secret");
+  // The critical assertion: confirm SUCCEEDS (enabled:true), proving the admin
+  // disable cleared totp_confirmed_at. If the bug regresses, this 409s
+  // 'already_confirmed' and the request() helper throws.
+  const rl2Confirm2 = await request("/api/me/totp/confirm", {
+    method: "POST",
+    body: { token: totp(rl2Setup2.secret) },
+  });
+  if (rl2Confirm2.enabled !== true) {
+    throw new Error(
+      `reglock2: re-enroll confirm after admin disable should return enabled:true (not 409 already_confirmed), got ${JSON.stringify(rl2Confirm2)}`,
+    );
+  }
+  console.log(
+    "[OK] regression#2: admin reset-totp disable clears totp_confirmed_at => self-service re-enroll SUCCEEDS",
+  );
+  cookieHeader = rl2AdminCookie;
+
+  // --- Regression #3: VOID-INVOICE REBILL ------------------------------------
+  // The partial UNIQUE(client_id, week_start) WHERE status != 'void' index (and
+  // findOverlappingInvoice's status!='void' filter) must let a VOIDED week be
+  // re-billed. Generate => PATCH void => generate the SAME week again must create
+  // a NEW live invoice (201), not a stale 409 and not a 500 from the unique
+  // constraint. Fresh carrier + a week no earlier block has billed, so the only
+  // invoice on this (client, week) is the one we void here.
+  cookieHeader = adminCookieHeader;
+  const rl3AdminCookie = cookieHeader;
+
+  const rl3Carrier = await request("/api/clients", {
+    method: "POST",
+    body: {
+      name: "RegLock3 Rebill Carrier",
+      mc: "MC-REGLOCK-3",
+      equipment: "enclosed_car_hauler",
+      targetPpm: 2.2,
+      minimumPpm: 1.9,
+      mpg: 10,
+      fuelPrice: 3.6,
+      fixedCostPerMile: 0.35,
+      preferredLanes: [],
+      avoidStates: [],
+      currentLocation: {
+        city: "Tampa",
+        state: "FL",
+        lat: 27.95,
+        lng: -82.45,
+        source: "manual_checkin",
+        updatedAt: new Date().toISOString(),
+        status: "empty",
+        availableAt: new Date().toISOString(),
+      },
+    },
+  });
+  if (!rl3Carrier.id) throw new Error("reglock3: carrier create failed");
+
+  const rl3WeekStart = "2026-08-03";
+  const rl3WeekEnd = "2026-08-09";
+
+  // First generate — a live (draft) invoice.
+  const rl3Inv1 = await request("/api/admin/billing/generate", {
+    method: "POST",
+    body: { clientId: rl3Carrier.id, weekStart: rl3WeekStart, weekEnd: rl3WeekEnd },
+  });
+  if (!rl3Inv1.id || rl3Inv1.status !== "draft") {
+    throw new Error(`reglock3: first generate should be a draft invoice, got ${JSON.stringify(rl3Inv1)}`);
+  }
+
+  // Re-generating the SAME live week is still blocked (409) — proves the guard
+  // is active and the void below is what unlocks rebilling.
+  let rl3DupStatus = 0;
+  try {
+    await request("/api/admin/billing/generate", {
+      method: "POST",
+      body: { clientId: rl3Carrier.id, weekStart: rl3WeekStart, weekEnd: rl3WeekEnd },
+    });
+  } catch (err) {
+    rl3DupStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+  }
+  if (rl3DupStatus !== 409) {
+    throw new Error(`reglock3: duplicate live generate should be 409, got ${rl3DupStatus}`);
+  }
+
+  // Void the live invoice.
+  const rl3Voided = await request(`/api/admin/billing/invoices/${rl3Inv1.id}`, {
+    method: "PATCH",
+    body: { status: "void" },
+  });
+  if (rl3Voided.status !== "void") {
+    throw new Error(`reglock3: PATCH to void did not take, got ${rl3Voided.status}`);
+  }
+
+  // Generate again for the same (client, week): must SUCCEED with a NEW live
+  // invoice. If the fix regressed this is a 409 (stale dup) or a 500 (unique
+  // violation leaking) and request() throws.
+  const rl3Inv2 = await request("/api/admin/billing/generate", {
+    method: "POST",
+    body: { clientId: rl3Carrier.id, weekStart: rl3WeekStart, weekEnd: rl3WeekEnd },
+  });
+  if (!rl3Inv2.id || rl3Inv2.status !== "draft") {
+    throw new Error(`reglock3: re-generate after void should create a new draft, got ${JSON.stringify(rl3Inv2)}`);
+  }
+  if (rl3Inv2.id === rl3Inv1.id) {
+    throw new Error("reglock3: re-generate after void must be a NEW invoice, not the voided one");
+  }
+  console.log(
+    "[OK] regression#3: void invoice then re-generate same week creates a NEW live invoice (no stale 409 / no 500)",
+  );
+  cookieHeader = rl3AdminCookie;
+
+  // --- Regression #4: AI-QUOTA NOT BURNED ON FAILURE -------------------------
+  // ANTHROPIC/Claude is unconfigured in the smoke server, so
+  // POST /api/dispatch/ai-recommend returns 503 ai_unavailable AFTER passing the
+  // tenant + scored-load gates. The fix: only DECREMENT the daily AI quota AFTER
+  // a usable recommendation (consumeAiQuota runs only on success), so a 503 must
+  // NOT consume a free daily slot. We read the dispatcher's quota via
+  // GET /api/ai-quota before and after a 503 and assert usedToday is UNCHANGED.
+  //
+  // Requirements to reach the 503 (not a 404): the dispatcher must own a carrier
+  // WITH at least one available, scorable load. We build that fixture fresh.
+  cookieHeader = adminCookieHeader;
+  const rl4AdminCookie = cookieHeader;
+
+  const rl4Carrier = await request("/api/clients", {
+    method: "POST",
+    body: {
+      name: "RegLock4 AI Carrier",
+      mc: "MC-REGLOCK-4",
+      equipment: "hotshot_flatbed",
+      targetPpm: 2.0,
+      minimumPpm: 1.5,
+      mpg: 10,
+      fuelPrice: 3.6,
+      fixedCostPerMile: 0.35,
+      preferredLanes: [],
+      avoidStates: [],
+      currentLocation: {
+        city: "Austin",
+        state: "TX",
+        lat: 30.2672,
+        lng: -97.7431,
+        source: "manual_checkin",
+        updatedAt: new Date().toISOString(),
+        status: "empty",
+        availableAt: new Date().toISOString(),
+      },
+    },
+  });
+  if (!rl4Carrier.id) throw new Error("reglock4: carrier create failed");
+
+  // An AVAILABLE load on that carrier (no bookedAt => stays 'available' so it is
+  // scorable by ai-recommend's top-load builder).
+  const rl4Load = await request("/api/loads", {
+    method: "POST",
+    body: {
+      source: "RegLock4 Smoke",
+      originCity: "Austin",
+      originState: "TX",
+      originLat: 30.2672,
+      originLng: -97.7431,
+      destinationCity: "Houston",
+      destinationState: "TX",
+      destinationLat: 29.7604,
+      destinationLng: -95.3698,
+      rate: 900,
+      loadedMiles: 165,
+      pickupAt: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+      deliveryAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      equipment: "hotshot_flatbed",
+      brokerName: "RegLock4 Broker",
+      brokerMc: "MC-REGLOCK4-B",
+      brokerScore: 80,
+      fraudRisk: 10,
+      marketQuality: 75,
+      clientId: rl4Carrier.id,
+    },
+  });
+  if (!rl4Load.id) throw new Error("reglock4: load create failed");
+
+  // Admin-created dispatcher assigned to that carrier (its NULL sub passes via the
+  // #1 carrier fallback we just locked — keeps this block self-contained).
+  const rl4Disp = await request("/api/admin/users", {
+    method: "POST",
+    body: {
+      email: "reglock4.dispatcher@example.com",
+      fullName: "RegLock4 Dispatcher",
+      role: "dispatcher",
+    },
+  });
+  if (rl4Disp.role !== "dispatcher") throw new Error("reglock4: dispatcher create failed");
+  const rl4Reset = await request(`/api/admin/users/${rl4Disp.id}/reset-password`, {
+    method: "POST",
+    body: {},
+  });
+  if (!rl4Reset.temporaryPassword) throw new Error("reglock4: reset-password gave no temp pw");
+  const rl4Assign = await request("/api/admin/assignments", {
+    method: "POST",
+    body: { clientId: rl4Carrier.id, dispatcherUserId: rl4Disp.id },
+  });
+  if (!rl4Assign.id) throw new Error("reglock4: assignment create failed");
+
+  // Log in as the dispatcher and read the quota BEFORE the failing AI call.
+  cookieHeader = "";
+  await request("/api/auth/login", {
+    method: "POST",
+    body: { email: "reglock4.dispatcher@example.com", password: rl4Reset.temporaryPassword },
+  });
+  const rl4QuotaBefore = await request("/api/ai-quota");
+  if (typeof rl4QuotaBefore.usedToday !== "number" || typeof rl4QuotaBefore.remainingToday !== "number") {
+    throw new Error(`reglock4: GET /api/ai-quota shape unexpected, got ${JSON.stringify(rl4QuotaBefore)}`);
+  }
+
+  // ai-recommend must 503 ai_unavailable (Claude unconfigured) AFTER the scorable
+  // gate — i.e. it actually reached the AI call and failed, the only path that
+  // could erroneously burn a quota unit.
+  let rl4AiStatus = 0;
+  let rl4AiCode = "";
+  try {
+    await request("/api/dispatch/ai-recommend", {
+      method: "POST",
+      body: { clientId: rl4Carrier.id },
+    });
+  } catch (err) {
+    rl4AiStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    rl4AiCode = /ai_unavailable/.test(String(err.message)) ? "ai_unavailable" : "";
+  }
+  if (rl4AiStatus !== 503 || rl4AiCode !== "ai_unavailable") {
+    throw new Error(
+      `reglock4: ai-recommend should 503 ai_unavailable for a scorable carrier, got ${rl4AiStatus} ${rl4AiCode}`,
+    );
+  }
+
+  // The lock: usedToday/remainingToday must be UNCHANGED — a failed advisor call
+  // does not consume the dispatcher's daily quota.
+  const rl4QuotaAfter = await request("/api/ai-quota");
+  if (rl4QuotaAfter.usedToday !== rl4QuotaBefore.usedToday) {
+    throw new Error(
+      `reglock4: 503 ai-recommend burned quota — usedToday ${rl4QuotaBefore.usedToday} -> ${rl4QuotaAfter.usedToday}`,
+    );
+  }
+  if (rl4QuotaAfter.remainingToday !== rl4QuotaBefore.remainingToday) {
+    throw new Error(
+      `reglock4: 503 ai-recommend changed remainingToday ${rl4QuotaBefore.remainingToday} -> ${rl4QuotaAfter.remainingToday}`,
+    );
+  }
+  console.log(
+    "[OK] regression#4: 503 ai_unavailable does NOT consume the dispatcher's daily AI quota (consume-on-success only)",
+  );
+  cookieHeader = rl4AdminCookie;
+
 } catch (error) {
   console.error("[FAIL]", error.message);
   console.error(output);
