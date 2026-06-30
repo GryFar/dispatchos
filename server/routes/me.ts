@@ -640,22 +640,15 @@ export function registerMeRoutes(app: Express): void {
         throw err;
       }
 
-      // Move the temp file from multer's `uploadsRoot` flat dir into a typed
-      // subfolder (driver-docs/<userId>/<filename>) for sanity in backups.
-      const subdir = path.join(uploadsRoot, "driver-docs", user.id);
-      fs.mkdirSync(subdir, { recursive: true });
-      const safeBase = `${Date.now()}-${path.basename(file.originalname).replace(/[^\w.\-]/g, "_")}`;
-      const finalPath = path.join(subdir, safeBase);
-      fs.renameSync(file.path, finalPath);
-      // storage_path is server-relative; resolution to absolute happens at read.
-      const storagePath = path.relative(uploadsRoot, finalPath);
-
       // Audit V3-2 — carrier-level compliance docs (insurance, UCR, IRP,
       // MCS-150, DQ file generic) MUST NOT be driver-writable. A driver who
       // uploads a forged cargo_insurance with expiresAt=2030 would silence
       // the alert calendar and feed Montgomery defense pack with garbage.
       // Drivers can still self-upload PERSONAL compliance docs (CDL, medical,
       // their own §391 paperwork) which are required for THEIR DQ file.
+      // Checked BEFORE the rename below so a rejected upload never gets moved
+      // out of multer's temp path — otherwise the cleanup unlinks a path that
+      // no longer exists and leaks an orphan blob under the uploads volume.
       const CARRIER_LEVEL_DOC_TYPES = new Set([
         "cargo_insurance",
         "auto_liability",
@@ -673,6 +666,17 @@ export function registerMeRoutes(app: Express): void {
             "This document type is carrier-level and must be uploaded by an admin or dispatcher via /admin/clients/:id/documents.",
         });
       }
+
+      // Move the temp file from multer's `uploadsRoot` flat dir into a typed
+      // subfolder (driver-docs/<userId>/<filename>) for sanity in backups.
+      const subdir = path.join(uploadsRoot, "driver-docs", user.id);
+      fs.mkdirSync(subdir, { recursive: true });
+      const safeBase = `${Date.now()}-${path.basename(file.originalname).replace(/[^\w.\-]/g, "_")}`;
+      const finalPath = path.join(subdir, safeBase);
+      fs.renameSync(file.path, finalPath);
+      // storage_path is server-relative; resolution to absolute happens at read.
+      const storagePath = path.relative(uploadsRoot, finalPath);
+
       // Driver-uploaded personal compliance docs (cdl, medical, dq_*) stay
       // attached to the user. Linkage to the carrier is via the user.id;
       // computeDqStatusForDriver picks them up there.
@@ -937,7 +941,19 @@ export function registerMeRoutes(app: Express): void {
         // Only charge the quota once we actually have a billable result. On a
         // null OCR nothing is consumed, so the slot/credit is preserved.
         if (ocr !== null) {
-          storage.consumeAiQuota(user.id);
+          // consumeAiQuota is atomic; check its result rather than the stale
+          // pre-check above. A concurrent request can drain the last free slot
+          // or credit between getAiQuotaStatus and here — in that race the
+          // commit fails (ok=false) and we must NOT hand back a billable OCR we
+          // couldn't charge for. Surface the same quota-exhausted 429 as the
+          // sibling cockpit.ts path.
+          const quota = storage.consumeAiQuota(user.id);
+          if (!quota.ok) {
+            return res.status(429).json({
+              message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
+              code: "ai_quota_exceeded",
+            });
+          }
         }
         // Audit the attempt (not the image) so we can see OCR usage/hit-rate.
         storage.audit("driver.receipt_scanned", "driver_expense", "preview", {

@@ -247,6 +247,62 @@ function fakeStripe(statuses: Record<string, string> = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// 5b) Webhook payment_succeeded normalizes a STUCK 'draft' (+stripeInvoiceId)
+//     to 'paid'. Regression guard: chargeInvoiceViaStripe stamps the Stripe id
+//     BEFORE finalize; if finalize threw, admin.ts generate leaves the row
+//     'draft' but Stripe (auto_advance) still collects ~1h later. A direct
+//     draft->paid is an invalidTransition, so the webhook must step the legal
+//     draft->sent->paid path instead of silently leaving the row 'draft'
+//     forever (money collected by Stripe, shown uncollected locally).
+// ---------------------------------------------------------------------------
+{
+  __setStripeClientForTest(null); // no network needed for this path
+  const client = mkClient({ stripeCustomerId: "cus_stuck" });
+  // Row as the early-stripe-id-persist + finalize-threw path would leave it:
+  // 'draft' but already carrying the Stripe invoice id.
+  const inv = storage.createInvoice({
+    clientId: client.id,
+    weekStart: "2026-07-29",
+    weekEnd: "2026-08-04",
+    flatFee: 150,
+    percentFee: 9,
+    grossBooked: 300,
+    status: "draft",
+    stripeInvoiceId: "in_stuck_1",
+  });
+  assert("stuck draft setup: starts 'draft'", inv.status === "draft");
+  assert("stuck draft setup: carries stripe id", inv.stripeInvoiceId === "in_stuck_1");
+  assert("stuck draft setup: no paid_at yet", inv.paidAt == null);
+
+  const res = await handleWebhookEvent(
+    ev("invoice.payment_succeeded", {
+      id: "in_stuck_1",
+      amount_paid: 15900,
+      metadata: { dispatchosInvoiceId: inv.id },
+    } as unknown as Stripe.Invoice),
+  );
+  const after = storage.getInvoice(inv.id)!;
+  assert("stuck draft: handled", res.handled === true);
+  assert("stuck draft: clientId resolved", res.clientId === client.id);
+  assert("stuck draft: normalized draft->sent->paid (now paid)", after.status === "paid", after.status);
+  assert("stuck draft: paid_at stamped", typeof after.paidAt === "string");
+
+  // Idempotent re-delivery: must not error, must stay paid (paid is terminal,
+  // so the now-'paid' row is skipped, not flipped again).
+  const res2 = await handleWebhookEvent(
+    ev("invoice.payment_succeeded", {
+      id: "in_stuck_1",
+      amount_paid: 15900,
+      metadata: { dispatchosInvoiceId: inv.id },
+    } as unknown as Stripe.Invoice),
+  );
+  const after2 = storage.getInvoice(inv.id)!;
+  assert("stuck draft re-delivery: handled (no throw)", res2.handled === true);
+  assert("stuck draft re-delivery: still paid", after2.status === "paid");
+  assert("stuck draft re-delivery: paid_at unchanged", after2.paidAt === after.paidAt);
+}
+
+// ---------------------------------------------------------------------------
 // 6) Webhook fallback resolution by stripe_invoice_id (no metadata).
 // ---------------------------------------------------------------------------
 {
