@@ -6659,6 +6659,65 @@ export const storage = {
   },
 
   /**
+   * PERF (N+1 fix): batched variant of listCheckinsForLoad. Fetches every
+   * check-in for the given load ids in ONE indexed `WHERE load_id IN (...)`
+   * SELECT (chunked to stay well under SQLite's default 999-variable bind
+   * limit) and groups them in memory, instead of issuing one SELECT per load
+   * in a caller loop (e.g. /api/admin/detention/upcoming, which previously ran
+   * a checkins SELECT for every load in the table).
+   *
+   * Returns a Map keyed by loadId. Every requested id is present in the map;
+   * loads with no check-ins map to an empty array, so callers can index without
+   * a null guard. Rows within each load are ordered by created_at ASC, exactly
+   * matching listCheckinsForLoad's per-load ordering — so swapping a per-load
+   * loop for this batched call is behaviour-preserving. Idempotent / read-only:
+   * duplicate ids in the input collapse to a single map entry.
+   */
+  listCheckinsForLoads(loadIds: string[]): Map<string, LoadCheckin[]> {
+    const result = new Map<string, LoadCheckin[]>();
+    // De-dupe while preserving the caller's set; seed every requested id with an
+    // empty array so loads with zero check-ins still yield [] (no null branch).
+    const uniqueIds: string[] = [];
+    for (const id of loadIds) {
+      if (!result.has(id)) {
+        result.set(id, []);
+        uniqueIds.push(id);
+      }
+    }
+    if (uniqueIds.length === 0) return result;
+
+    // Chunk well under SQLite's default SQLITE_MAX_VARIABLE_NUMBER (999).
+    const CHUNK = 500;
+    for (let i = 0; i < uniqueIds.length; i += CHUNK) {
+      const chunk = uniqueIds.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => "?").join(",");
+      const rows = sqlite
+        .prepare(
+          `SELECT * FROM load_checkins WHERE load_id IN (${placeholders}) ORDER BY load_id ASC, created_at ASC`,
+        )
+        .all(...chunk) as Array<Record<string, unknown>>;
+      for (const r of rows) {
+        const loadId = r.load_id as string;
+        const bucket = result.get(loadId);
+        // Guard: a row's load_id is always one of the requested ids (it's in the
+        // IN-list), so the bucket is guaranteed seeded above — but stay defensive.
+        if (!bucket) continue;
+        bucket.push({
+          id: r.id as string,
+          loadId,
+          driverUserId: r.driver_user_id as string,
+          kind: r.kind as CheckinKind,
+          lat: (r.lat as number | null) ?? null,
+          lng: (r.lng as number | null) ?? null,
+          notes: (r.notes as string | null) ?? null,
+          createdAt: r.created_at as string,
+        });
+      }
+    }
+    return result;
+  },
+
+  /**
    * Latest check-in across ALL of a driver's loads (not load-scoped). Used by
    * the dispatcher assign dialog to show "last activity". Returns null if the
    * driver has never checked in.

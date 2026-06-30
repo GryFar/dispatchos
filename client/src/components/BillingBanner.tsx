@@ -26,9 +26,35 @@ interface BillingStatus {
 export function BillingBanner() {
   const { t } = useT();
   const [, setLocation] = useLocation();
+
+  // Billing is per-carrier: planTier/billingStatus live on the client, and
+  // /api/billing/status resolves via resolveCallerClientId (server/routes/billing.ts).
+  // For an admin with MORE than one carrier the server no longer guesses (V4-009)
+  // and returns 404 unless we pass ?clientId — so without threading one the banner
+  // silently rendered nothing and a past_due/expired carrier showed no warning.
+  // Mirror the billing page (admin/billing-stripe.tsx): resolve the sole carrier in
+  // a single-tenant env and thread it through. This banner is mounted only in the
+  // admin shell, so /api/clients (admin-only) is the right source.
+  const clientsQ = useQuery<Array<{ id: string; name: string }>>({
+    queryKey: ["/api/clients"],
+    queryFn: () => apiJson("GET", "/api/clients"),
+    retry: false,
+  });
+  const clients = clientsQ.data ?? [];
+  // Effective carrier: the sole client in a single-tenant env. In a multi-carrier
+  // env the banner has no carrier picker and no shared "active carrier" context, so
+  // clientId stays null and we skip the status query (no 404, no error) rather than
+  // warn about an arbitrary carrier. See NOTE below for the server change that would
+  // let a single banner cover every carrier.
+  const clientId = clients.length === 1 ? clients[0]!.id : null;
+  const clientIdParam = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+
   const q = useQuery<BillingStatus>({
-    queryKey: ["/api/billing/status"],
-    queryFn: () => apiJson("GET", "/api/billing/status"),
+    queryKey: ["/api/billing/status", clientId],
+    queryFn: () => apiJson("GET", `/api/billing/status${clientIdParam}`),
+    // Don't call status until carriers are loaded and a carrier is resolved —
+    // avoids the guaranteed 404 in a multi-carrier env where none is selected.
+    enabled: !clientsQ.isLoading && clientId != null,
     // 5 min poll — status changes via webhook are reflected in UI without a full refresh.
     refetchInterval: 5 * 60 * 1000,
     // Don't hammer this endpoint while logged-out / non-staff.

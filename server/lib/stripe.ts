@@ -732,6 +732,34 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       const aiCreditsUserId = invoice.metadata?.aiCreditsUserId;
       const aiCreditsPack = Number(invoice.metadata?.aiCreditsPack ?? 0);
       if (aiCreditsUserId && aiCreditsPack > 0) {
+        // MONEY GATE: only grant the pack if the carrier actually PAID for it.
+        // invoice.amount_paid (integer cents) is what Stripe collected AFTER any
+        // coupon / customer-balance / credit-note has been applied. A discount
+        // that zeroes (or merely reduces) the charge would otherwise hand out a
+        // full pack for free. Require the collected amount to cover the pack
+        // price before crediting. Refuse + log loudly + audit otherwise so an
+        // under-paid grant is visible, not silent.
+        const amountPaid = invoice.amount_paid ?? 0;
+        if (amountPaid < AI_CREDIT_PACK.priceCents) {
+          console.error(
+            `[stripe] invoice.payment_succeeded AI credit-pack grant REFUSED: ` +
+              `amount_paid=${amountPaid} < pack price ${AI_CREDIT_PACK.priceCents} ` +
+              `(invoice=${invoice.id ?? "?"}, user=${aiCreditsUserId}, pack=${aiCreditsPack}) ` +
+              `— carrier did not pay full pack price; NO credits granted`,
+          );
+          storage.audit("ai.credits_grant_refused", "user", aiCreditsUserId, {
+            reason: "underpaid",
+            amountPaid,
+            packPriceCents: AI_CREDIT_PACK.priceCents,
+            pack: aiCreditsPack,
+            stripeInvoiceId: invoice.id,
+          });
+          return {
+            handled: true,
+            clientId: null,
+            changes: { aiCreditsUserId, aiCreditsPack, granted: false, reason: "underpaid" },
+          };
+        }
         // Need a stable id to dedupe on. If Stripe somehow sent no invoice id we
         // cannot safely guarantee single-grant, so fall back to the event id
         // (still scoped per delivery) rather than crediting with no guard.

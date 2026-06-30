@@ -2221,8 +2221,15 @@ export function registerAdminRoutes(app: Express): void {
       totalCents: number;
     }> = [];
 
+    // PERF (N+1 fix): fetch every load's check-ins in ONE batched query instead
+    // of a SELECT per load inside the loop below. The Map is keyed by loadId and
+    // every id is present (empty array when a load has no check-ins), with rows
+    // ordered created_at ASC — identical to listCheckinsForLoad — so the loop's
+    // behaviour and output are unchanged.
+    const checkinsByLoad = storage.listCheckinsForLoads(all.map((l) => l.id));
+
     for (const load of all) {
-      const checkins = storage.listCheckinsForLoad(load.id);
+      const checkins = checkinsByLoad.get(load.id) ?? [];
       if (!checkins.length) continue;
       // clientId is still additive; driverId is now first-class on Load.
       const lid = (load as unknown as { clientId?: string });

@@ -20,7 +20,7 @@ assert("starts with 0 credits", storage.getAiCredits(U) === 0);
 const evt = {
   id: "evt_aicred_1",
   type: "invoice.payment_succeeded",
-  data: { object: { id: "in_aicred_1", metadata: { aiCreditsUserId: U, aiCreditsPack: "100" } } },
+  data: { object: { id: "in_aicred_1", amount_paid: 500, metadata: { aiCreditsUserId: U, aiCreditsPack: "100" } } },
 } as unknown as Parameters<typeof handleWebhookEvent>[0];
 
 const out = await handleWebhookEvent(evt);
@@ -46,7 +46,7 @@ const U2 = "u-aicred-dup";
 const dupEvt = {
   id: "evt_dup_1",
   type: "invoice.payment_succeeded",
-  data: { object: { id: "in_dup_1", metadata: { aiCreditsUserId: U2, aiCreditsPack: "100" } } },
+  data: { object: { id: "in_dup_1", amount_paid: 500, metadata: { aiCreditsUserId: U2, aiCreditsPack: "100" } } },
 } as unknown as Parameters<typeof handleWebhookEvent>[0];
 
 assert("dup user starts at 0", storage.getAiCredits(U2) === 0);
@@ -60,7 +60,7 @@ assert("first delivery -> 100 credits", storage.getAiCredits(U2) === 100, String
 const dupEvt2 = {
   id: "evt_dup_2_different_event_id",
   type: "invoice.payment_succeeded",
-  data: { object: { id: "in_dup_1", metadata: { aiCreditsUserId: U2, aiCreditsPack: "100" } } },
+  data: { object: { id: "in_dup_1", amount_paid: 500, metadata: { aiCreditsUserId: U2, aiCreditsPack: "100" } } },
 } as unknown as Parameters<typeof handleWebhookEvent>[0];
 const dup2 = await handleWebhookEvent(dupEvt2);
 assert("second delivery still handled", dup2.handled === true, JSON.stringify(dup2));
@@ -75,10 +75,46 @@ assert("third delivery -> still 100 credits", storage.getAiCredits(U2) === 100, 
 const freshEvt = {
   id: "evt_fresh",
   type: "invoice.payment_succeeded",
-  data: { object: { id: "in_dup_2", metadata: { aiCreditsUserId: U2, aiCreditsPack: "50" } } },
+  data: { object: { id: "in_dup_2", amount_paid: 500, metadata: { aiCreditsUserId: U2, aiCreditsPack: "50" } } },
 } as unknown as Parameters<typeof handleWebhookEvent>[0];
 await handleWebhookEvent(freshEvt);
 assert("distinct invoice grants again -> 150 credits", storage.getAiCredits(U2) === 150, String(storage.getAiCredits(U2)));
+
+// ---------------------------------------------------------------------------
+// MONEY GATE: a coupon / customer-balance that zeroes (or reduces) the charge
+// below the pack price must NOT grant the pack. amount_paid is what Stripe
+// actually collected after the discount. Two cases: fully zeroed and partially
+// discounted — both below the $5 (500c) pack price → no credits.
+const U3 = "u-aicred-discount";
+assert("discount user starts at 0", storage.getAiCredits(U3) === 0);
+
+const zeroedEvt = {
+  id: "evt_zeroed",
+  type: "invoice.payment_succeeded",
+  data: { object: { id: "in_zeroed", amount_paid: 0, metadata: { aiCreditsUserId: U3, aiCreditsPack: "100" } } },
+} as unknown as Parameters<typeof handleWebhookEvent>[0];
+const zeroed = await handleWebhookEvent(zeroedEvt);
+assert("zeroed invoice handled (acked)", zeroed.handled === true, JSON.stringify(zeroed));
+assert("zeroed invoice granted=false", (zeroed.changes as { granted?: boolean })?.granted === false, JSON.stringify(zeroed.changes));
+assert("FREE-PACK PREVENTED: zeroed invoice grants 0 credits", storage.getAiCredits(U3) === 0, String(storage.getAiCredits(U3)));
+
+const partialEvt = {
+  id: "evt_partial",
+  type: "invoice.payment_succeeded",
+  data: { object: { id: "in_partial", amount_paid: 499, metadata: { aiCreditsUserId: U3, aiCreditsPack: "100" } } },
+} as unknown as Parameters<typeof handleWebhookEvent>[0];
+const partial = await handleWebhookEvent(partialEvt);
+assert("partial invoice granted=false", (partial.changes as { granted?: boolean })?.granted === false, JSON.stringify(partial.changes));
+assert("UNDERPAY PREVENTED: 499c (< 500) grants 0 credits", storage.getAiCredits(U3) === 0, String(storage.getAiCredits(U3)));
+
+// Exactly the pack price (500c) DOES grant — boundary is inclusive.
+const exactEvt = {
+  id: "evt_exact",
+  type: "invoice.payment_succeeded",
+  data: { object: { id: "in_exact", amount_paid: 500, metadata: { aiCreditsUserId: U3, aiCreditsPack: "100" } } },
+} as unknown as Parameters<typeof handleWebhookEvent>[0];
+await handleWebhookEvent(exactEvt);
+assert("exact pack price grants -> 100 credits", storage.getAiCredits(U3) === 100, String(storage.getAiCredits(U3)));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
