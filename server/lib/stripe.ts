@@ -268,6 +268,16 @@ export async function chargeInvoiceViaStripe(
 
     if (!created.id) return { ok: false, reason: "stripe_no_invoice_id" };
 
+    // Persist the Stripe invoice id on the DispatchOS row IMMEDIATELY, before
+    // finalize. If invoices.create succeeded (the draft exists and, with
+    // auto_advance:true, Stripe will auto-finalize it ~1h later regardless) but
+    // finalizeInvoice below throws, the catch leaves the row chargeable. Without
+    // this stamp a retry >24h later — after the idempotency keys have expired —
+    // would mint a fresh invoice and double-charge the carrier. Stamping the id
+    // here makes the route-level guard (refuse when stripeInvoiceId is set) see
+    // the in-flight charge and refuse the re-charge.
+    storage.setInvoiceStripeId(invoice.id, created.id);
+
     // Finalize so Stripe attempts collection now (auto_advance handles the
     // charge against the default payment method).
     await stripe.invoices.finalizeInvoice(created.id);
@@ -298,25 +308,46 @@ export async function chargeAiCreditPack(
   if (!client || client.deletedAt) return { ok: false, reason: "client_not_found" };
   const customer = client.stripeCustomerId;
   if (!customer) return { ok: false, reason: "no_stripe_customer" };
+  // Deterministic idempotency key for this purchase. There is no pre-existing
+  // DispatchOS invoice id to key on (the Stripe invoice IS the purchase record),
+  // so we derive a stable identity from (userId, clientId, pack, coarse minute
+  // bucket). A double-clicked button or a succeeded-but-client-timed-out retry
+  // within the same minute therefore collapses onto ONE Stripe invoice instead
+  // of minting a second one — which would both double-charge the carrier's card
+  // and (via two distinct invoice ids) double-grant credits in the webhook.
+  // Mirrors chargeInvoiceViaStripe's dos_inv_X keys. A deliberate repeat
+  // purchase in a later minute still gets a fresh invoice, as intended.
+  const bucket = Math.floor(Date.now() / 60000);
+  const idemBase = `ai_pack_${userId}_${clientId}_${AI_CREDIT_PACK.credits}_${bucket}`;
   try {
     // Create the invoice FIRST (empty), attach ONLY the AI-pack item to it, then
     // finalize. This avoids pending_invoice_items_behavior:"include" sweeping
     // unrelated pending items (e.g. a weekly success fee) onto this charge.
-    const created = await stripe.invoices.create({
-      customer,
-      collection_method: "charge_automatically",
-      auto_advance: false,
-      metadata: { aiCreditsUserId: userId, aiCreditsPack: String(AI_CREDIT_PACK.credits) },
-    });
+    const created = await stripe.invoices.create(
+      {
+        customer,
+        collection_method: "charge_automatically",
+        auto_advance: false,
+        metadata: { aiCreditsUserId: userId, aiCreditsPack: String(AI_CREDIT_PACK.credits) },
+      },
+      { idempotencyKey: idemBase },
+    );
     if (!created.id) return { ok: false, reason: "stripe_no_invoice_id" };
-    await stripe.invoiceItems.create({
-      customer,
-      invoice: created.id,
-      amount: AI_CREDIT_PACK.priceCents,
-      currency: "usd",
-      description: `DispatchOS - ${AI_CREDIT_PACK.credits} AI requests`,
-    });
-    await stripe.invoices.finalizeInvoice(created.id, { auto_advance: true });
+    await stripe.invoiceItems.create(
+      {
+        customer,
+        invoice: created.id,
+        amount: AI_CREDIT_PACK.priceCents,
+        currency: "usd",
+        description: `DispatchOS - ${AI_CREDIT_PACK.credits} AI requests`,
+      },
+      { idempotencyKey: `${idemBase}_item` },
+    );
+    await stripe.invoices.finalizeInvoice(
+      created.id,
+      { auto_advance: true },
+      { idempotencyKey: `${idemBase}_fin` },
+    );
     return { ok: true, stripeInvoiceId: created.id };
   } catch (err) {
     return { ok: false, reason: (err as Error).message };

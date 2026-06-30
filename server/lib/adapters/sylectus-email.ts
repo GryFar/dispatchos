@@ -120,7 +120,14 @@ export const sylectusEmailAdapter: BoardAdapter = {
       // per-row ingestId, else "". Never Date.now() — a non-deterministic final
       // fallback would mint a fresh id every poll and re-insert the same email
       // as a new load. Mirrors broker-email.ts so both adapters dedup alike.
-      sourceExternalId: String(raw.messageId ?? parsed.reference ?? raw.ingestId ?? ""),
+      // Use `||` (not `??`) so an EMPTY messageId/reference falls through to the
+      // stable per-row ingestId. The CF worker always forwards messageId as a
+      // string — "" when the Message-ID header is absent — so `??` (which only
+      // skips null/undefined) would lock sourceExternalId to "" and collapse
+      // every header-less, reference-less email onto a SINGLE load row in
+      // upsertLoadFromSource. ingestId (= email_ingest row id) is always a
+      // stable, non-empty, per-email string, so it backstops correctly.
+      sourceExternalId: String(raw.messageId || parsed.reference || raw.ingestId || ""),
       clientId: row.clientId,
       source: "sylectus_email",
       originCity: parsed.origin?.city ?? "",

@@ -6049,6 +6049,21 @@ export const storage = {
     // lane marketQuality + neutral broker defaults (FMCSA scoring is the async
     // path's job, gated on a webkey).
     const base = ensureScoreableSourceLoad(input.payload);
+    // Defense-in-depth: an empty sourceExternalId is NOT a real dedup identity —
+    // the "WHERE source_external_id = ''" lookup below would match the prior ""
+    // row and collapse every such load onto one record. Adapters are expected to
+    // backstop to a stable per-row id (ingestId), so an empty key means a bug
+    // upstream; insert as a fresh, never-matching row rather than silently
+    // overwriting an unrelated load. Falling back to the new load id keeps the
+    // row unique to this ingest.
+    if (input.sourceExternalId === "") {
+      const id = makeId("load");
+      sqlite.prepare(`
+        INSERT INTO loads (id, client_id, payload, source_id, source_external_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(id, input.clientId, JSON.stringify({ ...base, id }), input.sourceId, id, now(), now());
+      return { id, inserted: true };
+    }
     const existing = sqlite.prepare(
       "SELECT id, payload, booked_at, driver_id FROM loads WHERE source_id = ? AND source_external_id = ?",
     ).get(input.sourceId, input.sourceExternalId) as

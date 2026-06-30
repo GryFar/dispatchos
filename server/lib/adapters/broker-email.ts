@@ -143,7 +143,14 @@ export function makeBrokerEmailAdapter(opts: {
         // per-row ingestId so the downstream load dedup (loads_source_external_uq)
         // keys on the stable message identity — a re-ingest of the same email
         // under a new ingestId then maps back to the same load instead of a dup.
-        sourceExternalId: String(raw.messageId ?? parsed.reference ?? raw.ingestId ?? ""),
+        // Use `||` (not `??`) so an EMPTY messageId/reference falls through to
+        // the stable per-row ingestId. The CF worker always forwards messageId as
+        // a string — "" when the Message-ID header is absent — so `??` (which only
+        // skips null/undefined) would lock sourceExternalId to "" and collapse
+        // every header-less, reference-less email onto a SINGLE load row in
+        // upsertLoadFromSource. ingestId (= email_ingest row id) is always a
+        // stable, non-empty, per-email string, so it backstops correctly.
+        sourceExternalId: String(raw.messageId || parsed.reference || raw.ingestId || ""),
         clientId: row.clientId,
         source: opts.source,
         originCity: parsed.origin?.city ?? "",
