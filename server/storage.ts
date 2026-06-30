@@ -2205,6 +2205,63 @@ export const storage = {
     }
   },
 
+  /**
+   * Renew the per-user subscription window for the non-admin users LINKED to a
+   * carrier, to `endsAtIso`. Called from the Stripe webhook when a carrier's
+   * subscription is confirmed ACTIVE (subscription.updated / invoice.payment_
+   * succeeded), so invite-created users' `subscription_ends_at` stays fresh as
+   * long as their carrier pays — instead of going stale at the one-time ~30d
+   * window set at invite signup.
+   *
+   * Linkage (the EXACT columns users link to a client by):
+   *   - drivers AND the account owner → users.linked_client_id = clientId
+   *     (provisionCarrierFromOnboarding sets linked_client_id on the owner too);
+   *   - dispatchers → an active row in `assignments` (removed_at IS NULL).
+   *
+   * Safety invariants:
+   *   - NEVER touches admins (role != 'admin').
+   *   - Skips soft-deleted users (deleted_at IS NULL).
+   *   - Only EXTENDS forward: a user whose existing window is already LATER than
+   *     endsAtIso keeps it (subscription_ends_at IS NULL OR < endsAtIso), so this
+   *     can never SHORTEN a longer per-user grant.
+   *
+   * Returns the number of user rows whose window was extended.
+   */
+  extendSubscriptionForCarrierUsers(clientId: string, endsAtIso: string): number {
+    const ts = now();
+    const txn = sqlite.transaction(() => {
+      // Drivers + owner: linked directly via linked_client_id.
+      const linked = sqlite
+        .prepare(
+          `UPDATE users
+             SET subscription_ends_at = ?, updated_at = ?
+           WHERE linked_client_id = ?
+             AND role != 'admin'
+             AND deleted_at IS NULL
+             AND (subscription_ends_at IS NULL OR subscription_ends_at < ?)`,
+        )
+        .run(endsAtIso, ts, clientId, endsAtIso);
+      // Dispatchers: linked via an active assignment (a dispatcher serves many
+      // carriers, so a NULL/expired per-user window is renewed by ANY carrier
+      // they're assigned to that just paid).
+      const dispatched = sqlite
+        .prepare(
+          `UPDATE users
+             SET subscription_ends_at = ?, updated_at = ?
+           WHERE role != 'admin'
+             AND deleted_at IS NULL
+             AND (subscription_ends_at IS NULL OR subscription_ends_at < ?)
+             AND id IN (
+               SELECT dispatcher_user_id FROM assignments
+               WHERE client_id = ? AND removed_at IS NULL
+             )`,
+        )
+        .run(endsAtIso, ts, endsAtIso, clientId);
+      return linked.changes + dispatched.changes;
+    });
+    return txn();
+  },
+
   updateUser(
     id: string,
     patch: {
@@ -3903,7 +3960,11 @@ export const storage = {
    * Allowed transitions (spec §4.4):
    *   draft  -> sent | void
    *   sent   -> paid | void
-   *   paid   -> (immutable)
+   *   paid   -> void   (reconciliation-only: a fully-reversed Stripe charge —
+   *                     refund / credit-note / voided / uncollectible — must be
+   *                     able to flip a locally-'paid' row off 'paid' so we stop
+   *                     counting revenue Stripe no longer holds. See
+   *                     handleWebhookEvent's reversal cases in lib/stripe.ts.)
    *   void   -> (immutable)
    *
    * `notes` may be updated at any time, independently of status.
@@ -3926,7 +3987,10 @@ export const storage = {
     const allowed: Record<string, Array<"draft" | "sent" | "paid" | "void">> = {
       draft: ["sent", "void"],
       sent: ["paid", "void"],
-      paid: [],
+      // paid -> void is reconciliation-only (a fully-reversed Stripe charge);
+      // there is no UI path that flips a paid invoice — only the webhook
+      // reversal handler does, so we never count revenue Stripe gave back.
+      paid: ["void"],
       void: [],
     };
 
@@ -4261,6 +4325,35 @@ export const storage = {
     const rows = sqlite
       .prepare("SELECT payload FROM loads ORDER BY created_at ASC")
       .all() as Array<{ payload: string }>;
+    return parsePayloads<Load>(rows);
+  },
+
+  /**
+   * Perf-scale: bounded variant of listLoads() for the hot dispatch-board
+   * render path (GET /api/dispatch-board, polled ~every 30s). listLoads()
+   * scans + JSON-parses the ENTIRE ever-growing loads table on every render;
+   * the board only ever surfaces actionable freight, and real freight postings
+   * are days old, never months — so restricting the scan to a generous recency
+   * window is behavior-preserving for all real operation while bounding the
+   * work to recent rows. Uses the loads_created_at_idx index on created_at.
+   *
+   * Same payload-parse path and same `ORDER BY created_at ASC` ordering as
+   * listLoads(), so the subset of loads inside the window feeds the scorer in
+   * exactly the same order — only loads OLDER than the cutoff are excluded.
+   * Default window is 90 days (see DISPATCHOS_BOARD_MAX_LOAD_AGE_DAYS in
+   * buildDispatchBoard). Billing/backup paths (buildWeeklyReport,
+   * getBackupSnapshot) intentionally keep using the full listLoads().
+   */
+  listRecentLoads(maxAgeDays: number): Load[] {
+    // A non-positive / non-finite window degrades safely to the full scan
+    // (i.e. behaves like listLoads) rather than silently returning nothing.
+    if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) {
+      return this.listLoads();
+    }
+    const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+    const rows = sqlite
+      .prepare("SELECT payload FROM loads WHERE created_at >= ? ORDER BY created_at ASC")
+      .all(cutoff) as Array<{ payload: string }>;
     return parsePayloads<Load>(rows);
   },
 

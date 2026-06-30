@@ -61,12 +61,29 @@ const rnd = () => Math.random().toString(36).slice(2, 10);
   const paid = storage.updateInvoice(inv.id, { status: "paid" });
   assert("sent -> paid allowed", "invoice" in paid && paid.invoice.status === "paid");
 
-  // paid is terminal — any further transition must be rejected from the current
-  // (paid) status, which is exactly what the conditional WHERE guarantees.
+  // paid -> draft/sent stays rejected (no forward motion out of paid) — only the
+  // reversal path below may move a paid row.
+  const paidToSent = storage.updateInvoice(inv.id, { status: "sent" });
+  assert(
+    "paid -> sent rejected (no forward motion)",
+    "invalidTransition" in paidToSent && paidToSent.from === "paid" && paidToSent.to === "sent",
+  );
+
+  // paid -> void IS allowed: reconciliation-only. A fully-reversed Stripe charge
+  // (refund / credit-note / voided / uncollectible) must be able to flip a
+  // locally-'paid' row off 'paid' so DispatchOS stops counting revenue Stripe no
+  // longer holds. See handleWebhookEvent's reversal cases in lib/stripe.ts.
   const afterPaid = storage.updateInvoice(inv.id, { status: "void" });
   assert(
-    "paid -> void rejected (terminal)",
-    "invalidTransition" in afterPaid && afterPaid.from === "paid",
+    "paid -> void allowed (reversal reconciliation)",
+    "invoice" in afterPaid && afterPaid.invoice.status === "void",
+  );
+
+  // void remains terminal — a reversed row cannot be resurrected.
+  const afterVoid = storage.updateInvoice(inv.id, { status: "paid" });
+  assert(
+    "void -> paid rejected (void terminal)",
+    "invalidTransition" in afterVoid && afterVoid.from === "void",
   );
 
   const missing = storage.updateInvoice(`inv_does_not_exist_${rnd()}`, { status: "sent" });

@@ -426,6 +426,29 @@ export async function chargeAiCreditPack(
 }
 
 /**
+ * Resolve the ISO date that a confirmed-active per-user subscription window
+ * should be extended to: the subscription's current_period_end, or a 30-day
+ * window from now when that field is unavailable.
+ *
+ * `current_period_end` location varies across Stripe API versions: legacy puts
+ * it at the subscription top level; the 2025+ API moved it onto each line item
+ * (items.data[].current_period_end). We probe both (Unix seconds → ISO) and fall
+ * back to now()+30d so the window is always refreshed, even on a thin sub object.
+ */
+export function subscriptionPeriodEndIso(sub: Stripe.Subscription): string {
+  const topLevel = (sub as unknown as { current_period_end?: number }).current_period_end;
+  const itemLevel = sub.items?.data?.[0] as unknown as { current_period_end?: number } | undefined;
+  const epochSec =
+    typeof topLevel === "number" && topLevel > 0
+      ? topLevel
+      : typeof itemLevel?.current_period_end === "number" && itemLevel.current_period_end > 0
+        ? itemLevel.current_period_end
+        : null;
+  if (epochSec) return new Date(epochSec * 1000).toISOString();
+  return new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+}
+
+/**
  * Extract subscription id from an Invoice across Stripe API versions.
  * Older API: invoice.subscription (string | Subscription).
  * 2025+ API: invoice.parent.subscription_details.subscription.
@@ -515,6 +538,90 @@ export function deriveSubscriptionUpdates(
     updates.pastDueSince = undefined;
   }
   return updates;
+}
+
+// ---------------------------------------------------------------------------
+// Reversal reconciliation.
+//
+// After an operator manually refunds / credit-notes / voids / marks-uncollectible
+// a PAID DispatchOS success-fee invoice in Stripe (the local void route
+// deliberately REFUSES to auto-refund a paid invoice — voidStripeInvoice returns
+// already_paid), nothing flips the local row off 'paid'. DispatchOS would keep
+// counting revenue Stripe no longer holds. These handlers reconcile a FULL
+// reversal by moving the linked DispatchOS invoice to 'void'; a PARTIAL reversal
+// is audited loudly but does NOT change status (a partial doesn't zero a
+// mostly-collected fee — that's a human call).
+// ---------------------------------------------------------------------------
+
+/** Resolve the local DispatchOS invoice for a reversal event: metadata id first,
+ *  then the Stripe invoice id stamped on the row (findInvoiceByStripeId). */
+function resolveDosInvoiceForReversal(
+  metadataInvoiceId: string | null | undefined,
+  stripeInvoiceId: string | null | undefined,
+): Invoice | undefined {
+  let dos = metadataInvoiceId ? storage.getInvoice(metadataInvoiceId) : undefined;
+  if (!dos && stripeInvoiceId) dos = storage.findInvoiceByStripeId(stripeInvoiceId);
+  return dos;
+}
+
+/**
+ * Apply a FULL reversal to the linked DispatchOS invoice: move paid|sent|draft
+ * -> void so it stops counting as collected revenue, and audit billing.invoice_reversed.
+ * Idempotent: an already-void row is a no-op (re-delivered reversal => no-op).
+ * Status moves go through the legal transition machine; paid->void is now allowed.
+ */
+function applyFullReversal(
+  dos: Invoice,
+  kind: string,
+  stripeInvoiceId: string | null | undefined,
+  amount: number | null | undefined,
+): { handled: true; clientId: string; changes: Record<string, unknown> } {
+  if (dos.status === "void") {
+    // Already reconciled (re-delivery, or operator voided locally first). No-op.
+    return {
+      handled: true,
+      clientId: dos.clientId,
+      changes: { dispatchosInvoiceId: dos.id, invoiceStatus: "void", reversed: false, reason: "already_void" },
+    };
+  }
+  const fromStatus = dos.status; // capture before the transition (becomes 'void')
+  const result = storage.updateInvoice(dos.id, { status: "void" });
+  if ("invoice" in result) {
+    storage.audit("billing.invoice_reversed", "invoice", dos.id, {
+      kind,
+      dispatchosInvoiceId: dos.id,
+      clientId: dos.clientId,
+      stripeInvoiceId: stripeInvoiceId ?? dos.stripeInvoiceId ?? null,
+      amount: amount ?? null,
+      from: fromStatus,
+    });
+    return {
+      handled: true,
+      clientId: dos.clientId,
+      changes: { dispatchosInvoiceId: dos.id, invoiceStatus: "void", reversed: true, kind },
+    };
+  }
+  // invalidTransition (shouldn't happen now that paid->void is allowed, but be
+  // loud rather than silently leaving collected-yet-reversed revenue on the books).
+  console.error(
+    `[stripe] ${kind}: could not move dispatchosInvoice=${dos.id} ` +
+      `(stripeInvoice=${stripeInvoiceId ?? dos.stripeInvoiceId ?? "?"}) to 'void': ` +
+      `invalidTransition ${"from" in result ? `${result.from}->${result.to}` : "?"}. ` +
+      `Stripe reversed the charge but the local row is stuck — manual reconciliation required.`,
+  );
+  storage.audit("billing.invoice_reverse_failed", "invoice", dos.id, {
+    kind,
+    dispatchosInvoiceId: dos.id,
+    clientId: dos.clientId,
+    stripeInvoiceId: stripeInvoiceId ?? dos.stripeInvoiceId ?? null,
+    from: "from" in result ? result.from : dos.status,
+    to: "void",
+  });
+  return {
+    handled: true,
+    clientId: dos.clientId,
+    changes: { dispatchosInvoiceId: dos.id, invoiceStatus: dos.status, reversed: false, reason: "invalid_transition" },
+  };
 }
 
 /**
@@ -634,6 +741,24 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
         status: sub.status,
         ...updates,
       });
+      // Per-user renewal: when the carrier's subscription is confirmed ACTIVE,
+      // keep the per-user subscription_ends_at window fresh for the users linked
+      // to this carrier (drivers + owner via linked_client_id, dispatchers via
+      // assignments) so an invite-created user's one-time ~30d window doesn't go
+      // stale (and read as expired) while their carrier keeps paying. Extend-only;
+      // never shortens. Admins are untouched. Pure self-serve users with NO
+      // carrier remain a known gap (no per-user payment flow exists).
+      if (updates.billingStatus === "active") {
+        const endsAt = subscriptionPeriodEndIso(sub);
+        const renewed = storage.extendSubscriptionForCarrierUsers(clientId, endsAt);
+        if (renewed > 0) {
+          storage.audit("billing.per_user_subscription_renewed", "client", clientId, {
+            usersRenewed: renewed,
+            subscriptionEndsAt: endsAt,
+            source: event.type,
+          });
+        }
+      }
       return { handled: true, clientId, changes: updates };
     }
 
@@ -915,7 +1040,166 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
         amountPaid: invoice.amount_paid,
         recoveredFromPastDue: wasPastDue,
       });
-      return { handled: true, clientId, changes: wasPastDue ? { billingStatus: "active" } : {} };
+      // Per-user renewal: a successful subscription invoice means the carrier
+      // paid (this is the recurring-renewal path), so refresh the per-user
+      // subscription_ends_at window for the users linked to this carrier — keeps
+      // an invite-created user's one-time ~30d window from going stale (and
+      // reading as expired) across billing cycles. Only fires when Stripe reports
+      // the subscription is currently active (a renewal payment, not a stale
+      // event for a since-canceled sub). Extend-only; never shortens; skips
+      // admins. Self-serve users with no carrier remain a known gap.
+      let usersRenewed = 0;
+      if (sub.status === "active" || sub.status === "trialing") {
+        const endsAt = subscriptionPeriodEndIso(sub);
+        usersRenewed = storage.extendSubscriptionForCarrierUsers(clientId, endsAt);
+        if (usersRenewed > 0) {
+          storage.audit("billing.per_user_subscription_renewed", "client", clientId, {
+            usersRenewed,
+            subscriptionEndsAt: endsAt,
+            source: "invoice.payment_succeeded",
+          });
+        }
+      }
+      return {
+        handled: true,
+        clientId,
+        changes: {
+          ...(wasPastDue ? { billingStatus: "active" } : {}),
+          ...(usersRenewed > 0 ? { usersRenewed } : {}),
+        },
+      };
+    }
+
+    // -----------------------------------------------------------------------
+    // REVERSAL reconciliation: a paid DispatchOS success-fee invoice that Stripe
+    // no longer holds (voided / marked uncollectible / refunded / credit-noted)
+    // must flip the local row off 'paid' so we stop counting that revenue.
+    // -----------------------------------------------------------------------
+
+    case "invoice.voided":
+    case "invoice.marked_uncollectible": {
+      // The whole invoice was reversed → FULL reversal regardless of amount.
+      const invoice = event.data.object as Stripe.Invoice;
+      const kind = event.type; // "invoice.voided" | "invoice.marked_uncollectible"
+
+      // AI-credit-pack invoices: AUDIT but do NOT auto-claw credits (could drive
+      // the balance negative). Leave the clawback decision to a human.
+      const aiCreditsUserId = invoice.metadata?.aiCreditsUserId;
+      if (aiCreditsUserId) {
+        storage.audit("ai.credits_charge_reversed", "user", aiCreditsUserId, {
+          kind,
+          stripeInvoiceId: invoice.id ?? null,
+          amount: invoice.total ?? invoice.amount_due ?? null,
+          note: "no auto-clawback — review balance manually",
+        });
+        return {
+          handled: true,
+          clientId: null,
+          changes: { aiCreditsUserId, reversed: false, audited: true, kind },
+        };
+      }
+
+      const dos = resolveDosInvoiceForReversal(
+        invoice.metadata?.dispatchosInvoiceId,
+        invoice.id,
+      );
+      if (!dos) return { handled: false, clientId: null };
+      return applyFullReversal(dos, kind, invoice.id, invoice.total ?? invoice.amount_paid);
+    }
+
+    case "charge.refunded": {
+      const charge = event.data.object as Stripe.Charge;
+      // Resolve the invoice this charge paid. The Stripe invoice id may live on
+      // charge.invoice (string | Invoice) across API versions; charges carry no
+      // dispatchosInvoiceId of their own.
+      const chargeInvoice = (charge as unknown as { invoice?: string | { id: string } }).invoice;
+      const stripeInvoiceId =
+        typeof chargeInvoice === "string" ? chargeInvoice : chargeInvoice?.id ?? null;
+
+      const amount = charge.amount ?? 0;
+      const amountRefunded = charge.amount_refunded ?? 0;
+      const fullyRefunded = charge.refunded === true || (amount > 0 && amountRefunded >= amount);
+
+      // Try AI-credit-pack first via the linked invoice's metadata. We need the
+      // invoice to know whether this was an AI-pack charge.
+      const dos = stripeInvoiceId
+        ? resolveDosInvoiceForReversal(null, stripeInvoiceId)
+        : undefined;
+
+      // If we can't map the charge to a DispatchOS success-fee row, it may be a
+      // subscription/plan charge or an AI-pack charge — neither of which we flip
+      // here. For AI-pack we can only detect via the invoice metadata, which we
+      // don't have on the charge; audit the unmapped reversal for visibility.
+      if (!dos) {
+        if (fullyRefunded) {
+          console.warn(
+            `[stripe] charge.refunded (full) not mapped to a DispatchOS invoice ` +
+              `(charge=${charge.id ?? "?"}, stripeInvoice=${stripeInvoiceId ?? "?"}) — no local row to reverse`,
+          );
+        }
+        return { handled: false, clientId: null };
+      }
+
+      if (!fullyRefunded) {
+        // PARTIAL refund: do NOT change status — a partial doesn't zero a
+        // mostly-collected fee. Audit loudly so it's visible for a human.
+        storage.audit("billing.invoice_partial_reversal", "invoice", dos.id, {
+          kind: "charge.refunded",
+          dispatchosInvoiceId: dos.id,
+          clientId: dos.clientId,
+          stripeInvoiceId,
+          stripeChargeId: charge.id ?? null,
+          amount,
+          amountRefunded,
+        });
+        return {
+          handled: true,
+          clientId: dos.clientId,
+          changes: { dispatchosInvoiceId: dos.id, invoiceStatus: dos.status, reversed: false, partial: true },
+        };
+      }
+
+      return applyFullReversal(dos, "charge.refunded", stripeInvoiceId, amountRefunded);
+    }
+
+    case "credit_note.created": {
+      const note = event.data.object as Stripe.CreditNote;
+      const noteInvoice = (note as unknown as { invoice?: string | { id: string } }).invoice;
+      const stripeInvoiceId =
+        typeof noteInvoice === "string" ? noteInvoice : noteInvoice?.id ?? null;
+
+      const dos = stripeInvoiceId
+        ? resolveDosInvoiceForReversal(null, stripeInvoiceId)
+        : undefined;
+      if (!dos) return { handled: false, clientId: null };
+
+      // A credit note fully credits when its total covers the invoice total_due.
+      // We don't have the live invoice here, so compare the credit-note total to
+      // the DispatchOS row's collected amount (flat + percent fees, in cents).
+      const creditTotal = note.total ?? note.amount ?? 0;
+      const collectedCents =
+        dollarsToCents(dos.flatFee ?? 0) + dollarsToCents(dos.percentFee ?? 0);
+      const fullyCredited = collectedCents > 0 && creditTotal >= collectedCents;
+
+      if (!fullyCredited) {
+        // PARTIAL credit note: do NOT change status — audit loudly for a human.
+        storage.audit("billing.invoice_partial_reversal", "invoice", dos.id, {
+          kind: "credit_note.created",
+          dispatchosInvoiceId: dos.id,
+          clientId: dos.clientId,
+          stripeInvoiceId,
+          creditNoteId: note.id ?? null,
+          creditTotal,
+          collectedCents,
+        });
+        return {
+          handled: true,
+          clientId: dos.clientId,
+          changes: { dispatchosInvoiceId: dos.id, invoiceStatus: dos.status, reversed: false, partial: true },
+        };
+      }
+
+      return applyFullReversal(dos, "credit_note.created", stripeInvoiceId, creditTotal);
     }
 
     default:
