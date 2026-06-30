@@ -59,7 +59,7 @@ import { canAddDriver } from "../lib/plans";
 import { upload } from "../upload";
 import { uploadDriverDocumentSchema } from "@shared/schema";
 import { computeInvoiceForWeek, FLAT_FEE_CENTS } from "../lib/billing";
-import { chargeInvoiceViaStripe } from "../lib/stripe";
+import { chargeInvoiceViaStripe, voidStripeInvoice } from "../lib/stripe";
 import {
   computeDetentionForLoad,
   totalDetentionCents,
@@ -1467,7 +1467,7 @@ export function registerAdminRoutes(app: Express): void {
   app.patch(
     "/api/admin/billing/invoices/:id",
     admin,
-    ah((req, res) => {
+    ah(async (req, res) => {
       const body = (req.body ?? {}) as { status?: unknown; notes?: unknown };
 
       const patch: { status?: "draft" | "sent" | "paid" | "void"; notes?: string } = {};
@@ -1489,6 +1489,58 @@ export function registerAdminRoutes(app: Express): void {
           });
         }
         patch.notes = body.notes;
+      }
+
+      // Voiding a charged invoice must ALSO cancel the open Stripe charge,
+      // otherwise the carrier keeps getting billed (auto_advance) for a fee the
+      // operator cancelled while the local row reads 'void'. Intercept the void
+      // transition for any invoice that carries a stripeInvoiceId:
+      //   - Stripe invoice still OPEN/uncollected  → void it in Stripe, then
+      //     proceed with the local void (carrier not charged).
+      //   - Stripe invoice ALREADY PAID            → refuse (409): do NOT
+      //     auto-refund; an operator issues a refund/credit note manually.
+      //   - Stripe error                           → refuse (502): never leave a
+      //     local 'void' while the remote charge may still be collecting.
+      // Invoices with no stripeInvoiceId (never charged) keep the local-only path.
+      if (patch.status === "void") {
+        const target = storage.getInvoice(String(req.params.id));
+        if (target && target.status !== "void" && target.stripeInvoiceId) {
+          const cancel = await voidStripeInvoice(target.stripeInvoiceId);
+          if (!cancel.ok) {
+            if (cancel.reason === "already_paid") {
+              storage.audit("billing.void_refused_paid", "invoice", target.id, {
+                invoiceId: target.id,
+                clientId: target.clientId,
+                stripeInvoiceId: target.stripeInvoiceId,
+              });
+              return res.status(409).json({
+                message:
+                  "Invoice already paid in Stripe — issue a refund/credit note manually before voiding.",
+                stripeInvoiceId: target.stripeInvoiceId,
+                stripeStatus: cancel.status,
+              });
+            }
+            storage.audit("billing.void_stripe_failed", "invoice", target.id, {
+              invoiceId: target.id,
+              clientId: target.clientId,
+              stripeInvoiceId: target.stripeInvoiceId,
+              reason: cancel.reason,
+            });
+            return res.status(502).json({
+              message: "Could not cancel the Stripe charge — invoice was not voided.",
+              reason: cancel.reason,
+              stripeInvoiceId: target.stripeInvoiceId,
+            });
+          }
+          if (cancel.voided) {
+            storage.audit("billing.void_stripe_canceled", "invoice", target.id, {
+              invoiceId: target.id,
+              clientId: target.clientId,
+              stripeInvoiceId: target.stripeInvoiceId,
+              stripeStatus: cancel.status,
+            });
+          }
+        }
       }
 
       const result = storage.updateInvoice(String(req.params.id), patch);

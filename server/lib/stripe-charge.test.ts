@@ -21,9 +21,8 @@ import { join } from "node:path";
 
 process.env.DISPATCHOS_DB_PATH = join(tmpdir(), `dispatchos-stripe-charge-${Date.now()}.db`);
 const { storage } = await import("../storage");
-const { chargeInvoiceViaStripe, handleWebhookEvent, __setStripeClientForTest } = await import(
-  "./stripe"
-);
+const { chargeInvoiceViaStripe, handleWebhookEvent, voidStripeInvoice, __setStripeClientForTest } =
+  await import("./stripe");
 import type Stripe from "stripe";
 
 let pass = 0;
@@ -60,11 +59,21 @@ const ev = (type: string, object: unknown): Stripe.Event =>
 
 // A fake Stripe client that records the invoiceItems / invoices it was asked to
 // create. No network. finalizeInvoice is a no-op that echoes the invoice.
-function fakeStripe() {
-  const calls: { invoiceItems: any[]; invoices: any[]; finalized: string[] } = {
+// `statuses` lets a test seed a remote invoice's status for retrieve()/void()
+// (used by the void-cancel path): default "open" so an unknown id reads as open.
+function fakeStripe(statuses: Record<string, string> = {}) {
+  const calls: {
+    invoiceItems: any[];
+    invoices: any[];
+    finalized: string[];
+    retrieved: string[];
+    voided: string[];
+  } = {
     invoiceItems: [],
     invoices: [],
     finalized: [],
+    retrieved: [],
+    voided: [],
   };
   const stripe = {
     invoiceItems: {
@@ -82,6 +91,15 @@ function fakeStripe() {
       finalizeInvoice: async (id: string) => {
         calls.finalized.push(id);
         return { id, status: "open" };
+      },
+      retrieve: async (id: string) => {
+        calls.retrieved.push(id);
+        return { id, status: statuses[id] ?? "open" };
+      },
+      voidInvoice: async (id: string) => {
+        calls.voided.push(id);
+        statuses[id] = "void";
+        return { id, status: "void" };
       },
     },
   } as unknown as Stripe;
@@ -282,6 +300,8 @@ function fakeStripe() {
 
 // ---------------------------------------------------------------------------
 // 8) Webhook does NOT touch an already-void invoice (double-apply guard).
+//    (Orthogonal to the void-cancel fix: even after a row is voided, a late
+//    payment_succeeded re-delivery must not flip it back to paid.)
 // ---------------------------------------------------------------------------
 {
   __setStripeClientForTest(null);
@@ -308,6 +328,48 @@ function fakeStripe() {
   const after = storage.getInvoice(inv.id)!;
   assert("void guard: handled (audited, no throw)", res.handled === true);
   assert("void guard: stays void (not flipped to paid)", after.status === "void", after.status);
+}
+
+// ---------------------------------------------------------------------------
+// 9) Voiding a STILL-OPEN stripe-charged invoice cancels the Stripe charge.
+//    voidStripeInvoice must call stripe.invoices.voidInvoice so the carrier is
+//    NOT billed for the fee the operator cancelled. (Previously the local row
+//    flipped to 'void' with NO Stripe call and auto_advance kept charging.)
+// ---------------------------------------------------------------------------
+{
+  const { stripe, calls } = fakeStripe({ in_open_1: "open" });
+  __setStripeClientForTest(stripe);
+  const res = await voidStripeInvoice("in_open_1");
+  assert("void open: ok=true", res.ok === true, res.reason);
+  assert("void open: voided=true", res.voided === true);
+  assert("void open: retrieved the invoice", calls.retrieved.includes("in_open_1"));
+  assert("void open: called voidInvoice", calls.voided.includes("in_open_1"));
+}
+
+// ---------------------------------------------------------------------------
+// 10) Voiding a PAID stripe-charged invoice is REFUSED (no auto-refund).
+//     voidStripeInvoice returns ok:false / reason 'already_paid' so the admin
+//     route 409s — an operator must issue a refund/credit note manually before
+//     the local void, never silently leave the carrier charged with no record.
+// ---------------------------------------------------------------------------
+{
+  const { stripe, calls } = fakeStripe({ in_paid_1: "paid" });
+  __setStripeClientForTest(stripe);
+  const res = await voidStripeInvoice("in_paid_1");
+  assert("void paid: ok=false (refused)", res.ok === false);
+  assert("void paid: reason already_paid", res.reason === "already_paid", res.reason);
+  assert("void paid: did NOT call voidInvoice (no auto-cancel of a paid charge)", !calls.voided.includes("in_paid_1"));
+}
+
+// ---------------------------------------------------------------------------
+// 11) Stripe unconfigured -> voidStripeInvoice no-ops to ok:true (voided:false)
+//     so the local void of a never-really-charged row still proceeds.
+// ---------------------------------------------------------------------------
+{
+  __setStripeClientForTest(null);
+  const res = await voidStripeInvoice("in_whatever");
+  assert("void no-stripe: ok=true", res.ok === true);
+  assert("void no-stripe: voided=false (nothing to cancel)", res.voided === false);
 }
 
 __setStripeClientForTest(null);
