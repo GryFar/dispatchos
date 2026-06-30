@@ -625,18 +625,47 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       const invoice = event.data.object as Stripe.Invoice;
 
       // AI credit-pack top-up (one-off, no subscription). Grant the purchased
-      // credits to the user from metadata. The webhook route dedupes by event.id
-      // (markStripeEventProcessed), so this runs once -> no double-grant.
+      // credits to the user from metadata.
+      //
+      // IDEMPOTENCY: the webhook route dedupes by event.id, but that claim is
+      // UN-claimed on a handler throw — and if the throw happens AFTER the grant
+      // (e.g. the audit write below fails), a Stripe retry would re-run this
+      // branch and double-grant for free. So the grant itself is guarded on the
+      // Stripe INVOICE id via grantAiCreditsForInvoice (atomic claim + balance
+      // bump in one txn). N deliveries of the same invoice => credited exactly
+      // once. We deliberately key on the invoice id (not event.id) so even a
+      // re-delivery under a fresh event id can't double-grant.
       const aiCreditsUserId = invoice.metadata?.aiCreditsUserId;
       const aiCreditsPack = Number(invoice.metadata?.aiCreditsPack ?? 0);
       if (aiCreditsUserId && aiCreditsPack > 0) {
-        const balance = storage.addAiCredits(aiCreditsUserId, aiCreditsPack);
-        storage.audit("ai.credits_purchased", "user", aiCreditsUserId, {
-          pack: aiCreditsPack,
-          balance,
-          stripeInvoiceId: invoice.id,
-        });
-        return { handled: true, clientId: null, changes: { aiCreditsUserId, aiCreditsPack, balance } };
+        // Need a stable id to dedupe on. If Stripe somehow sent no invoice id we
+        // cannot safely guarantee single-grant, so fall back to the event id
+        // (still scoped per delivery) rather than crediting with no guard.
+        const grantKey = invoice.id ?? `evt:${event.id}`;
+        const { granted, balance } = storage.grantAiCreditsForInvoice(
+          grantKey,
+          aiCreditsUserId,
+          aiCreditsPack,
+        );
+        if (granted) {
+          storage.audit("ai.credits_purchased", "user", aiCreditsUserId, {
+            pack: aiCreditsPack,
+            balance,
+            stripeInvoiceId: invoice.id,
+          });
+        } else {
+          // Re-delivery of an already-credited invoice: ack handled, no grant,
+          // no duplicate purchase audit. Leave a quiet trace for observability.
+          console.log(
+            `[stripe] invoice.payment_succeeded duplicate credit-pack grant skipped ` +
+              `(invoice=${grantKey}, user=${aiCreditsUserId}, pack=${aiCreditsPack})`,
+          );
+        }
+        return {
+          handled: true,
+          clientId: null,
+          changes: { aiCreditsUserId, aiCreditsPack, balance, granted },
+        };
       }
 
       const stripe = stripeClient();

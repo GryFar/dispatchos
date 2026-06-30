@@ -464,17 +464,33 @@ sqlite.exec(
 );
 
 // Enforce "one invoice per client per week" at the DB level — the app-level
-// pre-check (findInvoiceForClientWeek then insert) is TOCTOU-racy, so two
-// concurrent generate calls could double-bill a carrier. Created defensively: a
-// legacy DB that already contains duplicates would reject the unique index, so
-// we log and fall back to the app-level guard rather than crash on boot.
+// pre-check (findOverlappingInvoice then insert) is TOCTOU-racy, so two
+// concurrent generate calls could double-bill a carrier.
+//
+// The index is PARTIAL: it ignores voided invoices (WHERE status != 'void').
+// A full unique index permanently blocked re-billing a (client, week) once any
+// invoice existed for it — even a later-voided one — so voiding a wrong invoice
+// made the carrier-week un-billable and the generate endpoint 500'd on the
+// UNIQUE violation. Excluding void rows lets a voided week be re-billed while
+// still blocking a duplicate of a live (non-void) invoice.
+//
+// Migration is idempotent (re-runnable every boot): drop the old full index if
+// present, then create the partial one. This is safe because the old full index
+// guaranteed no duplicate (client, week) rows exist at all, so the more lenient
+// partial index always builds. Created defensively: a legacy DB that somehow
+// holds duplicate non-void rows would reject the partial index, so we log and
+// fall back to the app-level guard rather than crash on boot.
 try {
+  // Old index was the full UNIQUE(client_id, week_start). Drop it before
+  // creating the partial replacement so the void-exclusion actually takes
+  // effect on DBs that booted under the old DDL.
+  sqlite.exec("DROP INDEX IF EXISTS invoices_client_week_uq");
   sqlite.exec(
-    "CREATE UNIQUE INDEX IF NOT EXISTS invoices_client_week_uq ON invoices(client_id, week_start)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS invoices_client_week_uq ON invoices(client_id, week_start) WHERE status != 'void'",
   );
 } catch (err) {
   console.warn(
-    "[invoices] could not create UNIQUE(client_id, week_start) index — pre-existing duplicates?",
+    "[invoices] could not create partial UNIQUE(client_id, week_start) WHERE status != 'void' index — pre-existing duplicate non-void rows?",
     (err as Error).message,
   );
 }
@@ -936,6 +952,21 @@ sqlite.exec(`
     user_id TEXT PRIMARY KEY,
     balance INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT
+  );
+  -- Idempotency guard for AI credit-pack grants. The Stripe webhook handler
+  -- dedupes by event.id, but that marker is UN-claimed when the handler throws
+  -- AFTER the balance was already mutated (e.g. the audit write failed) — so a
+  -- Stripe retry of the same invoice would re-run addAiCredits and DOUBLE-GRANT.
+  -- This table records which Stripe invoice id was already credited, keyed on
+  -- the invoice id (the stable real-world identity of the purchase), so the
+  -- grant is idempotent across ANY number of (re)deliveries — independent of
+  -- event.id churn. Claimed atomically in the SAME transaction as the balance
+  -- bump, so partial states are impossible.
+  CREATE TABLE IF NOT EXISTS ai_credit_grants (
+    invoice_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    pack INTEGER NOT NULL,
+    granted_at TEXT NOT NULL
   );
 `);
 
@@ -6997,6 +7028,49 @@ export const storage = {
       .prepare("INSERT INTO ai_credits (user_id, balance, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + excluded.balance, updated_at = excluded.updated_at")
       .run(userId, amount, new Date().toISOString());
     return this.getAiCredits(userId);
+  },
+
+  /**
+   * Idempotent AI credit-pack grant, keyed on the Stripe invoice id.
+   *
+   * The webhook handler dedupes by event.id (markStripeEventProcessed), but that
+   * claim is UN-claimed in the route catch block when the handler throws AFTER
+   * the balance was already mutated (e.g. the audit write failed) — so a Stripe
+   * retry of the SAME invoice would re-run the grant and double the credits for
+   * free. This guards the money mutation on the invoice id itself, inside a
+   * single transaction: we INSERT OR IGNORE a row into ai_credit_grants and only
+   * bump the balance when WE win that insert (changes>0). Any subsequent
+   * delivery of the same invoice — same event.id or not — finds the row already
+   * present and is a no-op grant.
+   *
+   * Returns { granted, balance }: granted=false means this invoice was already
+   * credited (skip the side effects / audit-as-duplicate); balance is always the
+   * current authoritative balance either way.
+   */
+  grantAiCreditsForInvoice(
+    invoiceId: string,
+    userId: string,
+    amount: number,
+  ): { granted: boolean; balance: number } {
+    const ts = new Date().toISOString();
+    const tx = sqlite.transaction((): { granted: boolean; balance: number } => {
+      const claim = sqlite
+        .prepare(
+          "INSERT OR IGNORE INTO ai_credit_grants (invoice_id, user_id, pack, granted_at) VALUES (?, ?, ?, ?)",
+        )
+        .run(invoiceId, userId, amount, ts);
+      if (claim.changes === 0) {
+        // Already credited for this invoice — do NOT bump the balance again.
+        return { granted: false, balance: this.getAiCredits(userId) };
+      }
+      sqlite
+        .prepare(
+          "INSERT INTO ai_credits (user_id, balance, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + excluded.balance, updated_at = excluded.updated_at",
+        )
+        .run(userId, amount, ts);
+      return { granted: true, balance: this.getAiCredits(userId) };
+    });
+    return tx();
   },
 
   getAiQuotaStatus(

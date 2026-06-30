@@ -94,6 +94,27 @@ function safeJson<T>(value: unknown, fallback: T): T {
   }
 }
 
+/**
+ * True when `err` is the SQLite UNIQUE-constraint violation from the partial
+ * invoices_client_week_uq index (a live, non-void invoice already covers this
+ * (client, week)). better-sqlite3 surfaces these as an Error whose `.code` is
+ * "SQLITE_CONSTRAINT_UNIQUE" (older builds: "SQLITE_CONSTRAINT") and whose
+ * message names the offending index. We match on the code first, then fall back
+ * to the index name in the message so a genuine duplicate is reported as a clean
+ * 409 instead of bubbling to the global handler as an opaque 500.
+ */
+function isUniqueWeekViolation(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  const message = (err as { message?: unknown }).message;
+  const codeStr = typeof code === "string" ? code : "";
+  const msgStr = typeof message === "string" ? message : "";
+  const isUnique =
+    codeStr === "SQLITE_CONSTRAINT_UNIQUE" ||
+    (codeStr === "SQLITE_CONSTRAINT" && /unique/i.test(msgStr));
+  return isUnique && /invoices_client_week_uq|invoices\.(client_id|week_start)/i.test(msgStr);
+}
+
 function zodIssues(error: ZodError) {
   return error.issues.map((issue) => ({
     path: issue.path,
@@ -1222,15 +1243,39 @@ export function registerAdminRoutes(app: Express): void {
       }
 
       const calc = computeInvoiceForWeek(body.clientId, body.weekStart, body.weekEnd);
-      const invoice = storage.createInvoice({
-        clientId: calc.clientId,
-        weekStart: calc.weekStart,
-        weekEnd: calc.weekEnd,
-        flatFee: calc.flatFee,
-        percentFee: calc.percentFee,
-        grossBooked: calc.grossBooked,
-        status: body.status,
-      });
+      // The findOverlappingInvoice pre-check above is best-effort and TOCTOU-racy
+      // (a concurrent generate can slip between the check and this insert). The
+      // partial UNIQUE(client_id, week_start) WHERE status != 'void' index is the
+      // real guard: it lets a voided week be re-billed but rejects a duplicate of
+      // a LIVE (non-void) invoice. Catch that unique-violation and report it as a
+      // clean 409 "already billed" instead of letting the SQLite constraint error
+      // bubble to the global handler as an opaque 500.
+      let invoice;
+      try {
+        invoice = storage.createInvoice({
+          clientId: calc.clientId,
+          weekStart: calc.weekStart,
+          weekEnd: calc.weekEnd,
+          flatFee: calc.flatFee,
+          percentFee: calc.percentFee,
+          grossBooked: calc.grossBooked,
+          status: body.status,
+        });
+      } catch (err) {
+        if (isUniqueWeekViolation(err)) {
+          // Another non-void invoice already covers this exact (client, week).
+          // Surface the existing one (non-void) so the admin can fetch/PATCH it.
+          const existing = storage.findInvoiceForWeek(calc.clientId, calc.weekStart);
+          return res.status(409).json({
+            message: "An invoice for this client and week already exists.",
+            existingInvoiceId: existing?.id,
+            existingWeek: existing
+              ? { weekStart: existing.weekStart, weekEnd: existing.weekEnd }
+              : undefined,
+          });
+        }
+        throw err;
+      }
       // storage.createInvoice already emits `invoice.created` audit; we add
       // an admin-context event with the actor for traceability.
       storage.audit("invoice.created.admin", "invoice", invoice.id, {
