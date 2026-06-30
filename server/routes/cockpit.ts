@@ -285,9 +285,16 @@ export function registerCockpitRoutes(app: Express): void {
       }
 
       // Persistent per-user daily AI quota (50/day) + purchased credits, on top
-      // of the in-memory hourly burst guard above.
-      const quota = storage.consumeAiQuota(me.id);
-      if (!quota.ok) {
+      // of the in-memory hourly burst guard above. MONEY-FIX: gate on the quota
+      // BEFORE the AI call but only DECREMENT it AFTER a usable result. Previously
+      // consumeAiQuota ran first and a failed getAiRecommendation (no API key /
+      // fetch error / timeout / non-2xx like 529 / unparseable JSON) returned 503
+      // without restoring the spent unit — silently burning a free daily slot or,
+      // worse, a PURCHASED credit for zero value. Consuming only on success keeps
+      // the happy path identical (exactly one unit per successful rec) while never
+      // charging the dispatcher for an unavailable advisor.
+      const quotaStatus = storage.getAiQuotaStatus(me.id);
+      if (quotaStatus.remainingToday <= 0 && quotaStatus.credits <= 0) {
         return res.status(429).json({
           message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
           code: "ai_quota_exceeded",
@@ -297,6 +304,19 @@ export function registerCockpitRoutes(app: Express): void {
       const rec = await getAiRecommendation(client, top);
       if (!rec) {
         return res.status(503).json({ message: "AI advisor unavailable", code: "ai_unavailable" });
+      }
+
+      // Only now that we have a usable recommendation do we spend a unit (free
+      // daily slot first, then a purchased credit) — atomically inside storage.
+      const quota = storage.consumeAiQuota(me.id);
+      if (!quota.ok) {
+        // Lost the tiny race against a concurrent request that drained the last
+        // unit between the gate above and here. Don't hand back a result we can't
+        // bill; surface the same quota-exhausted response.
+        return res.status(429).json({
+          message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
+          code: "ai_quota_exceeded",
+        });
       }
 
       storage.audit("dispatch.ai_recommend", "client", clientId, {

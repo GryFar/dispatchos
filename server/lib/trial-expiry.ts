@@ -157,16 +157,38 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
       ) {
         continue;
       }
-      storage.upsertClient({
-        ...(fresh as unknown as Parameters<typeof storage.upsertClient>[0]),
-        billingStatus: "expired",
-      } as Parameters<typeof storage.upsertClient>[0]);
+      const sent: ("telegram" | "email")[] = [];
+      const errors: string[] = [];
+
+      // Guard the status transition: a busy/locked/constraint/IOERR throw from
+      // the SQLite write here must not abort the whole pass and skip every
+      // remaining client. Collect the error into this outcome and carry on. If
+      // the transition itself failed we skip the "expired" notification + audit
+      // for this client (don't announce a transition that never persisted) and
+      // record the outcome so the failure is visible.
+      try {
+        storage.upsertClient({
+          ...(fresh as unknown as Parameters<typeof storage.upsertClient>[0]),
+          billingStatus: "expired",
+        } as Parameters<typeof storage.upsertClient>[0]);
+      } catch (err) {
+        errors.push(`transition: ${(err as Error).message}`);
+        outcomes.push({
+          clientId: c.id,
+          clientName: c.name,
+          kind: "expired",
+          trialEndsAt: c.trialEndsAt,
+          daysUntil: days,
+          channels: sent,
+          errors,
+        });
+        continue;
+      }
+
       const text = [
         `⏰ Trial expired for ${c.name}.`,
         `Account is now read-only. Upgrade at https://dispatchos.co/#/admin/billing`,
       ].join("\n");
-      const sent: ("telegram" | "email")[] = [];
-      const errors: string[] = [];
       const tg = await sendTelegram(ctx, text);
       if (tg.ok) sent.push("telegram");
       else if (tg.error) errors.push(`telegram: ${tg.error}`);
@@ -188,10 +210,16 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
           errors.push(`email: ${(err as Error).message}`);
         }
       }
-      storage.audit("billing.trial_expired", "client", c.id, {
-        trialEndsAt: c.trialEndsAt,
-        channels: sent,
-      });
+      // Guard the audit write too: a throw here must not abort the pass after
+      // the transition already persisted.
+      try {
+        storage.audit("billing.trial_expired", "client", c.id, {
+          trialEndsAt: c.trialEndsAt,
+          channels: sent,
+        });
+      } catch (err) {
+        errors.push(`audit: ${(err as Error).message}`);
+      }
       outcomes.push({
         clientId: c.id,
         clientName: c.name,

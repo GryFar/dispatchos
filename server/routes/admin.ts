@@ -742,8 +742,13 @@ export function registerAdminRoutes(app: Express): void {
       if (!target) return res.status(404).json({ message: "User not found" });
 
       if (disable) {
-        const updated = storage.updateUser(target.id, { totpSecret: null }, actor.id);
-        if (!updated) return res.status(404).json({ message: "User not found" });
+        // resetUserTotp clears totp_secret AND totp_confirmed_at AND
+        // last_used_totp_counter atomically. updateUser({ totpSecret: null })
+        // would leave totp_confirmed_at set — confirmTotpSetup's IS-NULL guard
+        // then 409s every self-service re-enrollment, locking the user out of
+        // ever turning 2FA back on. It would also leave the stale replay counter.
+        const cleared = storage.resetUserTotp(target.id, actor.id);
+        if (!cleared) return res.status(404).json({ message: "User not found" });
         storage.bumpUserSessionEpoch(target.id); // force re-auth after 2FA change
         storage.audit("user.totp_disabled", "user", target.id, {
           targetUserId: target.id,
@@ -754,8 +759,14 @@ export function registerAdminRoutes(app: Express): void {
       }
 
       const newSecret = generateBase32Secret();
-      const updated = storage.updateUser(target.id, { totpSecret: newSecret }, actor.id);
-      if (!updated) return res.status(404).json({ message: "User not found" });
+      // installTotpSecret persists the new secret AND resets last_used_totp_counter
+      // to NULL in one atomic write. updateUser({ totpSecret }) leaves the old
+      // counter in place, so the user's first code in the SAME time-window as
+      // their last login would fail the setLastUsedTotpCounter replay gate and
+      // lock them out right after the reissue. (totp_confirmed_at is left intact:
+      // an admin-issued secret is treated as confirmed, matching prior behavior.)
+      const installed = storage.installTotpSecret(target.id, newSecret, actor.id);
+      if (!installed) return res.status(404).json({ message: "User not found" });
       storage.bumpUserSessionEpoch(target.id); // force re-auth after 2FA change
       storage.audit("user.totp_reset", "user", target.id, {
         targetUserId: target.id,

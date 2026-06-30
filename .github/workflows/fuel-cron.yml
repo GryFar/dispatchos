@@ -16,6 +16,13 @@ concurrency:
   group: fuel-refresh
   cancel-in-progress: false
 
+# Target host is configurable so the cron follows the real deployment. Set repo
+# variable DISPATCHOS_BASE_URL to the live app URL; falls back to demo. The old
+# hardcoded https://demo.dispatchos.co pointed at the wrong host, so the refresh
+# silently 404'd and the weekly EIA fuel update never ran in prod.
+env:
+  BASE_URL: ${{ vars.DISPATCHOS_BASE_URL || 'https://demo.dispatchos.co' }}
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -30,7 +37,7 @@ jobs:
           set +e
           RESPONSE_BODY=$(mktemp)
           HTTP_CODE=$(curl -s -o "$RESPONSE_BODY" -w "%{http_code}" \
-            -X POST "https://demo.dispatchos.co/api/cron/refresh-fuel" \
+            -X POST "$BASE_URL/api/cron/refresh-fuel" \
             -H "X-Cron-Secret: $CRON_SECRET" \
             --max-time 30)
           echo "HTTP: $HTTP_CODE"

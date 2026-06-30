@@ -2212,6 +2212,38 @@ export const storage = {
   },
 
   /**
+   * Fully tear down a user's 2FA in ONE atomic write — used by the admin
+   * `reset-totp` "disable" path. Clears all three pieces of TOTP state:
+   *   - totp_secret           → null  (2FA off)
+   *   - totp_confirmed_at      → null  (so the user can self-service re-enroll;
+   *                                     confirmTotpSetup's IS-NULL guard would
+   *                                     otherwise treat them as already-confirmed
+   *                                     and 409 every re-enrollment forever)
+   *   - last_used_totp_counter → null  (re-base replay protection; a stale
+   *                                     counter could lock the user out of the
+   *                                     next secret's first in-window code)
+   * updateUser({ totpSecret: null }) only touches the secret, leaving the other
+   * two stale — hence this dedicated helper. Returns true if the user existed.
+   */
+  resetUserTotp(id: string, actorUserId?: string): boolean {
+    const existing = this.getUserById(id);
+    if (!existing) return false;
+    const r = sqlite
+      .prepare(
+        "UPDATE users SET totp_secret = NULL, totp_confirmed_at = NULL, last_used_totp_counter = NULL, updated_at = ? WHERE id = ?",
+      )
+      .run(now(), id);
+    if (r.changes > 0) {
+      // Audit parity with updateUser's mutation-path logging (secret redacted).
+      this.audit("user.updated", "user", id, {
+        patch: { totpSecret: undefined },
+        actorUserId,
+      });
+    }
+    return r.changes > 0;
+  },
+
+  /**
    * Bump a user's session epoch — invalidates ALL of their existing sessions.
    * Called on admin password/TOTP reset: getCurrentUser compares the epoch
    * stamped into the session at login against this column and destroys any

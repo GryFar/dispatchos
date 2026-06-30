@@ -224,13 +224,25 @@ export async function runInsuranceCheck(
         tgBotToken,
       });
       if (channels.length > 0) {
-        storage.recordInsuranceAlertSent({
-          clientId: client.id,
-          insuranceType: typeKey,
-          expiresAt,
-          daysBefore: threshold,
-          channels,
-        });
+        // Guard the SQLite write (which also emits the audit row): a
+        // busy/locked/constraint throw here must not abort the whole pass and
+        // skip every remaining (client, insurance-type). Log it and carry on —
+        // the alert still gets reported in alertsSent below. Mirrors
+        // compliance-renewals.ts.
+        try {
+          storage.recordInsuranceAlertSent({
+            clientId: client.id,
+            insuranceType: typeKey,
+            expiresAt,
+            daysBefore: threshold,
+            channels,
+          });
+        } catch (err) {
+          console.error(
+            `[insurance-monitor] failed to record alert for client ${client.id} (${typeKey}):`,
+            err,
+          );
+        }
       }
 
       alertsSent.push({
