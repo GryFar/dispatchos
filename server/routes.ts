@@ -1990,8 +1990,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // AFTER it; while this sat below the modules it never ran for them, so an
   // expired driver/dispatcher kept full write access to their portal.
   // Blocks MUTATING requests with 402 once subscriptionEndsAt is past; reads
-  // stay open (badge, logout, language switch, billing). Admins, NULL-sub
-  // accounts, and public/token routes (getCurrentUser == null) pass through.
+  // stay open (badge, logout, language switch, billing). Admins and
+  // public/token routes (getCurrentUser == null) pass through. A NULL/expired
+  // per-user sub does NOT auto-pass: the user passes only if their carrier
+  // (linkedClientId for drivers, or ANY assigned carrier for dispatchers) is
+  // non-blocking. Dispatchers have a NULL linkedClientId, so they are gated on
+  // their assigned carriers' billing, not on a per-user sub that is never renewed.
   // -------------------------------------------------------------------------
   app.use("/api", (req, res, next) => {
     if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
@@ -2014,6 +2018,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!perUserActive && subUser.linkedClientId) {
       const carrier = storage.getClient(subUser.linkedClientId);
       carrierActive = !!carrier && billingBlockReason(carrier) === null;
+    }
+    // Dispatchers (and any user without a linkedClientId carrier match) serve
+    // one or more carriers via assignments, not a linked client. Their per-user
+    // subscriptionEndsAt is NULL (admin-created) or never renewed (~30d at invite
+    // signup), so gating on it alone locks them out even while the carrier they
+    // dispatch for is fully paid. Pass if ANY assigned carrier is non-blocking.
+    if (!perUserActive && !carrierActive) {
+      const assigned = storage.listAssignedClientsForDispatcher(subUser.id);
+      carrierActive = assigned.some((a) => {
+        const carrier = storage.getClient(a.id);
+        return !!carrier && billingBlockReason(carrier) === null;
+      });
     }
     if (perUserActive || carrierActive) return next();
     return res.status(402).json({

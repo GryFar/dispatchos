@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect } from "react";
+import { Component, lazy, Suspense, useEffect } from "react";
+import type { ErrorInfo, ReactNode } from "react";
 import { Route, Router, Switch, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { Loader2 } from "lucide-react";
@@ -63,6 +64,98 @@ function PortalLoading() {
 }
 
 /**
+ * Detects the "stale chunk" failure: after a new deploy, the old index chunk a
+ * still-open tab is running references portal chunk hashes that 404 on the CDN,
+ * so the dynamic import() REJECTS. Browsers surface this with varied messages
+ * ("Failed to fetch dynamically imported module", "error loading dynamically
+ * imported module", "Importing a module script failed"), so we match loosely.
+ */
+function isChunkLoadError(error: unknown): boolean {
+  const msg =
+    error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return (
+    /dynamically imported module/i.test(msg) ||
+    /importing a module script failed/i.test(msg) ||
+    /loading chunk/i.test(msg) ||
+    /ChunkLoadError/i.test((error as { name?: string })?.name ?? "")
+  );
+}
+
+// Guards the one-shot auto-reload below so a genuinely broken deploy can't spin
+// the tab in an infinite reload loop.
+const CHUNK_RELOAD_FLAG = "dos:chunkReloaded";
+
+interface PortalBoundaryState {
+  error: Error | null;
+}
+
+/**
+ * Error boundary wrapping the lazy-loaded portal routers.
+ *
+ * Without this, a rejected dynamic import() (e.g. a stale chunk 404 after a new
+ * deploy) propagates past <Suspense> — which only catches the *pending* promise,
+ * not a *rejected* one — and white-screens the whole SPA with no recovery. Here
+ * we catch it and offer a reload, which re-fetches the fresh index + chunk
+ * manifest. For the common stale-chunk case we auto-reload once (guarded by a
+ * sessionStorage flag so we never loop); for anything else we show a manual
+ * reload button.
+ */
+class ErrorBoundary extends Component<{ children: ReactNode }, PortalBoundaryState> {
+  state: PortalBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): PortalBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, _info: ErrorInfo) {
+    // Stale-chunk after deploy → reload once to pull the fresh chunk manifest.
+    // The sessionStorage flag ensures we attempt this at most once per tab so a
+    // truly broken build degrades to the manual button instead of looping.
+    if (isChunkLoadError(error)) {
+      try {
+        if (!sessionStorage.getItem(CHUNK_RELOAD_FLAG)) {
+          sessionStorage.setItem(CHUNK_RELOAD_FLAG, "1");
+          window.location.reload();
+        }
+      } catch {
+        // sessionStorage may be unavailable (private mode / blocked) — fall
+        // through to the manual reload fallback below.
+      }
+    }
+  }
+
+  private handleReload = () => {
+    try {
+      // Clear the one-shot guard so a manual reload always actually reloads.
+      sessionStorage.removeItem(CHUNK_RELOAD_FLAG);
+    } catch {
+      /* ignore */
+    }
+    window.location.reload();
+  };
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex h-screen flex-col items-center justify-center gap-4 p-6 text-center">
+          <p className="text-sm text-muted-foreground">
+            Не удалось загрузить страницу. Обновите её, чтобы продолжить.
+          </p>
+          <button
+            type="button"
+            onClick={this.handleReload}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            Обновить
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/**
  * Single entry-point for the whole web app.
  *
  * - Router uses hash-based location (main.tsx initialises window.location.hash
@@ -92,27 +185,33 @@ export default function App() {
               {/* Admin space */}
               <Route path="/admin" nest>
                 <RoleGate allow={["admin"]}>
-                  <Suspense fallback={<PortalLoading />}>
-                    <AdminRouter />
-                  </Suspense>
+                  <ErrorBoundary>
+                    <Suspense fallback={<PortalLoading />}>
+                      <AdminRouter />
+                    </Suspense>
+                  </ErrorBoundary>
                 </RoleGate>
               </Route>
 
               {/* Dispatcher space (Phase 4 P0) */}
               <Route path="/dispatch" nest>
                 <RoleGate allow={["dispatcher"]}>
-                  <Suspense fallback={<PortalLoading />}>
-                    <DispatchRouter />
-                  </Suspense>
+                  <ErrorBoundary>
+                    <Suspense fallback={<PortalLoading />}>
+                      <DispatchRouter />
+                    </Suspense>
+                  </ErrorBoundary>
                 </RoleGate>
               </Route>
 
               {/* Driver space (Phase 4 P0 — реализовано) */}
               <Route path="/d" nest>
                 <RoleGate allow={["driver"]}>
-                  <Suspense fallback={<PortalLoading />}>
-                    <DriverRouter />
-                  </Suspense>
+                  <ErrorBoundary>
+                    <Suspense fallback={<PortalLoading />}>
+                      <DriverRouter />
+                    </Suspense>
+                  </ErrorBoundary>
                 </RoleGate>
               </Route>
 
@@ -140,7 +239,7 @@ export default function App() {
  * - anonymous: the public marketing landing.
  */
 function RootRoute() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, isError } = useAuth();
   const [, setLocation] = useLocation();
 
   useEffect(() => {
@@ -149,7 +248,13 @@ function RootRoute() {
     }
   }, [user, isLoading, setLocation]);
 
-  if (isLoading || user) {
+  // Show the spinner while auth resolves, while a logged-in user is redirected,
+  // OR while /api/me is in a transient error state (5xx/network/CORS) with no
+  // cached user. use-auth distinguishes a real logged-out 401/403 (→ user:null,
+  // isError:false) from a transient failure (→ isError:true) and auto-retries,
+  // so we must NOT flash the marketing landing at a possibly-logged-in user on a
+  // momentary blip — keep the spinner until the retry resolves to a real answer.
+  if (isLoading || user || isError) {
     return (
       <div className="flex h-screen items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />

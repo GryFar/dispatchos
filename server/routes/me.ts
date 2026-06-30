@@ -919,9 +919,14 @@ export function registerMeRoutes(app: Express): void {
           });
         }
         // Persistent per-user daily AI quota (50/day) + purchased credits, on top
-        // of the in-memory hourly/daily burst guard above.
-        const quota = storage.consumeAiQuota(user.id);
-        if (!quota.ok) {
+        // of the in-memory hourly/daily burst guard above. PRE-CHECK here (so a
+        // request with nothing left is rejected before the paid call), but only
+        // COMMIT the consume after a successful, billable OCR — see below. A
+        // null result (no API key / API error) returns { ocr: null } and must
+        // NOT charge a daily slot or a purchased credit. Abusive empty retries
+        // are still bounded by the in-memory ocrRateCheck guard above.
+        const quotaStatus = storage.getAiQuotaStatus(user.id);
+        if (quotaStatus.remainingToday <= 0 && quotaStatus.credits <= 0) {
           return res.status(429).json({
             message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
             code: "ai_quota_exceeded",
@@ -929,6 +934,11 @@ export function registerMeRoutes(app: Express): void {
         }
         const imageBase64 = fs.readFileSync(file.path).toString("base64");
         const ocr = await parseReceipt(imageBase64, mediaType);
+        // Only charge the quota once we actually have a billable result. On a
+        // null OCR nothing is consumed, so the slot/credit is preserved.
+        if (ocr !== null) {
+          storage.consumeAiQuota(user.id);
+        }
         // Audit the attempt (not the image) so we can see OCR usage/hit-rate.
         storage.audit("driver.receipt_scanned", "driver_expense", "preview", {
           userId: user.id,
