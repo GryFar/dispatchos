@@ -49,13 +49,31 @@ interface EmailIngestResponse {
   limit: number;
 }
 
+/** Сколько последних писем тянем (и для query-ключа, и для URL — держим в одном месте). */
+const EMAIL_INGEST_LIMIT = 20;
+
+/**
+ * Безопасный форматтер даты: при отсутствующем/битом createdAt
+ * new Date(...) даёт Invalid Date → отдаём прочерк вместо "Invalid Date".
+ */
+function formatReceived(
+  value: string | undefined,
+  options?: Intl.DateTimeFormatOptions,
+): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("ru-RU", options);
+}
+
 export default function EmailInboxPage() {
   const { t } = useT();
   const [selected, setSelected] = useState<EmailIngestItem | null>(null);
 
   const { data, isLoading, isError } = useQuery<EmailIngestResponse>({
-    queryKey: ["/api/admin/email-ingest", 20],
-    queryFn: () => apiJson("GET", "/api/admin/email-ingest?limit=20"),
+    queryKey: ["/api/admin/email-ingest", EMAIL_INGEST_LIMIT],
+    queryFn: () =>
+      apiJson("GET", `/api/admin/email-ingest?limit=${EMAIL_INGEST_LIMIT}`),
     refetchInterval: 30_000,
   });
 
@@ -124,11 +142,20 @@ export default function EmailInboxPage() {
                 return (
                   <tr
                     key={item.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={item.subject || t("admin.emailInbox.noSubject")}
                     onClick={() => setSelected(item)}
-                    className="cursor-pointer border-t border-border transition-colors hover:bg-muted/40"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelected(item);
+                      }
+                    }}
+                    className="cursor-pointer border-t border-border transition-colors hover:bg-muted/40 focus:bg-muted/40 focus:outline-none"
                   >
                     <td className="px-3 py-2 text-xs text-muted-foreground">
-                      {new Date(item.createdAt).toLocaleString("ru-RU", {
+                      {formatReceived(item.createdAt, {
                         dateStyle: "short",
                         timeStyle: "short",
                       })}
@@ -180,7 +207,7 @@ export default function EmailInboxPage() {
                 <DetailRow label={t("admin.emailInbox.detailTo")} value={selected.to || "—"} mono />
                 <DetailRow
                   label={t("admin.emailInbox.detailReceived")}
-                  value={new Date(selected.createdAt).toLocaleString("ru-RU")}
+                  value={formatReceived(selected.createdAt)}
                 />
 
                 <div>

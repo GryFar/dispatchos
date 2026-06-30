@@ -298,12 +298,12 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 // ===========================================================================
-// 2FA section — self-service setup / rotate / disable
+// 2FA section — self-service setup / rotate
 // ===========================================================================
 //
 // Three states (controlled by `enabled` + local dialog state):
 //   1. enabled=false → banner «Не включено» + [Настроить]
-//   2. enabled=true  → «Включено» + [Перевыпустить QR] [Отключить]
+//   2. enabled=true  → «Включено» + [Перевыпустить QR]
 //   3. dialogOpen → QR + secret + input для подтверждения
 //
 // API:
@@ -487,7 +487,7 @@ function TotpSetupDialog({ enabled, onClose }: { enabled: boolean; onClose: () =
                 placeholder="000000"
                 className="mt-1 font-mono tracking-widest text-center text-lg"
                 value={token}
-                onChange={(e) => setToken(e.target.value)}
+                onChange={(e) => setToken(e.target.value.replace(/\D+/g, "").slice(0, 6))}
               />
               {confirmError && (
                 <p className="mt-1 text-xs text-destructive">{confirmError}</p>

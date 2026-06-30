@@ -89,21 +89,25 @@ export default function DriverProfilePage() {
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const patch: UpdateDriverProfileInput = {};
-    if (fullName !== user.fullName) patch.fullName = fullName.trim();
-    if ((phone || undefined) !== user.phone) {
+    // Compare the normalised (trimmed) values we would actually submit, so a
+    // trailing-space-only edit isn't mistaken for a real change.
+    const trimmedName = fullName.trim();
+    const trimmedPhone = phone.trim();
+    if (trimmedName !== user.fullName) patch.fullName = trimmedName;
+    if ((trimmedPhone || undefined) !== user.phone) {
       // empty string clears phone — backend accepts string >=3 chars, so we
       // skip the PATCH for now if cleared. Phase 1 enhancement: accept null.
-      if (phone.trim().length === 0) {
+      if (trimmedPhone.length === 0) {
         toast({
           title: t("common.error"),
           description: t("driver.profile.phoneCannotBeCleared"),
         });
         return;
       }
-      patch.phone = phone.trim();
+      patch.phone = trimmedPhone;
     }
     if (Object.keys(patch).length === 0) {
-      toast({ title: t("common.success") });
+      toast({ title: t("driver.profile.no_changes") });
       return;
     }
     updateProfile.mutate(patch);

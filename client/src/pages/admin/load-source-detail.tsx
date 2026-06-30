@@ -97,7 +97,7 @@ export default function LoadSourceDetailPage() {
     staleTime: 60_000,
   });
   const clientName = useMemo(
-    () => clients.find((c) => c.id === source?.clientId)?.name ?? source?.clientId ?? "",
+    () => clients.find((c) => c.id === source?.clientId)?.name ?? "—",
     [clients, source],
   );
 
@@ -121,7 +121,7 @@ export default function LoadSourceDetailPage() {
       apiJson("PATCH", `/api/admin/load-sources/${id}`, {
         label,
         status,
-        pollIntervalMin: Number(pollIntervalMin) || 15,
+        pollIntervalMin: Math.min(1440, Math.max(1, Math.round(Number(pollIntervalMin)) || 15)),
       }),
     onSuccess: () => {
       toast({ title: t("admin.loadSourceDetail.saved") });
