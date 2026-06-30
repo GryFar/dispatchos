@@ -573,6 +573,86 @@ function mkPaidInvoice(stripeId: string, over: Record<string, unknown> = {}) {
   assert("ai reversal: reversed=false", (res.changes as { reversed?: boolean })?.reversed === false);
 }
 
+// ---------------------------------------------------------------------------
+// 12i) AI-credit-pack REFUND (charge.refunded with NO DispatchOS row) is audited.
+//      chargeAiCreditPack never creates a local invoice row, so an AI-pack refund
+//      hits the !dos branch. Previously that left NO audit at all — invisible.
+//      Now the handler retrieves the Stripe invoice, sees aiCreditsUserId, and
+//      emits ai.credits_charge_reversed (no auto-clawback).
+// ---------------------------------------------------------------------------
+{
+  const U = "u-aipack-refund";
+  // A fake Stripe whose retrieve() returns the AI-pack invoice metadata.
+  const stripe = {
+    invoices: {
+      retrieve: async (id: string) => ({
+        id,
+        total: 500,
+        amount_paid: 500,
+        customer: "cus_aipack",
+        metadata: { aiCreditsUserId: U, aiCreditsPack: "100" },
+      }),
+    },
+  } as unknown as Stripe;
+  __setStripeClientForTest(stripe);
+  const before = storage.getAiCredits(U);
+  const res = await handleWebhookEvent(
+    ev("charge.refunded", {
+      id: "ch_aipack",
+      amount: 500,
+      amount_refunded: 500,
+      refunded: true,
+      invoice: "in_aipack_refund", // maps to NO DispatchOS row
+    } as unknown as Stripe.Charge),
+  );
+  assert("ai-pack refund: handled (audited)", res.handled === true);
+  assert("ai-pack refund: reversed=false (no clawback)", (res.changes as { reversed?: boolean })?.reversed === false);
+  assert("ai-pack refund: balance unchanged (no auto-clawback)", storage.getAiCredits(U) === before, String(storage.getAiCredits(U)));
+  const auditedRev = storage
+    .listAuditEvents(20)
+    .some((e) => e.eventType === "ai.credits_charge_reversed" && e.payload?.kind === "charge.refunded");
+  assert("ai-pack refund: emitted ai.credits_charge_reversed audit", auditedRev);
+}
+
+// ---------------------------------------------------------------------------
+// 12j) Already-void row does NOT get a partial-reversal audit. A single Stripe
+//      refund fires BOTH charge.refunded AND credit_note.created. If the row is
+//      already 'void' (the other event fully reversed it first), the later
+//      partial branch must short-circuit WITHOUT writing a contradictory
+//      billing.invoice_partial_reversal audit carrying invoiceStatus 'void'.
+// ---------------------------------------------------------------------------
+{
+  __setStripeClientForTest(null);
+  const { inv } = mkPaidInvoice("in_already_void");
+  // Fully reverse first (paid -> void) via the full-reversal path.
+  await handleWebhookEvent(
+    ev("invoice.voided", { id: "in_already_void", total: 15900, metadata: { dispatchosInvoiceId: inv.id } } as unknown as Stripe.Invoice),
+  );
+  const voided = storage.getInvoice(inv.id)!;
+  assert("already-void setup: row is void", voided.status === "void", voided.status);
+  const auditsBefore = storage
+    .listAuditEvents(50)
+    .filter((e) => e.eventType === "billing.invoice_partial_reversal" && e.payload?.dispatchosInvoiceId === inv.id).length;
+
+  // Now a PARTIAL charge.refunded arrives for the same already-void row.
+  const resChg = await handleWebhookEvent(
+    ev("charge.refunded", { id: "ch_av", amount: 15900, amount_refunded: 5000, refunded: false, invoice: "in_already_void" } as unknown as Stripe.Charge),
+  );
+  assert("already-void partial (charge): handled", resChg.handled === true);
+  assert("already-void partial (charge): reason already_void", (resChg.changes as { reason?: string })?.reason === "already_void");
+  // And a PARTIAL credit_note.created for the same row.
+  const resCn = await handleWebhookEvent(
+    ev("credit_note.created", { id: "cn_av", total: 5000, invoice: "in_already_void" } as unknown as Stripe.CreditNote),
+  );
+  assert("already-void partial (credit_note): handled", resCn.handled === true);
+  assert("already-void partial (credit_note): reason already_void", (resCn.changes as { reason?: string })?.reason === "already_void");
+
+  const auditsAfter = storage
+    .listAuditEvents(50)
+    .filter((e) => e.eventType === "billing.invoice_partial_reversal" && e.payload?.dispatchosInvoiceId === inv.id).length;
+  assert("already-void: NO partial-reversal audit written", auditsAfter === auditsBefore, `${auditsBefore} -> ${auditsAfter}`);
+}
+
 __setStripeClientForTest(null);
 
 console.log(`\n${pass} passed, ${fail} failed`);
