@@ -17,7 +17,7 @@ export function serveStatic(app: Express) {
   // An unmounted/typo'd API route must fail loud as a JSON 404, not silently
   // return the SPA HTML shell (which masks routing bugs and breaks API clients).
   app.use("/{*path}", (req, res) => {
-    if (req.path.startsWith("/api/")) {
+    if (req.path.toLowerCase().startsWith("/api/")) {
       return res.status(404).json({ message: "Not found" });
     }
     res.sendFile(path.resolve(distPath, "index.html"));
