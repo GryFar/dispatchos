@@ -574,6 +574,79 @@ function resolveDosInvoiceForReversal(
 }
 
 /**
+ * A charge.refunded / credit_note.created that maps to NO DispatchOS invoice row
+ * is either an AI-credit-pack reversal (chargeAiCreditPack never creates a local
+ * row) or some other unmapped charge. Both must leave an AUDIT trail — the team's
+ * deliberate "no auto-clawback, leave to a human" policy depends on the human
+ * SEEING the reversal, and a fully-silent reversal is the exact gap this closes.
+ *
+ * Retrieves the Stripe invoice (best-effort — null-safe, never throws on a failed
+ * retrieve) and:
+ *   - if invoice.metadata.aiCreditsUserId is present → emits the SAME
+ *     ai.credits_charge_reversed audit the invoice.voided path emits;
+ *   - else → emits a loud generic billing.charge_reversed_unmapped audit.
+ *
+ * Returns the webhook result to short-circuit on, or null when nothing could be
+ * resolved (no stripe / no invoice id / retrieve failed) so the caller falls
+ * through to its existing console.warn + {handled:false}.
+ */
+async function auditUnmappedReversal(
+  kind: string,
+  stripeInvoiceId: string | null | undefined,
+  amount: number | null | undefined,
+): Promise<{ handled: true; clientId: string | null; changes: Record<string, unknown> } | null> {
+  const stripe = stripeClient();
+  if (!stripe || !stripeInvoiceId) return null;
+  let invoice: Stripe.Invoice | undefined;
+  try {
+    invoice = await stripe.invoices.retrieve(stripeInvoiceId);
+  } catch (err) {
+    console.warn(
+      `[stripe] ${kind}: could not retrieve unmapped stripeInvoice=${stripeInvoiceId} ` +
+        `to classify reversal: ${(err as Error).message}`,
+    );
+    return null;
+  }
+  if (!invoice) return null;
+
+  const aiCreditsUserId = invoice.metadata?.aiCreditsUserId;
+  if (aiCreditsUserId) {
+    // AI-credit-pack reversal: AUDIT but do NOT auto-claw credits (could drive the
+    // balance negative). Same shape as the invoice.voided AI-pack branch.
+    storage.audit("ai.credits_charge_reversed", "user", aiCreditsUserId, {
+      kind,
+      stripeInvoiceId,
+      amount: invoice.total ?? invoice.amount_paid ?? amount ?? null,
+      note: "no auto-clawback — review balance manually",
+    });
+    return {
+      handled: true,
+      clientId: null,
+      changes: { aiCreditsUserId, reversed: false, audited: true, kind },
+    };
+  }
+
+  // Not an AI-pack and still unmapped to any DispatchOS row — audit loudly so no
+  // reversal is fully silent (a human can reconcile manually).
+  console.warn(
+    `[stripe] ${kind}: reversal on unmapped stripeInvoice=${stripeInvoiceId} ` +
+      `(customer=${typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id ?? "?"}) ` +
+      `— no DispatchOS row and no AI-pack metadata; audited for manual review`,
+  );
+  storage.audit("billing.charge_reversed_unmapped", "invoice", stripeInvoiceId, {
+    kind,
+    stripeInvoiceId,
+    amount: invoice.total ?? invoice.amount_paid ?? amount ?? null,
+    note: "no DispatchOS row, not an AI-pack — manual review",
+  });
+  return {
+    handled: true,
+    clientId: null,
+    changes: { stripeInvoiceId, reversed: false, audited: true, kind, unmapped: true },
+  };
+}
+
+/**
  * Apply a FULL reversal to the linked DispatchOS invoice: move paid|sent|draft
  * -> void so it stops counting as collected revenue, and audit billing.invoice_reversed.
  * Idempotent: an already-void row is a no-op (re-delivered reversal => no-op).
@@ -1143,13 +1216,24 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
 
       // If we can't map the charge to a DispatchOS success-fee row, it may be a
       // subscription/plan charge or an AI-pack charge — neither of which we flip
-      // here. For AI-pack we can only detect via the invoice metadata, which we
-      // don't have on the charge; audit the unmapped reversal for visibility.
+      // here. AI-pack purchases (chargeAiCreditPack) never create a DispatchOS
+      // invoice row, so an AI-pack refund would hit this branch and leave NO
+      // audit at all — invisible, despite the deliberate "no auto-clawback, leave
+      // to a human" policy that DEPENDS on the human SEEING the reversal. Resolve
+      // the Stripe invoice and, if it's an AI-pack, emit the SAME
+      // ai.credits_charge_reversed audit the invoice.voided path emits; otherwise
+      // emit a loud generic unmapped audit so no reversal is fully silent.
       if (!dos) {
+        const reconciled = await auditUnmappedReversal(
+          "charge.refunded",
+          stripeInvoiceId,
+          charge.amount_refunded ?? charge.amount ?? null,
+        );
+        if (reconciled) return reconciled;
         if (fullyRefunded) {
           console.warn(
             `[stripe] charge.refunded (full) not mapped to a DispatchOS invoice ` +
-              `(charge=${charge.id ?? "?"}, stripeInvoice=${stripeInvoiceId ?? "?"}) — no local row to reverse`,
+              `(charge=${charge.id ?? "?"}, stripeInvoice=${stripeInvoiceId ?? "?"}) — audited unmapped`,
           );
         }
         return { handled: false, clientId: null };
@@ -1158,6 +1242,18 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       if (!fullyRefunded) {
         // PARTIAL refund: do NOT change status — a partial doesn't zero a
         // mostly-collected fee. Audit loudly so it's visible for a human.
+        // Short-circuit if the row is ALREADY void: a single Stripe refund fires
+        // BOTH charge.refunded AND credit_note.created, so if the other event
+        // already fully reversed this row, writing a partial-reversal audit now
+        // (with invoiceStatus 'void') would be a contradictory record. Mirror
+        // applyFullReversal's already-void no-op.
+        if (dos.status === "void") {
+          return {
+            handled: true,
+            clientId: dos.clientId,
+            changes: { dispatchosInvoiceId: dos.id, invoiceStatus: "void", reversed: false, reason: "already_void" },
+          };
+        }
         storage.audit("billing.invoice_partial_reversal", "invoice", dos.id, {
           kind: "charge.refunded",
           dispatchosInvoiceId: dos.id,
@@ -1186,7 +1282,18 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       const dos = stripeInvoiceId
         ? resolveDosInvoiceForReversal(null, stripeInvoiceId)
         : undefined;
-      if (!dos) return { handled: false, clientId: null };
+      if (!dos) {
+        // Same gap as charge.refunded: an AI-pack credit note has no DispatchOS
+        // row. Reconcile via the Stripe invoice metadata so the AI-pack reversal
+        // is audited (no auto-clawback), and any other unmapped reversal is loud.
+        const reconciled = await auditUnmappedReversal(
+          "credit_note.created",
+          stripeInvoiceId,
+          note.total ?? note.amount ?? null,
+        );
+        if (reconciled) return reconciled;
+        return { handled: false, clientId: null };
+      }
 
       // A credit note fully credits when its total covers the invoice total_due.
       // We don't have the live invoice here, so compare the credit-note total to
@@ -1198,6 +1305,17 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
 
       if (!fullyCredited) {
         // PARTIAL credit note: do NOT change status — audit loudly for a human.
+        // Short-circuit if the row is ALREADY void: a single refund fires BOTH
+        // charge.refunded AND credit_note.created. If the other event already
+        // fully reversed this row, a partial-reversal audit with invoiceStatus
+        // 'void' would be a contradictory record. Mirror applyFullReversal.
+        if (dos.status === "void") {
+          return {
+            handled: true,
+            clientId: dos.clientId,
+            changes: { dispatchosInvoiceId: dos.id, invoiceStatus: "void", reversed: false, reason: "already_void" },
+          };
+        }
         storage.audit("billing.invoice_partial_reversal", "invoice", dos.id, {
           kind: "credit_note.created",
           dispatchosInvoiceId: dos.id,
