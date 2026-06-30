@@ -17,6 +17,7 @@ import type { Client, Load, ScoredLoad } from "@shared/schema";
 import { getCurrentUser, requireRole } from "../auth";
 import { storage } from "../storage";
 import { scoreLoadForClient } from "../routes";
+import { createLaneAvgResolver } from "../lib/lane-avg-resolver";
 import { getAiRecommendation } from "../lib/ai/dispatch-advisor";
 import { chargeAiCreditPack, AI_CREDIT_PACK } from "../lib/stripe";
 
@@ -172,13 +173,18 @@ export function registerCockpitRoutes(app: Express): void {
       // Track the best score each load earned across carriers, so topLoads can be
       // ordered by relevance (not just board recency).
       const bestScoreByLoadId = new Map<string, number>();
+      // PERF (N+1 fix): one memoized lane-average resolver for this whole request,
+      // shared across every (carrier × load) scoring call below, so getLaneAvgPpm
+      // hits SQLite at most once per distinct lane pair instead of once per pair.
+      // Behaviour-preserving: returns the exact value the default resolver would.
+      const laneAvg = createLaneAvgResolver();
       for (const summary of assigned) {
         const client = storage.getClient(summary.id) as Client | undefined;
         if (!client) continue;
         const scored = available.items
           // persist=false: this is a read-only (auto-refreshing) view — don't fire
           // a synchronous lane_history + load_scores write per (carrier, load) pair.
-          .map((load: Load) => scoreLoadForClient(client, load, false))
+          .map((load: Load) => scoreLoadForClient(client, load, false, laneAvg))
           .filter((l): l is ScoredLoad => Boolean(l))
           .sort((a, b) => b.dispatchScore - a.dispatchScore)
           .slice(0, 3);
@@ -262,8 +268,12 @@ export function registerCockpitRoutes(app: Express): void {
         status: "available",
         limit: 200,
       });
+      // PERF (N+1 fix): one memoized lane-average resolver for this request so the
+      // per-load scoring below dedups getLaneAvgPpm across the carrier's loads.
+      // persist defaults to true here (single carrier, on-demand) — unchanged.
+      const laneAvg = createLaneAvgResolver();
       const top = available.items
-        .map((load: Load) => scoreLoadForClient(client, load))
+        .map((load: Load) => scoreLoadForClient(client, load, true, laneAvg))
         .filter((l): l is ScoredLoad => Boolean(l))
         .sort((a, b) => b.dispatchScore - a.dispatchScore)
         .slice(0, 5);

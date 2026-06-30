@@ -17,6 +17,7 @@ import type { Client, Load } from "@shared/schema";
 import { getCurrentUser, requireRole } from "../auth";
 import { storage } from "../storage";
 import { scoreLoadForClient } from "../routes";
+import { createLaneAvgResolver } from "../lib/lane-avg-resolver";
 import { assignLoadsToFleet } from "../lib/fleet-assignment";
 import { planLoadChain, type ChainCandidate } from "../lib/load-chain";
 
@@ -49,10 +50,15 @@ export function registerFleetRoutes(app: Express): void {
 
       const available = storage.listLoadsForClientIds(clientIds, { status: "available", limit: 200 });
 
+      // PERF (N+1 fix): one memoized lane-average resolver per request, closed
+      // over by the scoring callback so every (carrier × load) pair assignLoads-
+      // ToFleet evaluates dedups getLaneAvgPpm to one query per distinct lane
+      // pair (was O(carriers × loads)). Behaviour-preserving — same scores.
+      const laneAvg = createLaneAvgResolver();
       const result = assignLoadsToFleet(
         carriers,
         available.items as Load[],
-        (c, l) => scoreLoadForClient(c, l, false),
+        (c, l) => scoreLoadForClient(c, l, false, laneAvg),
       );
 
       return res.json({

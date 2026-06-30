@@ -53,6 +53,7 @@ import { registerDispatchRoutes } from "./routes/dispatch";
 import { registerBrokerTrustRoutes } from "./routes/broker-trust";
 import { registerCockpitRoutes } from "./routes/cockpit";
 import { registerFleetRoutes } from "./routes/fleet";
+import { createLaneAvgResolver, type LaneAvgResolver } from "./lib/lane-avg-resolver";
 import { registerPredictiveRoutes } from "./routes/predictive";
 import { registerLeadRoutes } from "./routes/leads";
 import { registerWebhookRoutes } from "./routes/webhooks";
@@ -395,33 +396,13 @@ function calculatePickupFeasibility(client: Client, load: Load, deadheadMiles: n
   return { pickupFeasibility: "not_feasible" as const, bufferMinutes };
 }
 
-// Resolver for the per-lane observed-rate lookup. Pure read keyed only on the
-// (originState, destState) pair; lane_history is stable within a single
-// request. Defaults to the raw storage method so single-load callers behave
-// exactly as before; bulk callers (cockpit/board, weekly report) inject a
-// per-request memoized resolver (createLaneAvgResolver) so each distinct lane
-// pair hits SQLite at most once per request instead of O(carriers × loads).
-type LaneAvgResolver = (
-  originState: string,
-  destState: string,
-) => ReturnType<typeof storage.getLaneAvgPpm>;
-
-// Per-REQUEST memoization. getLaneAvgPpm is pure for a given (origin, dest) and
-// uppercases both states internally, so we key on the uppercased pair to match
-// its lookup semantics and maximize cache hits. Returns the EXACT value
-// getLaneAvgPpm would (including `undefined`), so scoring is byte-for-byte
-// identical — this is purely a query-dedup, not a behavior change. Create one
-// fresh per request (never share across requests) so it can't go stale.
-function createLaneAvgResolver(): LaneAvgResolver {
-  const cache = new Map<string, ReturnType<typeof storage.getLaneAvgPpm>>();
-  return (originState, destState) => {
-    const key = `${originState.toUpperCase()}|${destState.toUpperCase()}`;
-    if (cache.has(key)) return cache.get(key);
-    const value = storage.getLaneAvgPpm(originState, destState);
-    cache.set(key, value);
-    return value;
-  };
-}
+// Resolver for the per-lane observed-rate lookup (createLaneAvgResolver +
+// LaneAvgResolver) lives in ./lib/lane-avg-resolver so the sibling hot-path
+// scorers (routes/cockpit.ts, routes/fleet.ts) can share it without riding the
+// existing routes ↔ route-module import cycle. Pure read keyed only on the
+// (originState, destState) pair; bulk callers inject one per-request memoized
+// resolver so each distinct lane pair hits SQLite at most once per request
+// instead of O(carriers × loads).
 
 // persist=false skips the two synchronous DB writes below (lane_history +
 // load_scores). Read-only callers that score many (client, load) pairs per
