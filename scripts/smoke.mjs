@@ -3617,6 +3617,205 @@ try {
  console.log("[OK] POST /api/broker-trust/signal (invalid type => 400)");
 
   // ===========================================================================
+  // API security regressions — lock in crown-jewel route fixes
+  // ===========================================================================
+  // Append-only block of HTTP-level regression tests. Each sub-test sets its own
+  // session cookie explicitly and reuses fixtures created earlier in the run, so
+  // it is independent and order-safe. No reliance on the cookie state left by the
+  // broker-trust section above.
+
+  // ---------------------------------------------------------------------------
+  // REGRESSION 1 — broker-trust signal cross-tenant clientId IDOR
+  // ---------------------------------------------------------------------------
+  // A dispatcher submitting a signal with a loadId that belongs to a client they
+  // are NOT assigned to must NOT inherit/associate that foreign tenant's clientId
+  // (the fix gates clientId inheritance behind loadIsVisibleToDispatcher). We make
+  // the consequence observable via the admin signal-read endpoint
+  // (GET /api/admin/broker-trust/:mc/signals exposes each signal's clientId):
+  //   - cross-tenant loadId  => signal recorded but clientId === null (no leak)
+  //   - own-client loadId    => signal recorded WITH clientId inherited (gate ok)
+  //
+  // Fixtures reused:
+  //   - dispCookie  : smoke.dispatcher, assigned ONLY to someClient (ivan-enclosed-01)
+  //   - leakLoad    : lives on oleg-hotshot-02 (NOT assigned to dispCookie)
+  //   - driverALoad : lives on someClient (= ivan-enclosed-01, dispatcher's client)
+  const idorCrossMc = "MC-IDOR-CROSS-77";
+  const idorOwnMc = "MC-IDOR-OWN-77";
+
+  // Dispatcher reports a signal referencing a FOREIGN-tenant load.
+  cookieHeader = dispCookie;
+  const idorCrossSignal = await request("/api/broker-trust/signal", {
+    method: "POST",
+    body: {
+      brokerMc: idorCrossMc,
+      loadId: leakLoad.id, // belongs to oleg-hotshot-02, not visible to dispCookie
+      signalType: "paid_on_time",
+      positive: true,
+    },
+  });
+  if (!idorCrossSignal.id) throw new Error("IDOR: cross-tenant signal should still be recorded (201 + id)");
+
+  // Dispatcher reports a signal referencing an OWN-client load (control).
+  const idorOwnSignal = await request("/api/broker-trust/signal", {
+    method: "POST",
+    body: {
+      brokerMc: idorOwnMc,
+      loadId: driverALoad.id, // belongs to someClient (dispatcher IS assigned)
+      signalType: "paid_on_time",
+      positive: true,
+    },
+  });
+  if (!idorOwnSignal.id) throw new Error("IDOR: own-client signal should be recorded (201 + id)");
+
+  // Read both back as admin and verify clientId association.
+  cookieHeader = adminCookieHeader;
+  const idorCrossRead = await request(`/api/admin/broker-trust/${idorCrossMc}/signals`);
+  const crossRow = idorCrossRead.signals.find((s) => s.id === idorCrossSignal.id);
+  if (!crossRow) throw new Error("IDOR: cross-tenant signal not found via admin read");
+  if (crossRow.clientId !== null) {
+    throw new Error(
+      `IDOR LEAK: cross-tenant signal inherited foreign clientId=${crossRow.clientId}, expected null`,
+    );
+  }
+  console.log("[OK] REG broker-trust signal: cross-tenant loadId does NOT inherit foreign clientId (null)");
+
+  const idorOwnRead = await request(`/api/admin/broker-trust/${idorOwnMc}/signals`);
+  const ownRow = idorOwnRead.signals.find((s) => s.id === idorOwnSignal.id);
+  if (!ownRow) throw new Error("IDOR: own-client signal not found via admin read");
+  if (ownRow.clientId !== someClient.id) {
+    throw new Error(
+      `IDOR: own-client signal should inherit clientId=${someClient.id}, got ${ownRow.clientId}`,
+    );
+  }
+  console.log("[OK] REG broker-trust signal: own-client loadId DOES inherit clientId (gate intact)");
+
+  // ---------------------------------------------------------------------------
+  // REGRESSION 2 — self-dispatch forces brokerMc to "" (anti broker-trust poison)
+  // ---------------------------------------------------------------------------
+  // When a carrier self-creates a load via POST /api/me/loads, any supplied
+  // brokerMc must be stored as "" so a self-dispatch can't fabricate booking
+  // volume / positive signals against a competitor's MC in the GLOBAL broker-trust
+  // table. We build a dedicated owner-operator carrier + linked driver here so the
+  // test is fully self-contained and order-safe (a fresh carrier has no billing
+  // block, so requireActiveBilling passes).
+  cookieHeader = adminCookieHeader;
+  const ooCarrier = await request("/api/clients", {
+    method: "POST",
+    body: {
+      name: "Reg OwnerOp Carrier",
+      mc: "MC-REGOO-1",
+      equipment: "open_car_hauler",
+      planTier: "oo_basic",
+      persona: "owner_operator",
+      targetPpm: 2.4,
+      minimumPpm: 2.0,
+      mpg: 9,
+      fuelPrice: 3.6,
+      fixedCostPerMile: 0.4,
+      preferredLanes: [],
+      avoidStates: [],
+      currentLocation: {
+        city: "Houston",
+        state: "TX",
+        lat: 29.7604,
+        lng: -95.3698,
+        source: "manual_checkin",
+        updatedAt: new Date().toISOString(),
+        status: "empty",
+        availableAt: new Date().toISOString(),
+      },
+    },
+  });
+  if (!ooCarrier.id) throw new Error("REG self-dispatch: owner-op carrier not created");
+
+  const ooInvite = await request("/api/admin/invites", {
+    method: "POST",
+    body: { role: "driver", ttlHours: 24, linkedClientId: ooCarrier.id },
+  });
+  if (ooInvite.role !== "driver") throw new Error("REG self-dispatch: driver invite failed");
+
+  // Sign up the owner-operator driver in a fresh cookie jar; confirm TOTP to
+  // create a live session (mirrors the driverA/driverB signup pattern above).
+  cookieHeader = "";
+  const ooDriver = await request("/api/auth/signup", {
+    method: "POST",
+    body: {
+      inviteCode: ooInvite.code,
+      email: "reg.ownerop.driver@example.com",
+      fullName: "Reg OwnerOp Driver",
+      password: "RegOwnerOp1!",
+    },
+  });
+  if (ooDriver.role !== "driver" || !ooDriver.pendingConfirmationToken) {
+    throw new Error(`REG self-dispatch: owner-op driver signup wrong shape: ${JSON.stringify(ooDriver)}`);
+  }
+  await confirmTotpSignup(ooDriver.pendingConfirmationToken, ooDriver.totpSecret);
+  // Session from confirm-signup is now live (cookieHeader set).
+
+  // Self-dispatch a load WITH a (malicious) brokerMc — it must be forced to "".
+  const selfLoad = await request("/api/me/loads", {
+    method: "POST",
+    body: {
+      originCity: "Houston",
+      originState: "TX",
+      destinationCity: "Dallas",
+      destinationState: "TX",
+      rate: 1200,
+      pickupAt: new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString(),
+      deliveryAt: new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString(),
+      equipment: "open_car_hauler",
+      brokerName: "Should Stay",
+      brokerMc: "MC-VICTIM-999", // poison attempt — must be wiped
+    },
+  });
+  if (!selfLoad.id) throw new Error("REG self-dispatch: load not created");
+  if (selfLoad.brokerMc !== "") {
+    throw new Error(`REG self-dispatch: brokerMc must be forced empty, got "${selfLoad.brokerMc}"`);
+  }
+  // Read it back to confirm persistence (driver-scoped detail endpoint).
+  const selfLoadRead = await request(`/api/me/loads/${selfLoad.id}`);
+  if (selfLoadRead.brokerMc !== "") {
+    throw new Error(`REG self-dispatch: persisted brokerMc must be "", got "${selfLoadRead.brokerMc}"`);
+  }
+  console.log("[OK] REG self-dispatch POST /api/me/loads forces brokerMc to \"\" (anti broker-trust poison)");
+
+  // ---------------------------------------------------------------------------
+  // REGRESSION 4 — drive/folder-plan dispatcher scoping
+  // ---------------------------------------------------------------------------
+  // GET /api/drive/folder-plan with NO clientId, as a dispatcher, must return
+  // ONLY the dispatcher's assigned-client folders — not the full carrier roster.
+  //   - dispCookie is assigned ONLY to someClient (ivan-enclosed-01).
+  //   - billingClient2 (oleg-hotshot-02) is NOT assigned → must be absent.
+  // Admin sees the full roster (control), proving the scoping is dispatcher-only.
+  cookieHeader = dispCookie;
+  const dispPlan = await request("/api/drive/folder-plan");
+  if (!Array.isArray(dispPlan.folders)) throw new Error("REG folder-plan: folders not array");
+  const dispPlanIds = dispPlan.folders.map((f) => f.clientId);
+  if (!dispPlanIds.includes(someClient.id)) {
+    throw new Error("REG folder-plan: dispatcher should see their assigned client folder");
+  }
+  if (dispPlanIds.includes(billingClient2.id)) {
+    throw new Error(
+      `REG folder-plan LEAK: dispatcher saw unassigned carrier ${billingClient2.id} in full roster`,
+    );
+  }
+  if (dispPlanIds.includes(ooCarrier.id)) {
+    throw new Error("REG folder-plan LEAK: dispatcher saw an unassigned owner-op carrier");
+  }
+  console.log("[OK] REG GET /api/drive/folder-plan dispatcher sees ONLY assigned-client folders");
+
+  // Control: admin (no clientId) sees the full roster including the unassigned
+  // carriers, confirming the scoping above is dispatcher-specific, not a global
+  // filter that would have hidden them from everyone.
+  cookieHeader = adminCookieHeader;
+  const adminPlan = await request("/api/drive/folder-plan");
+  const adminPlanIds = adminPlan.folders.map((f) => f.clientId);
+  if (!adminPlanIds.includes(billingClient2.id) || !adminPlanIds.includes(someClient.id)) {
+    throw new Error("REG folder-plan: admin should see the full carrier roster");
+  }
+  console.log("[OK] REG GET /api/drive/folder-plan admin sees full carrier roster (control)");
+
+  // ===========================================================================
   // Killer #6 — Multi-Driver Cockpit (GET /api/dispatch/cockpit)
   // ===========================================================================
   // dispCookie = smoke.dispatcher, assigned to ivan-enclosed-01 (with loads).
