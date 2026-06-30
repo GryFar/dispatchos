@@ -428,6 +428,151 @@ function fakeStripe(statuses: Record<string, string> = {}) {
   assert("void no-stripe: voided=false (nothing to cancel)", res.voided === false);
 }
 
+// ---------------------------------------------------------------------------
+// 12) REVERSAL reconciliation: a fully-reversed Stripe charge flips a locally
+//     'paid' DispatchOS invoice off 'paid' (paid -> void) so we stop counting
+//     revenue Stripe no longer holds.
+//
+//   12a) invoice.voided on a paid row -> void.
+//   12b) invoice.marked_uncollectible on a paid row -> void.
+//   12c) charge.refunded FULL (amount_refunded >= amount) -> void.
+//   12d) charge.refunded PARTIAL -> NO status change, partial-reversal audit.
+//   12e) credit_note.created fully crediting the fee -> void.
+//   12f) credit_note.created PARTIAL -> NO status change.
+//   12g) re-delivery of a reversal is a no-op (already void).
+//   12h) AI-credit-pack invoice reversed -> AUDIT only, NO clawback.
+// ---------------------------------------------------------------------------
+
+// Helper: a 'paid' success-fee row carrying a Stripe invoice id.
+function mkPaidInvoice(stripeId: string, over: Record<string, unknown> = {}) {
+  const client = mkClient({ stripeCustomerId: `cus_${rnd()}` });
+  const inv = storage.createInvoice({
+    clientId: client.id,
+    weekStart: "2026-08-05",
+    weekEnd: "2026-08-11",
+    flatFee: 150,
+    percentFee: 9,
+    grossBooked: 300,
+    status: "sent",
+    stripeInvoiceId: stripeId,
+    ...over,
+  } as any);
+  // sent -> paid (legal transition) so the row reads as collected revenue.
+  storage.updateInvoice(inv.id, { status: "paid" });
+  return { client, inv: storage.getInvoice(inv.id)! };
+}
+
+// 12a) invoice.voided -> void
+{
+  __setStripeClientForTest(null);
+  const { inv } = mkPaidInvoice("in_rev_voided");
+  assert("reverse setup (voided): starts 'paid'", inv.status === "paid", inv.status);
+  const res = await handleWebhookEvent(
+    ev("invoice.voided", { id: "in_rev_voided", total: 15900, metadata: { dispatchosInvoiceId: inv.id } } as unknown as Stripe.Invoice),
+  );
+  const after = storage.getInvoice(inv.id)!;
+  assert("invoice.voided: handled", res.handled === true);
+  assert("invoice.voided: clientId resolved", res.clientId === inv.clientId);
+  assert("invoice.voided: paid -> void", after.status === "void", after.status);
+}
+
+// 12b) invoice.marked_uncollectible -> void (resolve via stripe id, no metadata)
+{
+  __setStripeClientForTest(null);
+  const { inv } = mkPaidInvoice("in_rev_uncoll");
+  const res = await handleWebhookEvent(
+    ev("invoice.marked_uncollectible", { id: "in_rev_uncoll" } as unknown as Stripe.Invoice),
+  );
+  const after = storage.getInvoice(inv.id)!;
+  assert("marked_uncollectible: handled", res.handled === true);
+  assert("marked_uncollectible: resolved by stripe id (no metadata)", res.clientId === inv.clientId);
+  assert("marked_uncollectible: paid -> void", after.status === "void", after.status);
+}
+
+// 12c) charge.refunded FULL -> void (charge.invoice links to the row)
+{
+  __setStripeClientForTest(null);
+  const { inv } = mkPaidInvoice("in_rev_chgfull");
+  const res = await handleWebhookEvent(
+    ev("charge.refunded", { id: "ch_1", amount: 15900, amount_refunded: 15900, refunded: true, invoice: "in_rev_chgfull" } as unknown as Stripe.Charge),
+  );
+  const after = storage.getInvoice(inv.id)!;
+  assert("charge.refunded full: handled", res.handled === true);
+  assert("charge.refunded full: paid -> void", after.status === "void", after.status);
+}
+
+// 12d) charge.refunded PARTIAL -> NO status change (still paid), partial audit
+{
+  __setStripeClientForTest(null);
+  const { inv } = mkPaidInvoice("in_rev_chgpart");
+  const res = await handleWebhookEvent(
+    ev("charge.refunded", { id: "ch_2", amount: 15900, amount_refunded: 5000, refunded: false, invoice: "in_rev_chgpart" } as unknown as Stripe.Charge),
+  );
+  const after = storage.getInvoice(inv.id)!;
+  assert("charge.refunded partial: handled", res.handled === true);
+  assert("charge.refunded partial: STAYS paid (no zeroing a mostly-collected fee)", after.status === "paid", after.status);
+  assert("charge.refunded partial: changes.partial flagged", (res.changes as { partial?: boolean })?.partial === true);
+}
+
+// 12e) credit_note.created fully crediting the fee -> void
+{
+  __setStripeClientForTest(null);
+  // flat 150 + pct 9 = $159 collected = 15900 cents; full credit note total >= that.
+  const { inv } = mkPaidInvoice("in_rev_cnfull");
+  const res = await handleWebhookEvent(
+    ev("credit_note.created", { id: "cn_1", total: 15900, invoice: "in_rev_cnfull" } as unknown as Stripe.CreditNote),
+  );
+  const after = storage.getInvoice(inv.id)!;
+  assert("credit_note full: handled", res.handled === true);
+  assert("credit_note full: paid -> void", after.status === "void", after.status);
+}
+
+// 12f) credit_note.created PARTIAL -> NO status change
+{
+  __setStripeClientForTest(null);
+  const { inv } = mkPaidInvoice("in_rev_cnpart");
+  const res = await handleWebhookEvent(
+    ev("credit_note.created", { id: "cn_2", total: 5000, invoice: "in_rev_cnpart" } as unknown as Stripe.CreditNote),
+  );
+  const after = storage.getInvoice(inv.id)!;
+  assert("credit_note partial: handled", res.handled === true);
+  assert("credit_note partial: STAYS paid", after.status === "paid", after.status);
+}
+
+// 12g) re-delivery of a full reversal is a no-op (already void)
+{
+  __setStripeClientForTest(null);
+  const { inv } = mkPaidInvoice("in_rev_idem");
+  await handleWebhookEvent(
+    ev("invoice.voided", { id: "in_rev_idem", metadata: { dispatchosInvoiceId: inv.id } } as unknown as Stripe.Invoice),
+  );
+  const once = storage.getInvoice(inv.id)!;
+  assert("reversal idempotency: first delivery -> void", once.status === "void", once.status);
+  const res2 = await handleWebhookEvent(
+    ev("invoice.voided", { id: "in_rev_idem", metadata: { dispatchosInvoiceId: inv.id } } as unknown as Stripe.Invoice),
+  );
+  const twice = storage.getInvoice(inv.id)!;
+  assert("reversal idempotency: re-delivery handled (no throw)", res2.handled === true);
+  assert("reversal idempotency: stays void", twice.status === "void");
+  assert("reversal idempotency: re-delivery reversed=false (no-op)", (res2.changes as { reversed?: boolean })?.reversed === false);
+}
+
+// 12h) AI-credit-pack invoice reversed -> AUDIT only, NO clawback / status flip
+{
+  __setStripeClientForTest(null);
+  const U = "u-rev-aicred";
+  // Grant a pack so there's a balance that must NOT be clawed back.
+  storage.grantAiCreditsForInvoice("in_ai_grant", U, 100);
+  const before = storage.getAiCredits(U);
+  assert("ai reversal setup: has credits", before === 100, String(before));
+  const res = await handleWebhookEvent(
+    ev("invoice.voided", { id: "in_ai_rev", total: 500, metadata: { aiCreditsUserId: U, aiCreditsPack: "100" } } as unknown as Stripe.Invoice),
+  );
+  assert("ai reversal: handled (audited)", res.handled === true);
+  assert("ai reversal: NO auto-clawback (balance unchanged)", storage.getAiCredits(U) === before, String(storage.getAiCredits(U)));
+  assert("ai reversal: reversed=false", (res.changes as { reversed?: boolean })?.reversed === false);
+}
+
 __setStripeClientForTest(null);
 
 console.log(`\n${pass} passed, ${fail} failed`);

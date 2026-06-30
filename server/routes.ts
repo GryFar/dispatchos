@@ -656,9 +656,28 @@ export function scoreLoadForClient(
   };
 }
 
+// Perf-scale: the dispatch board is the hot path — GET /api/dispatch-board is
+// polled by the admin UI roughly every 30s. listLoads() scans + JSON-parses the
+// ENTIRE ever-growing loads table on every render, and every row is then scored.
+// Real freight postings are days old, never months, so bounding the board to a
+// generous recency window is behavior-preserving for all real operation while
+// capping the per-render scan. Default 90 days; override with a positive
+// DISPATCHOS_BOARD_MAX_LOAD_AGE_DAYS env var. A non-positive / unparseable env
+// value falls back to the 90-day default here; storage.listRecentLoads also
+// independently degrades to the full unbounded scan if ever handed a
+// non-positive window, so the board can never silently return zero loads.
+// NOTE: this bounds ONLY the board. Billing aggregation (buildWeeklyReport) and
+// the backup snapshot (getBackupSnapshot) deliberately stay on the full
+// listLoads() — they must see every load. The scoring math and which recent
+// loads render are unchanged; only loads older than the cutoff are dropped.
+const BOARD_MAX_LOAD_AGE_DAYS = (() => {
+  const raw = Number.parseFloat(process.env.DISPATCHOS_BOARD_MAX_LOAD_AGE_DAYS ?? "");
+  return Number.isFinite(raw) && raw > 0 ? raw : 90;
+})();
+
 function buildDispatchBoard(clientId?: string): DispatchBoard {
   const clients = storage.listClients();
-  const loads = storage.listLoads();
+  const loads = storage.listRecentLoads(BOARD_MAX_LOAD_AGE_DAYS);
   const selectedClient = clients.find((client) => client.id === clientId) ?? clients[0];
   // One memoized lane-avg resolver for the whole board render so getLaneAvgPpm
   // is queried at most once per distinct lane pair, not once per load.

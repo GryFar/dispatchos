@@ -1504,6 +1504,24 @@ export function registerAdminRoutes(app: Express): void {
       // Invoices with no stripeInvoiceId (never charged) keep the local-only path.
       if (patch.status === "void") {
         const target = storage.getInvoice(String(req.params.id));
+        // storage.updateInvoice now permits paid -> void, but that path exists
+        // ONLY for Stripe reversal reconciliation (the webhook), NOT for a manual
+        // operator void. A paid invoice with NO Stripe charge can't have been
+        // refunded in Stripe, so there's nothing to reconcile — refuse the local
+        // void so an operator can't silently erase recorded revenue. (A paid +
+        // charged invoice is handled below: voidStripeInvoice returns already_paid
+        // and we 409 there.)
+        if (target && target.status === "paid" && !target.stripeInvoiceId) {
+          storage.audit("billing.void_refused_paid", "invoice", target.id, {
+            invoiceId: target.id,
+            clientId: target.clientId,
+            reason: "manual_void_of_paid_uncharged",
+          });
+          return res.status(409).json({
+            message:
+              "Cannot manually void a paid invoice — paid invoices are only reversed by a Stripe refund/credit-note reconciliation.",
+          });
+        }
         if (target && target.status !== "void" && target.stripeInvoiceId) {
           const cancel = await voidStripeInvoice(target.stripeInvoiceId);
           if (!cancel.ok) {

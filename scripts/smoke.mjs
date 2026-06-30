@@ -1654,7 +1654,12 @@ try {
   if (toPaid.status !== "paid" || !toPaid.paidAt) {
     throw new Error("PATCH sent→paid did not stamp paidAt");
   }
-  // paid → void: forbidden (paid is immutable)
+  // paid → void: a MANUAL void of a paid invoice is refused (409). The
+  // transition table now allows paid→void, but ONLY the Stripe refund/credit-
+  // note/void webhook reconciliation may use it; the admin PATCH route guards
+  // against an operator erasing recorded revenue by hand. (This invoice has no
+  // stripeInvoiceId, so the guard returns a clear message rather than the
+  // already_paid Stripe path.)
   let pVStatus = 0;
   let pVBody = null;
   try {
@@ -1668,8 +1673,8 @@ try {
     if (bm) { try { pVBody = JSON.parse(bm[1]); } catch {} }
   }
   if (pVStatus !== 409) throw new Error(`paid→void returned ${pVStatus}, expected 409`);
-  if (!pVBody || pVBody.from !== "paid" || pVBody.to !== "void") {
-    throw new Error(`invalid transition should carry from/to, got ${JSON.stringify(pVBody)}`);
+  if (!pVBody || typeof pVBody.message !== "string" || !/paid invoice/i.test(pVBody.message)) {
+    throw new Error(`manual paid→void should be refused with a guard message, got ${JSON.stringify(pVBody)}`);
   }
   // Notes-only update is allowed even on paid (immutable applies to status)
   const noted = await request(`/api/admin/billing/invoices/${invoiceDraft.id}`, {
