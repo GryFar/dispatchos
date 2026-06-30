@@ -55,7 +55,6 @@ export function LanguageSwitcher({ variant = "ghost", className = "" }: Props) {
       ref={ref}
       className={`relative ${className}`}
       onBlur={handleBlur}
-      aria-label={t("lang.switch")}
     >
       <button
         type="button"
@@ -63,6 +62,7 @@ export function LanguageSwitcher({ variant = "ghost", className = "" }: Props) {
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-label={t("lang.switch")}
         data-testid="lang-switcher-trigger"
       >
         <span>{current?.flag}</span>

@@ -34,7 +34,7 @@ export default function BackupPage() {
   const [confirmFullOpen, setConfirmFullOpen] = useState(false);
   const { toast } = useToast();
 
-  const systemQuery = useQuery<{ version?: string; uptimeSeconds?: number; dbSize?: number }>({
+  const systemQuery = useQuery<{ version?: string; uptimeSeconds?: number }>({
     queryKey: ["/api/system/status"],
     queryFn: () => apiJson("GET", "/api/system/status"),
     staleTime: 60_000,

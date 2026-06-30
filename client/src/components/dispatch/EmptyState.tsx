@@ -33,6 +33,8 @@ export function EmptyState({
 }: EmptyStateProps) {
   return (
     <div
+      role="status"
+      aria-live="polite"
       className={cn(
         "flex flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-border bg-muted/20 px-6 py-14 text-center",
         className,
@@ -60,7 +62,7 @@ export function EmptyState({
         </div>
       )}
       <div className="space-y-1.5">
-        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
         {description && (
           <p className="mx-auto max-w-md text-xs leading-relaxed text-muted-foreground">{description}</p>
         )}

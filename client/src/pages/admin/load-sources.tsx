@@ -77,6 +77,11 @@ function statusVariant(s: LoadSourceStatus): "active" | "info" | "blocked" | "pe
       return "blocked";
     case "needs_credentials":
       return "pending";
+    default:
+      // The status union is hand-mirrored from the backend (see comment above)
+      // and can drift; render an unknown status with a neutral badge rather
+      // than no variant at all.
+      return "info";
   }
 }
 
@@ -147,10 +152,12 @@ export default function LoadSourcesPage() {
       header: t("admin.loadSources.colStatus"),
       cell: (s) => (
         <div className="flex items-center gap-1.5">
-          <StatusBadge variant={statusVariant(s.status)}>{t(STATUS_LABEL_KEY[s.status])}</StatusBadge>
+          <StatusBadge variant={statusVariant(s.status)}>
+            {STATUS_LABEL_KEY[s.status] ? t(STATUS_LABEL_KEY[s.status]) : s.status}
+          </StatusBadge>
           {s.status === "error" && s.lastErrorMsg && (
-            <span title={s.lastErrorMsg}>
-              <AlertCircle className="h-3.5 w-3.5 text-destructive" />
+            <span role="img" aria-label={s.lastErrorMsg} title={s.lastErrorMsg}>
+              <AlertCircle className="h-3.5 w-3.5 text-destructive" aria-hidden="true" />
             </span>
           )}
         </div>

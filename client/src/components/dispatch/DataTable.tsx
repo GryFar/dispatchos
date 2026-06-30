@@ -76,9 +76,11 @@ export function DataTable<T>({
                 {columns.map((c) => (
                   <th
                     key={c.key}
+                    scope="col"
                     className={cn(
                       headerPad,
-                      "border-b border-border text-left font-medium uppercase tracking-wider text-muted-foreground",
+                      "border-b border-border font-medium uppercase tracking-wider text-muted-foreground",
+                      (!c.align || c.align === "left") && "text-left",
                       c.align === "right" && "text-right",
                       c.align === "center" && "text-center",
                       c.hideOnMobile && "hidden sm:table-cell",
@@ -127,9 +129,11 @@ export function DataTable<T>({
               {columns.map((c) => (
                 <th
                   key={c.key}
+                  scope="col"
                   className={cn(
                     headerPad,
-                    "border-b border-border text-left font-medium uppercase tracking-wider text-muted-foreground",
+                    "border-b border-border font-medium uppercase tracking-wider text-muted-foreground",
+                    (!c.align || c.align === "left") && "text-left",
                     c.align === "right" && "text-right",
                     c.align === "center" && "text-center",
                     c.hideOnMobile && "hidden sm:table-cell",

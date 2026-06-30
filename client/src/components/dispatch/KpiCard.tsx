@@ -49,7 +49,7 @@ export function KpiCard({
   const displayValue = useCountUp(numericValue, formatNumeric) ?? value;
 
   return (
-    <Card className={cn("card-hover shadow-card", className)}>
+    <Card className={cn("group card-hover shadow-card", className)}>
       <CardContent className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">

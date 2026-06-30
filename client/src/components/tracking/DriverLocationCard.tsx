@@ -119,6 +119,20 @@ function freshnessTier(
   };
 }
 
+// Traccar Client wants the bare server endpoint (no query string); the
+// device identifier is entered separately. Strip the whole query rather than
+// assuming the token rides on a literal "?id=" param. Falls back to the
+// original literal-prefix trim if the value isn't a parseable absolute URL.
+function serverUrlFromOsmand(osmandUrl: string): string {
+  try {
+    const u = new URL(osmandUrl);
+    u.search = "";
+    return u.toString();
+  } catch {
+    return osmandUrl.replace(/\?.*/, "");
+  }
+}
+
 export function DriverLocationCard({ userId, userName }: { userId: string; userName: string }) {
   const { t } = useT();
   const [setupOpen, setSetupOpen] = useState(false);
@@ -256,7 +270,7 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
               </a>
             </div>
           ) : (
-            <Alert variant="warning" t={t} />
+            <Alert t={t} />
           )}
 
           {mapsKey && current ? (
@@ -314,7 +328,7 @@ export function DriverLocationCard({ userId, userName }: { userId: string; userN
   );
 }
 
-function Alert({ variant, t }: { variant: "warning"; t: (key: string, vars?: Record<string, string | number>) => string }) {
+function Alert({ t }: { t: (key: string, vars?: Record<string, string | number>) => string }) {
   return (
     <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/5 p-3 text-sm">
       <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
@@ -379,7 +393,7 @@ function TrackingSetupDialog({
               </li>
               <li>{t("tracking.DriverLocationCard.openSettingsAndFill")}</li>
             </ol>
-            <CopyRow label="Server URL" value={data.osmandUrl.replace(/\?id=.*/, "")} onCopy={copy} copied={copied === "Server URL"} />
+            <CopyRow label="Server URL" value={serverUrlFromOsmand(data.osmandUrl)} onCopy={copy} copied={copied === "Server URL"} />
             <CopyRow label="Device identifier" value={data.token} onCopy={copy} copied={copied === "Device identifier"} />
             <p className="text-xs text-muted-foreground">
               {t("tracking.DriverLocationCard.androidHint")}
