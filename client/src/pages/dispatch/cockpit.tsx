@@ -12,13 +12,14 @@ import {
   Package,
 } from "lucide-react";
 import type { Load } from "@shared/schema";
-import { apiJson } from "@/lib/queryClient";
+import { apiJson, ApiError } from "@/lib/queryClient";
 import { formatMoney, formatMiles, formatMc } from "@/lib/format";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
 import { EmptyState } from "@/components/dispatch/EmptyState";
 import { useT } from "@/lib/i18n";
+import { useToast } from "@/hooks/use-toast";
 
 // ---------------------------------------------------------------------------
 // Killer #6 — Multi-Driver Cockpit. Single-screen terminal: every assigned
@@ -271,11 +272,15 @@ function CarrierCard({ carrier }: { carrier: CockpitCarrier }) {
 }
 function CarrierAiPanel({ clientId }: { clientId: string }) {
   const { t } = useT();
+  const { toast } = useToast();
   const [state, setState] = useState<{
     loading: boolean;
     rec?: AiRecommendation;
     failed?: boolean;
+    quotaExhausted?: boolean;
+    quotaMsg?: string;
   }>({ loading: false });
+  const [buying, setBuying] = useState(false);
 
   // Guard against setState after the panel unmounts (e.g. navigation away or
   // the carrier leaving the list) while the slow LLM call is still in flight.
@@ -294,8 +299,45 @@ function CarrierAiPanel({ clientId }: { clientId: string }) {
         clientId,
       });
       if (mountedRef.current) setState({ loading: false, rec });
+    } catch (err) {
+      // 429 = the shared daily AI quota is spent for THIS carrier's bucket → offer
+      // a per-carrier top-up (credits are scoped to the carrier they were bought
+      // for, so we buy for this clientId). Anything else = generic AI-unavailable.
+      // Two different 429s come back: "ai_quota_exceeded" (daily quota + credits
+      // spent — a per-carrier pack fixes it) and "ai_rate_limit" (hourly burst
+      // guard — buying won't help). Only offer the top-up for the former.
+      const code =
+        err instanceof ApiError && err.body && typeof err.body === "object" && "code" in err.body
+          ? (err.body as { code?: unknown }).code
+          : undefined;
+      const quotaExhausted =
+        err instanceof ApiError && err.status === 429 && code === "ai_quota_exceeded";
+      if (mountedRef.current) {
+        setState({
+          loading: false,
+          failed: !quotaExhausted,
+          quotaExhausted,
+          quotaMsg: quotaExhausted && err instanceof ApiError ? err.message : undefined,
+        });
+      }
+    }
+  }
+
+  async function buyCredits() {
+    setBuying(true);
+    try {
+      const r = await apiJson<{ ok: boolean; pack: number }>(
+        "POST",
+        "/api/dispatch/ai-credits/purchase",
+        { clientId },
+      );
+      toast({ title: t("aiQuota.bought"), description: t("aiQuota.boughtDesc", { pack: r.pack }) });
+      // Credits arrive asynchronously via the webhook; clear the exhausted note.
+      if (mountedRef.current) setState((s) => ({ ...s, quotaExhausted: false, quotaMsg: undefined }));
     } catch {
-      if (mountedRef.current) setState({ loading: false, failed: true });
+      toast({ title: t("aiQuota.buyError"), variant: "destructive" });
+    } finally {
+      if (mountedRef.current) setBuying(false);
     }
   }
 
@@ -331,6 +373,23 @@ function CarrierAiPanel({ clientId }: { clientId: string }) {
           <p className="text-[10px] text-muted-foreground">
             Confidence: {Math.round(state.rec.confidence * 100)}%
           </p>
+        </div>
+      )}
+      {state.quotaExhausted && (
+        <div className="mt-2 space-y-1.5 rounded-md bg-rose-500/10 p-2 text-[11px]">
+          <p className="leading-snug text-rose-600 dark:text-rose-400">
+            {state.quotaMsg ?? t("dispatch.cockpit.ai.error")}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 w-full text-[11px]"
+            onClick={buyCredits}
+            disabled={buying}
+          >
+            {buying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            {t("aiQuota.buy")}
+          </Button>
         </div>
       )}
       {state.failed && (
