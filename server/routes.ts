@@ -2182,7 +2182,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/ai-quota", requireRole("driver", "dispatcher"), (req, res) => {
     const u = getCurrentUser(req);
     if (!u) return res.status(401).json({ message: "Authentication required" });
-    res.json(storage.getAiQuotaStatus(u.id));
+    // Optional ?clientId= scopes the credit view to ONE carrier (the driver's own
+    // carrier, or a dispatcher's assigned carrier in the cockpit) so the badge
+    // matches the per-carrier spend gate. It only narrows the CALLER'S OWN credit
+    // buckets — never a cross-tenant read — so no assignment check is needed.
+    // Omitted => summed total across all buckets (unchanged legacy behavior).
+    const rawClientId = req.query.clientId;
+    const clientId =
+      typeof rawClientId === "string" && rawClientId.trim() ? rawClientId.trim() : undefined;
+    res.json(storage.getAiQuotaStatus(u.id, undefined, clientId));
   });
 
   app.get("/api/dispatch-board", requireRole("admin"), (req, res) => {
