@@ -68,7 +68,9 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@1.5
 
       - name: Deploy to ${{ steps.app.outputs.name }}
-        run: flyctl deploy --remote-only --app "${{ steps.app.outputs.name }}"
+        # --build-arg DISPATCHOS_RELEASE tags Sentry events with the deployed
+        # commit (server/instrument.ts reads it via the Dockerfile ARG).
+        run: flyctl deploy --remote-only --app "${{ steps.app.outputs.name }}" --build-arg DISPATCHOS_RELEASE="${{ github.sha }}"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 

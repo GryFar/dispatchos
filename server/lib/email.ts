@@ -182,6 +182,69 @@ export async function sendInviteEmail(input: InviteEmailInput): Promise<SendEmai
 }
 
 // ---------------------------------------------------------------------------
+// Password reset email template
+// ---------------------------------------------------------------------------
+
+export interface PasswordResetEmailInput {
+  to: string;
+  /** Full reset link. The token rides the URL hash FRAGMENT (#/reset-password?token=...)
+   *  so it never reaches server access logs or Referer headers. */
+  resetUrl: string;
+}
+
+export async function sendPasswordResetEmail(input: PasswordResetEmailInput): Promise<SendEmailResult> {
+  const subject = "Reset your DispatchOS password";
+  const resetUrlHtml = escapeHtml(input.resetUrl);
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${subject}</title></head>
+<body style="margin:0;padding:0;background:#f7f6f2;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#28251D;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;border-radius:12px;border:1px solid #D4D1CA;overflow:hidden;">
+        <tr><td style="padding:32px 32px 8px;">
+          <div style="font-size:13px;letter-spacing:1px;color:#7A7974;text-transform:uppercase;">DispatchOS</div>
+          <h1 style="margin:16px 0 0;font-size:24px;line-height:1.3;color:#28251D;">Reset your password</h1>
+        </td></tr>
+        <tr><td style="padding:24px 32px 8px;font-size:15px;line-height:1.6;color:#28251D;">
+          <p style="margin:0 0 24px;">We received a request to reset the password for your DispatchOS account. Click the button below to choose a new one.</p>
+          <p style="margin:0 0 32px;">
+            <a href="${resetUrlHtml}" style="display:inline-block;background:#01696F;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:15px;">Reset password</a>
+          </p>
+          <p style="margin:0 0 8px;font-size:13px;color:#7A7974;">This link expires in 30 minutes and can be used once.</p>
+          <p style="margin:0 0 24px;font-size:13px;color:#7A7974;">If the button doesn't work, copy and paste this URL into your browser:</p>
+          <p style="margin:0;font-size:13px;color:#7A7974;word-break:break-all;"><a href="${resetUrlHtml}" style="color:#01696F;">${resetUrlHtml}</a></p>
+        </td></tr>
+        <tr><td style="padding:24px 32px;border-top:1px solid #D4D1CA;font-size:12px;color:#7A7974;">
+          If you didn't request a password reset, you can safely ignore this email — your password stays unchanged.
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+
+  const text = [
+    "Reset your DispatchOS password",
+    "",
+    "We received a request to reset the password for your DispatchOS account.",
+    "Open this link to choose a new one:",
+    "",
+    input.resetUrl,
+    "",
+    "This link expires in 30 minutes and can be used once.",
+    "If you didn't request a password reset, ignore this email — your password stays unchanged.",
+  ].join("\n");
+
+  return sendEmail({
+    to: input.to,
+    subject,
+    html,
+    text,
+    tags: [{ name: "type", value: "password-reset" }],
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Translations
 // ---------------------------------------------------------------------------
 

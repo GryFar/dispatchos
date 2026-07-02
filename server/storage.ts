@@ -1367,7 +1367,27 @@ sqlite.exec(`
       AND signal_type IN ('load_booked','load_completed','load_cancelled_by_broker','load_refused_by_carrier');
 `);
 
-
+// ---------------------------------------------------------------------------
+// Self-serve password reset tokens.
+// ---------------------------------------------------------------------------
+// token_hash is sha256(rawToken) — the raw token only ever exists in the reset
+// email link (hash fragment, never in server logs) and is unrecoverable from
+// this table. used_at doubles as the invalidation marker: requesting a new
+// token marks all prior outstanding rows used. Expired rows are purged
+// opportunistically on create (no cron).
+// ---------------------------------------------------------------------------
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS password_reset_tokens_user_idx
+    ON password_reset_tokens(user_id);
+`);
 
 function now() {
   return new Date().toISOString();
@@ -1605,6 +1625,16 @@ export interface UserInternal {
   emailVerifiedAt?: string;
   // Per-user subscription end (ISO). Set at signup = now + invite.subscriptionDays.
   subscriptionEndsAt?: string;
+}
+
+export interface PasswordResetTokenRow {
+  id: string;
+  /** sha256(rawToken) hex — the raw token is never persisted. */
+  tokenHash: string;
+  userId: string;
+  expiresAt: string;
+  usedAt: string | null;
+  createdAt: string;
 }
 
 // Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
@@ -2562,6 +2592,84 @@ export const storage = {
       )
       .get(now(), id) as { session_epoch: number } | undefined;
     return r?.session_epoch ?? 0;
+  },
+
+  // -------------------------------------------------------------------------
+  // Self-serve password reset tokens (server/routes/password-reset.ts)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Persist a reset token. tokenHash MUST be sha256(rawToken) — never the raw
+   * token itself. Expired rows are purged here opportunistically so the table
+   * can't grow unbounded without a cron.
+   */
+  createPasswordResetToken(input: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: string;
+  }): PasswordResetTokenRow {
+    sqlite
+      .prepare("DELETE FROM password_reset_tokens WHERE expires_at < ?")
+      .run(now());
+    const row: PasswordResetTokenRow = {
+      id: makeId("pwreset"),
+      tokenHash: input.tokenHash,
+      userId: input.userId,
+      expiresAt: input.expiresAt,
+      usedAt: null,
+      createdAt: now(),
+    };
+    sqlite
+      .prepare(
+        `INSERT INTO password_reset_tokens (id, token_hash, user_id, expires_at, used_at, created_at)
+         VALUES (?, ?, ?, ?, NULL, ?)`,
+      )
+      .run(row.id, row.tokenHash, row.userId, row.expiresAt, row.createdAt);
+    return row;
+  },
+
+  findPasswordResetTokenByHash(tokenHash: string): PasswordResetTokenRow | undefined {
+    const r = sqlite
+      .prepare(
+        `SELECT id, token_hash, user_id, expires_at, used_at, created_at
+         FROM password_reset_tokens WHERE token_hash = ?`,
+      )
+      .get(tokenHash) as
+      | { id: string; token_hash: string; user_id: string; expires_at: string; used_at: string | null; created_at: string }
+      | undefined;
+    if (!r) return undefined;
+    return {
+      id: r.id,
+      tokenHash: r.token_hash,
+      userId: r.user_id,
+      expiresAt: r.expires_at,
+      usedAt: r.used_at,
+      createdAt: r.created_at,
+    };
+  },
+
+  /**
+   * Single-use guard: the UPDATE is keyed on used_at IS NULL, so only the
+   * FIRST consume lands even under a concurrent race (same pattern as
+   * confirmTotpSetup). Returns false when the token was already used.
+   */
+  markPasswordResetTokenUsed(id: string): boolean {
+    return (
+      sqlite
+        .prepare(
+          "UPDATE password_reset_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL",
+        )
+        .run(now(), id).changes > 0
+    );
+  },
+
+  /** Requesting a new token invalidates every prior outstanding one. */
+  invalidateUserPasswordResetTokens(userId: string): void {
+    sqlite
+      .prepare(
+        "UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL",
+      )
+      .run(now(), userId);
   },
 
   /** fix/totp-onboarding-verify — stamp totp_confirmed_at for a user who

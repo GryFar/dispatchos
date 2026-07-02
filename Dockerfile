@@ -51,6 +51,11 @@ RUN mkdir -p /data /data/uploads /data/drive && chown -R app:app /data /app
 
 USER app
 
+# Git SHA passed by deploy.yml so Sentry events carry a release tag
+# (server/instrument.ts reads DISPATCHOS_RELEASE). Empty on local builds.
+ARG DISPATCHOS_RELEASE=""
+ENV DISPATCHOS_RELEASE=$DISPATCHOS_RELEASE
+
 ENV NODE_ENV=production \
     PORT=8080 \
     DISPATCHOS_HOST=0.0.0.0 \
