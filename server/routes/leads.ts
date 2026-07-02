@@ -14,7 +14,11 @@
 import type { Express, Request, Response } from "express";
 import { storage } from "../storage";
 import { requireRole, getCurrentUser } from "../auth";
-import { sendInviteEmail } from "../lib/email";
+import { sendInviteEmail, sendEmail, escapeHtml } from "../lib/email";
+import { resolveOwnerEmail } from "../lib/owner-email";
+import { fetchWithTimeout } from "../lib/fetch-timeout";
+import { getIntegrationValue } from "../lib/integration-config";
+import type { SignupLead } from "@shared/schema";
 import {
   subscribePublicSchema,
   approveLeadSchema,
@@ -125,6 +129,64 @@ function applyPublicCors(req: Request, res: Response): void {
   }
 }
 
+// New-lead owner alert. Without it fresh signups land silently in the review
+// queue and nobody follows up. Fire-and-forget from the subscribe route: every
+// failure is logged and swallowed — a notify problem must never delay or fail
+// the public 201. Telegram token/chat resolution mirrors trial-expiry/
+// insurance-monitor (integration-config first, env fallback).
+async function notifyNewLead(lead: SignupLead): Promise<void> {
+  const summary =
+    `${lead.email}` +
+    `${lead.name ? ` (${lead.name})` : ""}` +
+    `${lead.country ? ` [${lead.country}]` : ""}` +
+    `${lead.lang ? ` lang=${lead.lang}` : ""}`;
+
+  try {
+    const token =
+      getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN") ??
+      process.env.TELEGRAM_DRIVER_BOT_TOKEN ??
+      null;
+    const chatId =
+      getIntegrationValue("telegram_driver_bot", "TELEGRAM_ALERT_CHAT_ID") ??
+      process.env.TELEGRAM_ALERT_CHAT_ID ??
+      null;
+    if (token && chatId) {
+      const r = await fetchWithTimeout(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: `🆕 New signup lead: ${summary}\nReview it in Admin → Leads.`,
+          disable_web_page_preview: true,
+        }),
+      });
+      if (!r.ok) console.error(`[leads/notify] telegram HTTP ${r.status} for lead ${lead.id}`);
+    }
+  } catch (err) {
+    console.error(`[leads/notify] telegram failed for lead ${lead.id}:`, (err as Error).message);
+  }
+
+  try {
+    const ownerEmail = resolveOwnerEmail();
+    if (ownerEmail) {
+      const result = await sendEmail({
+        to: ownerEmail,
+        subject: `New DispatchOS lead: ${lead.email}`,
+        html:
+          `<p>New signup lead: <strong>${escapeHtml(summary)}</strong></p>` +
+          `<p>Review it in Admin → Leads.</p>`,
+        text: `New signup lead: ${summary}\nReview it in Admin → Leads.`,
+        tags: [{ name: "kind", value: "lead-alert" }],
+      });
+      if (!result.ok) {
+        console.error(`[leads/notify] email failed for lead ${lead.id}: ${result.error}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[leads/notify] email failed for lead ${lead.id}:`, (err as Error).message);
+  }
+}
+
 export function registerLeadRoutes(app: Express): void {
   // -------------------------------------------------------------------------
   // PUBLIC — POST /api/public/subscribe (CORS preflight + POST)
@@ -169,6 +231,10 @@ export function registerLeadRoutes(app: Express): void {
       name: parsed.data.name ?? null,
       note: parsed.data.note ?? null,
     });
+
+    // Fire-and-forget owner alert for brand-new leads only (dupes re-post the
+    // same email and would spam the channel).
+    if (isNew) void notifyNewLead(lead);
 
     return res.status(isNew ? 201 : 200).json({
       ok: true,

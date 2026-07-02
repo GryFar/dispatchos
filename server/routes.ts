@@ -39,6 +39,7 @@ import {
   verifyTotp,
 } from "./auth";
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
+import { registerLegalRoutes } from "./static";
 import { assertSafeOutboundUrl } from "./lib/url-guard";
 import { fetchWithTimeout } from "./lib/fetch-timeout";
 import { sanitizePathSegment, isWithinDir } from "./lib/safe-path";
@@ -346,6 +347,12 @@ const seedLoads: Load[] = [
 ];
 
 function seedIfEmpty() {
+  // Demo fixtures only: never seed a real production DB (fake carriers/loads
+  // pollute admin views and counts). Opt in via DISPATCHOS_SEED_DEMO=1 — the
+  // smoke harness does — or run in non-production mode.
+  if (process.env.NODE_ENV === "production" && process.env.DISPATCHOS_SEED_DEMO !== "1") {
+    return;
+  }
   if (storage.listClients().length === 0) {
     seedClients.forEach((client) => storage.upsertClient(client));
   }
@@ -1183,6 +1190,10 @@ function parseEmailToLoad(input: { from: string; subject: string; body: string }
 
 export async function registerRoutes(app: Express): Promise<Server> {
   seedIfEmpty();
+
+  // /terms + /privacy — server-rendered legal pages, registered here so they
+  // exist in dev (vite middleware) and prod (serveStatic re-registers; inert).
+  registerLegalRoutes(app);
 
   // -------------------------------------------------------------------------
   // Auth endpoints (Phase 1)
@@ -2843,10 +2854,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return res.json({ ok: true, verified: true });
   });
 
-  app.get("/api/health", (_req, res) => {
+  app.get("/api/health", (req, res) => {
+    // Unauthenticated callers (uptime monitors, the Fly healthcheck, anyone on
+    // the internet) get a bare liveness signal — business counts and version
+    // string are an information leak. Platform admins get the full payload.
+    const user = getCurrentUser(req);
+    if (user?.role !== "admin") {
+      return res.json({ ok: true, status: "ok" });
+    }
     // Audit V2-10 — lightweight counts via COUNT(*); avoids loading every row.
     res.json({
       ok: true,
+      status: "ok",
       service: "dispatchos-location-aware",
       version: "1.2.7-vds-production",
       clients: storage.countClients(),

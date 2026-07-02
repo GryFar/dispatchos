@@ -1,20 +1,27 @@
+# DO NOT RE-ADD [[routes]] FOR dispatchos.co / www.dispatchos.co.
+# The apex now serves the real app (Fly.io: landing for anonymous, SPA for
+# authed). Declaring those routes here would make the next `wrangler deploy`
+# re-attach this coming-soon Worker to the apex and take the live product
+# offline. This Worker is retired from the apex; keep it route-less (deploys
+# stay inert) unless it is ever repointed at a NEW, non-apex hostname.
+
 name = "dispatchos-coming-soon"
 main = "dist/worker.js"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Explicitly disable the workers.dev subdomain. Routing is via custom domains
-# below — dashboard already provisioned the certs/DNS, this just tells
-# wrangler to associate the deployed Worker with these hostnames.
+# Explicitly disable the workers.dev subdomain too — no hostname should serve
+# this Worker anymore.
 workers_dev = false
 
-[[routes]]
-pattern = "dispatchos.co"
-custom_domain = true
-
-[[routes]]
-pattern = "www.dispatchos.co"
-custom_domain = true
+# Former apex bindings, removed on purpose (see header):
+# [[routes]]
+# pattern = "dispatchos.co"
+# custom_domain = true
+#
+# [[routes]]
+# pattern = "www.dispatchos.co"
+# custom_domain = true
 
 # KV binding — namespace already exists, ID matches
 [[kv_namespaces]]

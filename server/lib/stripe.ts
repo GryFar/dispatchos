@@ -746,6 +746,41 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
           const sub = await stripe.subscriptions.retrieve(subId);
           updates = { stripeCustomerId, ...deriveSubscriptionUpdates(sub, client) };
           derivedFromSub = true;
+          // Checkout attaches the collected card to the SUBSCRIPTION only; the
+          // weekly one-off success-fee invoice charges the CUSTOMER's
+          // invoice_settings.default_payment_method, which stays empty without
+          // this mirror — the fee invoice would find no chargeable card.
+          // Idempotent (skips when the customer already has a default) and
+          // never fatal: provisioning must not fail because the PM copy did.
+          try {
+            const pmId =
+              typeof sub.default_payment_method === "string"
+                ? sub.default_payment_method
+                : sub.default_payment_method?.id;
+            const custId =
+              stripeCustomerId ??
+              (typeof sub.customer === "string" ? sub.customer : sub.customer?.id);
+            if (pmId && custId) {
+              const cust = await stripe.customers.retrieve(custId);
+              const hasDefault =
+                !("deleted" in cust && cust.deleted) &&
+                Boolean(
+                  (cust as Stripe.Customer).invoice_settings?.default_payment_method,
+                );
+              if (!hasDefault) {
+                await stripe.customers.update(custId, {
+                  invoice_settings: { default_payment_method: pmId },
+                });
+              }
+            }
+          } catch (pmErr) {
+            storage.audit(
+              "billing.default_payment_method_sync_failed",
+              "client",
+              clientId,
+              { subscriptionId: subId, error: (pmErr as Error).message },
+            );
+          }
         } catch (err) {
           console.error(
             `[stripe] checkout.session.completed: retrieve ${subId} failed:`,

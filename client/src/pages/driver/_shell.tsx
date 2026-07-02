@@ -7,6 +7,7 @@ import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeToggle } from "@/components/dispatch/ThemeToggle";
 import { SubscriptionBadge } from "@/components/SubscriptionBadge";
 import { AiQuotaBadge } from "@/components/AiQuotaBadge";
+import { BillingLink, TrialBanner } from "@/components/TrialBanner";
 
 /**
  * DriverShell — общий layout для всех экранов /d/*.
@@ -33,6 +34,8 @@ export function DriverShell({ children }: { children: ReactNode }) {
           // pb-24 reserves room for the fixed bottom nav (64px + safe-area)
           className="mx-auto w-full max-w-[720px] flex-1 px-4 pb-24 pt-4"
         >
+          {/* Carrier owners only (non-owners render nothing, see TrialBanner) */}
+          <TrialBanner />
           {children}
         </main>
         <DriverBottomNav />
@@ -59,6 +62,7 @@ function DriverTopBar() {
           <span className="text-base font-semibold tracking-tight">DispatchOS</span>
         </Link>
         <div className="flex items-center gap-1">
+          <BillingLink />
           <SubscriptionBadge />
           <AiQuotaBadge />
           <LanguageSwitcher variant="inline" />

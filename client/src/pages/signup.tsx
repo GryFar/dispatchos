@@ -249,6 +249,14 @@ export default function SignupPage() {
         </Button>
       </form>
 
+      <div className="mt-4 text-center text-xs text-muted-foreground">
+        {/* /terms + /privacy are server-rendered pages outside the SPA — plain <a>, not wouter Links */}
+        {t("signup.agreePrefix")}{" "}
+        <a href="/terms" className="text-foreground underline-offset-4 hover:underline">{t("signup.agreeTerms")}</a>{" "}
+        {t("signup.agreeAnd")}{" "}
+        <a href="/privacy" className="text-foreground underline-offset-4 hover:underline">{t("signup.agreePrivacy")}</a>.
+      </div>
+
       <div className="mt-6 text-center text-xs text-muted-foreground">
         {t("signup.haveAccount")} <Link href="/login" className="text-foreground underline-offset-4 hover:underline">{t("signup.loginLink")}</Link>
       </div>

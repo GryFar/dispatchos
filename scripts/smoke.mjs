@@ -214,6 +214,10 @@ const proc = spawn(process.execPath, ["dist/index.cjs"], {
     // loads). The smoke run boots in NODE_ENV=production but needs it to
     // exercise the load-source pipeline, so opt in explicitly here.
     DISPATCHOS_ENABLE_MOCK_ADAPTER: "true",
+    // seedIfEmpty is gated out of production (fake carriers/loads must never
+    // land in a real prod DB). The smoke suite depends on those fixtures
+    // (3 seeded clients, dispatch board, billing math), so opt in explicitly.
+    DISPATCHOS_SEED_DEMO: "1",
     DISPATCHOS_RATE_LIMIT_PER_MINUTE: "5000",
     // Boot-gate (Critical #3, PR #71) refuses to start in production mode
     // without a real session secret. Provide an ephemeral 64-char hex secret
@@ -252,8 +256,15 @@ try {
   }
   console.log("[OK] server boots without rate-limiter IPv6 keygen warning");
 
+  // Unauthenticated /api/health must be the slim liveness shape only — the
+  // business counts + version string are stripped for anonymous callers.
   const health = await request("/api/health");
-  if (!health.ok) throw new Error("/api/health did not return ok=true");
+  if (!health.ok || health.status !== "ok") throw new Error("/api/health did not return ok=true");
+  for (const leaked of ["clients", "loads", "documents", "brokers", "version"]) {
+    if (leaked in health) {
+      throw new Error(`unauthenticated /api/health leaks "${leaked}" — must be slim {ok,status}`);
+    }
+  }
 
   const initialAuth = await request("/api/auth/status");
   if (initialAuth.isConfigured) throw new Error("Smoke DB auth should start unconfigured");
@@ -277,6 +288,16 @@ try {
   });
   const authed = await request("/api/auth/status");
   if (!authed.authenticated) throw new Error("Auth login failed");
+
+  // Authed admin gets the full /api/health payload (counts + version) — and
+  // the seeded fixtures (DISPATCHOS_SEED_DEMO=1) must be visible in it.
+  const adminHealth = await request("/api/health");
+  if (!adminHealth.ok || typeof adminHealth.version !== "string") {
+    throw new Error("authed admin /api/health missing full payload (version)");
+  }
+  if (!(adminHealth.clients >= 3)) {
+    throw new Error(`authed admin /api/health expected >=3 seeded clients, got ${adminHealth.clients}`);
+  }
 
   const clients = await request("/api/clients");
   if (!Array.isArray(clients) || clients.length < 3) {

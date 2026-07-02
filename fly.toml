@@ -30,9 +30,11 @@ primary_region = "iad"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"      # save credits when idle
+  auto_stop_machines = "stop"      # extra machines may still scale down
   auto_start_machines = true       # auto-wake on first request
-  min_machines_running = 0
+  # Keep 1 machine always on: scale-to-zero was a demo-era setting — cold
+  # starts drop inbound webhooks/cron calls and stall real customers.
+  min_machines_running = 1
   processes = ["app"]
 
   [http_service.concurrency]

@@ -133,6 +133,10 @@ export function computeInvoiceForWeek(
   clientId: string,
   weekStart: string,
   weekEnd: string,
+  // The $150 flat fee is the legacy managed-dispatch model (admin generates by
+  // hand). Self-serve subscription clients are sold "plan + 3% success fee",
+  // so the automated weekly cron overrides this to 0 — see billing-run.ts.
+  opts?: { flatFeeCents?: number },
 ): InvoiceCalculation {
   // listBookedLoadsForClientWeek filters by booked_at window only (no status
   // predicate), and booked_at is never cleared on cancel — so drop cancelled
@@ -152,7 +156,7 @@ export function computeInvoiceForWeek(
   const percentFeeCents = Math.round(
     (grossBookedCents * PERCENT_FEE_BASIS_POINTS) / PERCENT_FEE_DIVISOR,
   );
-  const flatFeeCents = FLAT_FEE_CENTS;
+  const flatFeeCents = opts?.flatFeeCents ?? FLAT_FEE_CENTS;
   const totalDueCents = flatFeeCents + percentFeeCents;
 
   const breakdownLoads: BreakdownLoad[] = loads.map((load) => {

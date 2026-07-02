@@ -249,6 +249,10 @@ export default function LandingPage() {
             <span>{t("landing.footer.copy", { year: new Date().getFullYear() })}</span>
           </div>
           <div className="flex items-center gap-4">
+            {/* /terms + /privacy are server-rendered pages outside the SPA — plain <a>, not wouter Links */}
+            <a href="/terms" className="hover:text-white">{t("landing.footer.terms")}</a>
+            <a href="/privacy" className="hover:text-white">{t("landing.footer.privacy")}</a>
+            <a href="mailto:support@dispatchos.co" className="hover:text-white">support@dispatchos.co</a>
             <button type="button" onClick={() => setContactOpen(true)} className="hover:text-white">{t("common.contact")}</button>
             <button type="button" onClick={() => setLocation("/login")} className="hover:text-white">{t("common.login")}</button>
           </div>

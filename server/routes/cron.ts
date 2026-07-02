@@ -90,7 +90,7 @@ async function pushMatchedLoadAlerts(clientId: string, newLoadIds: string[]): Pr
 // owner-alert sender in the codebase (the existing TG notifiers require
 // per-client chat config / private ctx), so we DO NOT invent one here — we log
 // a clear, greppable warning and surface pausedCount/degraded in the cron
-// response (read by load-sources-poll.yml). Wiring an actual push alert is left
+// response (read by poll-cron.yml). Wiring an actual push alert is left
 // to the owner once an alert channel/token is configured.
 function warnAutoPaused(rec: { sourceId: string; clientId: string | null; label: string | null }): void {
   const name = rec.label || rec.sourceId;
@@ -238,7 +238,7 @@ export function registerCronRoutes(app: Express): void {
     );
 
     // Surface auto-pause transitions so the GitHub Actions poller
-    // (load-sources-poll.yml) and any external monitor can see a feed went
+    // (poll-cron.yml) and any external monitor can see a feed went
     // dark this run, even though the per-source HTTP call itself "succeeded".
     const pausedCount = results.filter(
       (r) => r.ok === false && r.justPaused === true,
@@ -348,6 +348,40 @@ export function registerCronRoutes(app: Express): void {
       console.error("[cron/check-renewals] failed:", err);
       return res.status(500).json({
         message: "Compliance renewals check failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  // POST /api/cron/weekly-billing
+  // Monday scheduler (billing-cron.yml) — generates last CLOSED Mon–Sun week's
+  // success-fee invoice for every billable client and attempts the Stripe
+  // charge. Idempotent: the partial UNIQUE(client_id, week_start) index makes
+  // re-runs skip already-billed weeks (counted under `skipped`), so a retry
+  // after a partial failure only fills gaps. Optional body { weekOffset } bills
+  // an earlier closed week (backfill after a missed run).
+  app.post("/api/cron/weekly-billing", async (req: Request, res: Response) => {
+    if (!requireCronSecret(req, res)) return;
+    const { runWeeklyBillingForAllClients } = await import("../lib/billing-run");
+    try {
+      const rawOffset = Number((req.body as { weekOffset?: unknown } | undefined)?.weekOffset);
+      const weekOffset =
+        Number.isInteger(rawOffset) && rawOffset >= 0 && rawOffset <= 52 ? rawOffset : 0;
+      const summary = await runWeeklyBillingForAllClients(weekOffset);
+      storage.audit("billing.weekly_run", "invoice", "batch", {
+        weekStart: summary.weekStart,
+        weekEnd: summary.weekEnd,
+        clients: summary.clients,
+        generated: summary.generated,
+        charged: summary.charged,
+        skipped: summary.skipped,
+        failed: summary.failed,
+      });
+      return res.json({ ok: true, ...summary });
+    } catch (err) {
+      console.error("[cron/weekly-billing] failed:", err);
+      return res.status(500).json({
+        message: "Weekly billing run failed",
         error: err instanceof Error ? err.message : String(err),
       });
     }

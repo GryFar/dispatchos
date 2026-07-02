@@ -60,6 +60,7 @@ import { upload } from "../upload";
 import { uploadDriverDocumentSchema } from "@shared/schema";
 import { computeInvoiceForWeek, FLAT_FEE_CENTS } from "../lib/billing";
 import { chargeInvoiceViaStripe, voidStripeInvoice } from "../lib/stripe";
+import { generateAndChargeInvoiceForClient } from "../lib/billing-run";
 import {
   computeDetentionForLoad,
   totalDetentionCents,
@@ -92,27 +93,6 @@ function safeJson<T>(value: unknown, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-/**
- * True when `err` is the SQLite UNIQUE-constraint violation from the partial
- * invoices_client_week_uq index (a live, non-void invoice already covers this
- * (client, week)). better-sqlite3 surfaces these as an Error whose `.code` is
- * "SQLITE_CONSTRAINT_UNIQUE" (older builds: "SQLITE_CONSTRAINT") and whose
- * message names the offending index. We match on the code first, then fall back
- * to the index name in the message so a genuine duplicate is reported as a clean
- * 409 instead of bubbling to the global handler as an opaque 500.
- */
-function isUniqueWeekViolation(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const code = (err as { code?: unknown }).code;
-  const message = (err as { message?: unknown }).message;
-  const codeStr = typeof code === "string" ? code : "";
-  const msgStr = typeof message === "string" ? message : "";
-  const isUnique =
-    codeStr === "SQLITE_CONSTRAINT_UNIQUE" ||
-    (codeStr === "SQLITE_CONSTRAINT" && /unique/i.test(msgStr));
-  return isUnique && /invoices_client_week_uq|invoices\.(client_id|week_start)/i.test(msgStr);
 }
 
 function zodIssues(error: ZodError) {
@@ -1291,99 +1271,29 @@ export function registerAdminRoutes(app: Express): void {
       // them here so we don't assign/bill an archived carrier.
       if (!client || client.deletedAt) return res.status(404).json({ message: "Client not found" });
 
-      const dup = storage.findOverlappingInvoice(body.clientId, body.weekStart, body.weekEnd);
-      if (dup) {
-        return res.status(409).json({
-          message: "An invoice covering an overlapping week already exists for this client.",
-          existingInvoiceId: dup.id,
-          existingWeek: { weekStart: dup.weekStart, weekEnd: dup.weekEnd },
-        });
-      }
-
-      const calc = computeInvoiceForWeek(body.clientId, body.weekStart, body.weekEnd);
-      // The findOverlappingInvoice pre-check above is best-effort and TOCTOU-racy
-      // (a concurrent generate can slip between the check and this insert). The
-      // partial UNIQUE(client_id, week_start) WHERE status != 'void' index is the
-      // real guard: it lets a voided week be re-billed but rejects a duplicate of
-      // a LIVE (non-void) invoice. Catch that unique-violation and report it as a
-      // clean 409 "already billed" instead of letting the SQLite constraint error
-      // bubble to the global handler as an opaque 500.
-      let invoice;
-      try {
-        invoice = storage.createInvoice({
-          clientId: calc.clientId,
-          weekStart: calc.weekStart,
-          weekEnd: calc.weekEnd,
-          flatFee: calc.flatFee,
-          percentFee: calc.percentFee,
-          grossBooked: calc.grossBooked,
-          status: body.status,
-        });
-      } catch (err) {
-        if (isUniqueWeekViolation(err)) {
-          // Another non-void invoice already covers this exact (client, week).
-          // Surface the existing one (non-void) so the admin can fetch/PATCH it.
-          const existing = storage.findInvoiceForWeek(calc.clientId, calc.weekStart);
-          return res.status(409).json({
-            message: "An invoice for this client and week already exists.",
-            existingInvoiceId: existing?.id,
-            existingWeek: existing
-              ? { weekStart: existing.weekStart, weekEnd: existing.weekEnd }
-              : undefined,
-          });
-        }
-        throw err;
-      }
-      // storage.createInvoice already emits `invoice.created` audit; we add
-      // an admin-context event with the actor for traceability.
-      storage.audit("invoice.created.admin", "invoice", invoice.id, {
-        invoiceId: invoice.id,
-        clientId: invoice.clientId,
-        weekStart: invoice.weekStart,
-        weekEnd: invoice.weekEnd,
-        totalDue: invoice.totalDue,
-        createdByAdminId: actor.id,
+      // Compute + persist + Stripe-charge via the shared lib (also used by the
+      // weekly billing cron). Conflict semantics preserved: "overlap" = the
+      // best-effort pre-check found an overlapping live invoice; "duplicate" =
+      // the partial UNIQUE(client_id, week_start) index rejected the insert.
+      const result = await generateAndChargeInvoiceForClient({
+        clientId: body.clientId,
+        weekStart: body.weekStart,
+        weekEnd: body.weekEnd,
+        status: body.status,
+        actorId: actor.id,
       });
-
-      // Attempt to actually collect the success fee via Stripe (one-off invoice,
-      // auto-charged against the carrier's default payment method). The
-      // DispatchOS invoice is ALREADY persisted above — a Stripe failure (no
-      // customer, network, etc.) must NOT lose or fail the invoice. On success we
-      // stamp the Stripe id + move it to 'sent' (awaiting payment); the
-      // invoice.payment_succeeded webhook later flips it to 'paid'. On failure we
-      // leave it as created (draft) so it stays retriable via the charge route.
-      let chargeStatus: string;
-      let finalInvoice = invoice;
-      const charge = await chargeInvoiceViaStripe(invoice);
-      if (charge.ok && charge.stripeInvoiceId) {
-        storage.setInvoiceStripeId(invoice.id, charge.stripeInvoiceId);
-        // Only advance draft → sent; if admin generated as 'sent' already, the
-        // transition is a no-op (updateInvoice returns the row unchanged).
-        if (invoice.status === "draft") {
-          const upd = storage.updateInvoice(invoice.id, { status: "sent" });
-          if ("invoice" in upd) finalInvoice = upd.invoice;
-          else finalInvoice = storage.getInvoice(invoice.id) ?? invoice;
-        } else {
-          finalInvoice = storage.getInvoice(invoice.id) ?? invoice;
-        }
-        chargeStatus = "charged";
-        storage.audit("billing.charge_initiated", "invoice", invoice.id, {
-          invoiceId: invoice.id,
-          clientId: invoice.clientId,
-          stripeInvoiceId: charge.stripeInvoiceId,
-          createdByAdminId: actor.id,
-        });
-      } else {
-        chargeStatus = charge.reason ?? "charge_failed";
-        storage.audit("billing.charge_skipped", "invoice", invoice.id, {
-          invoiceId: invoice.id,
-          clientId: invoice.clientId,
-          reason: chargeStatus,
-          createdByAdminId: actor.id,
+      if (!result.ok) {
+        return res.status(409).json({
+          message:
+            result.reason === "overlap"
+              ? "An invoice covering an overlapping week already exists for this client."
+              : "An invoice for this client and week already exists.",
+          existingInvoiceId: result.existingInvoiceId,
+          existingWeek: result.existingWeek,
         });
       }
 
-      return res.status(201).json({ ...finalInvoice, chargeStatus });
+      return res.status(201).json({ ...result.invoice, chargeStatus: result.chargeStatus });
     }),
   );
 
