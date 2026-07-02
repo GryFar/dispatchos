@@ -7,12 +7,12 @@ import express, { Response, NextFunction } from "express";
 import type { Request } from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import session from "express-session";
-import connectSqlite3 from "connect-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { storage, backfillBrokerTrustSignals, closeDatabase } from "./storage";
+import { SqliteSessionStore } from "./lib/session-store";
 
 const app = express();
 const isVdsMode = process.env.DISPATCHOS_DEPLOYMENT_MODE === "vds";
@@ -86,6 +86,33 @@ app.use(
 
 app.use(express.urlencoded({ extended: false, limit: process.env.DISPATCHOS_FORM_LIMIT || "1mb" }));
 
+// Content-Security-Policy for every response. Directives derive from what the
+// SPA actually loads (client/index.html + client/src audit):
+//   - Vite emits <script type=module src> only (no inline scripts) → script-src 'self'.
+//   - Radix/React set inline STYLE ATTRIBUTES + index.html/index.css pull Google
+//     Fonts stylesheets → style-src needs 'unsafe-inline' + fonts.googleapis.com,
+//     font-src needs fonts.gstatic.com.
+//   - DriverLocationCard embeds a Google Maps iframe → frame-src www.google.com.
+//   - Stripe Checkout/Portal are server-side redirects (no stripe.js in the
+//     bundle), all API calls are same-origin fetch → connect-src 'self'.
+//   - frame-ancestors 'self' mirrors the X-Frame-Options: SAMEORIGIN below.
+// Production-only: the Vite dev server injects the react-refresh preamble as
+// an INLINE <script> and HMR runs over a ws:// socket — script-src 'self'
+// would blank the dev SPA, and a dev-only relaxed policy protects nothing.
+const CSP_VALUE = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "connect-src 'self'",
+  "frame-src https://www.google.com",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'self'",
+].join("; ");
+
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
@@ -94,6 +121,7 @@ app.use((req, res, next) => {
   // Audit V2-5 — add HSTS, COOP, cross-domain policies in production.
   // HSTS only in prod so dev over plain http still works.
   if (process.env.NODE_ENV === "production") {
+    res.setHeader("Content-Security-Policy", CSP_VALUE);
     res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
     res.setHeader(
       "Strict-Transport-Security",
@@ -364,7 +392,6 @@ if (TRACK_RATE_LIMIT_ENABLED) {
 // ephemeral sessions with it. Replaces the v1.2.7 in-process MemoryStore.
 // ---------------------------------------------------------------------------
 
-const SQLiteStore = connectSqlite3(session);
 const dataRoot = path.resolve(process.env.DISPATCHOS_DATA_ROOT || "dispatchos_data");
 fs.mkdirSync(dataRoot, { recursive: true });
 
@@ -374,9 +401,12 @@ app.use(
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
-    store: new (SQLiteStore as any)({
-      db: "sessions.db",
-      dir: dataRoot,
+    // In-repo store on better-sqlite3, schema-compatible with the previous
+    // connect-sqlite3 table so live sessions survive the swap (see
+    // server/lib/session-store.ts). connect-sqlite3 dragged in the legacy
+    // sqlite3 native driver and its node-gyp/tar CVE chain.
+    store: new SqliteSessionStore({
+      dbPath: path.join(dataRoot, "sessions.db"),
       table: "sessions",
     }),
     cookie: {

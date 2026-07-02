@@ -33,7 +33,7 @@ jobs:
       - name: TypeScript check
         run: npm run check
 
-      - name: AI / unit smoke (server/lib/**/*.test.ts)
+      - name: AI / unit smoke (server/**/*.test.ts)
         run: npm run smoke:ai
 
       - name: API smoke (boots the server, hits the endpoints)

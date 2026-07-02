@@ -55,7 +55,7 @@ import {
   requireRole,
 } from "../auth";
 import { storage, uploadsRoot } from "../storage";
-import { canAddDriver } from "../lib/plans";
+import { canAddDriver, planForClient } from "../lib/plans";
 import { upload } from "../upload";
 import { uploadDriverDocumentSchema } from "@shared/schema";
 import { computeInvoiceForWeek, FLAT_FEE_CENTS } from "../lib/billing";
@@ -346,6 +346,8 @@ export function registerAdminRoutes(app: Express): void {
       const actor = getCurrentUser(req);
       if (!actor) return res.status(401).json({ message: "Authentication required" });
 
+      let seatCap: { clientId: string; maxSeats: number } | undefined;
+      let seatClient: ReturnType<typeof storage.getClient>;
       if (body.linkedClientId !== undefined && body.linkedClientId !== null) {
         if (body.role !== "driver") {
           return res.status(400).json({ message: "linkedClientId is only valid for role=driver" });
@@ -365,6 +367,15 @@ export function registerAdminRoutes(app: Express): void {
         if (!seat.allowed) {
           return res.status(402).json({ message: seat.reason, needsUpgrade: seat.needsUpgrade });
         }
+        // The gate above is check-then-create; re-check atomically inside the
+        // create transaction. Hard cap exists only when the plan sells no
+        // overage seats (mirrors canAddDriver); Infinity = uncapped.
+        const plan = planForClient(linkedClient);
+        seatCap = {
+          clientId: body.linkedClientId,
+          maxSeats: plan.additionalDriverCents === 0 ? plan.includedDriverSeats : Infinity,
+        };
+        seatClient = linkedClient;
       }
 
       const existing = storage.getUserByEmail(body.email);
@@ -373,7 +384,7 @@ export function registerAdminRoutes(app: Express): void {
       }
 
       const { salt, hash } = makeSentinelPasswordPair();
-      const created = storage.createUser({
+      const userInput = {
         email: body.email,
         fullName: body.fullName,
         role: body.role,
@@ -381,7 +392,26 @@ export function registerAdminRoutes(app: Express): void {
         passwordHash: hash,
         linkedClientId: body.role === "driver" ? body.linkedClientId ?? undefined : undefined,
         actorUserId: actor.id,
-      });
+      };
+      let created;
+      try {
+        created = seatCap
+          ? storage.createUserIfSeatAvailable(userInput, seatCap)
+          : storage.createUser(userInput);
+      } catch (err) {
+        if ((err as { code?: string }).code === "SEAT_CAP_EXCEEDED" && seatClient) {
+          // Atomic re-check lost to a concurrent seat grab between the gate
+          // above and the insert. Same 402 body as the gate: the reason string
+          // depends only on the plan, so an over-cap count reproduces it.
+          const seat = canAddDriver({
+            planTier: seatClient.planTier,
+            persona: seatClient.persona,
+            driverSeatCount: Number.MAX_SAFE_INTEGER,
+          });
+          return res.status(402).json({ message: seat.reason, needsUpgrade: seat.needsUpgrade });
+        }
+        throw err;
+      }
       // storage.createUser already emits a generic "user.created" audit; we add
       // a Phase 3-specific marker so admins can filter for stub-user creations.
       storage.audit("user.created.stub", "user", created.id, {
@@ -538,6 +568,8 @@ export function registerAdminRoutes(app: Express): void {
           .json({ message: "role=admin invites are not allowed; create admins directly" });
       }
 
+      let seatCap: { clientId: string; maxSeats: number } | undefined;
+      let seatClient: ReturnType<typeof storage.getClient>;
       if (body.linkedClientId !== undefined) {
         if (body.role !== "driver") {
           return res.status(400).json({ message: "linkedClientId is only valid for role=driver" });
@@ -558,6 +590,15 @@ export function registerAdminRoutes(app: Express): void {
         if (!seat.allowed) {
           return res.status(402).json({ message: seat.reason, needsUpgrade: seat.needsUpgrade });
         }
+        // Re-check atomically inside the insert transaction (check-then-create
+        // guard). Hard cap exists only when the plan sells no overage seats
+        // (mirrors canAddDriver); Infinity = uncapped.
+        const plan = planForClient(linkedClient);
+        seatCap = {
+          clientId: body.linkedClientId,
+          maxSeats: plan.additionalDriverCents === 0 ? plan.includedDriverSeats : Infinity,
+        };
+        seatClient = linkedClient;
       }
 
       // Generate a code, retrying on the astronomically unlikely collision.
@@ -570,7 +611,7 @@ export function registerAdminRoutes(app: Express): void {
         return res.status(500).json({ message: "Failed to allocate a unique invite code" });
       }
 
-      const invite = storage.createInviteWithCode({
+      const inviteInput = {
         code,
         role: body.role,
         email: body.email,
@@ -578,7 +619,24 @@ export function registerAdminRoutes(app: Express): void {
         linkedClientId: body.linkedClientId,
         subscriptionDays: body.subscriptionDays,
         createdByUserId: actor.id,
-      });
+      };
+      let invite;
+      try {
+        invite = seatCap
+          ? storage.createInviteIfSeatAvailable(inviteInput, seatCap)
+          : storage.createInviteWithCode(inviteInput);
+      } catch (err) {
+        if ((err as { code?: string }).code === "SEAT_CAP_EXCEEDED" && seatClient) {
+          // Same 402 body as the gate above (reason depends only on the plan).
+          const seat = canAddDriver({
+            planTier: seatClient.planTier,
+            persona: seatClient.persona,
+            driverSeatCount: Number.MAX_SAFE_INTEGER,
+          });
+          return res.status(402).json({ message: seat.reason, needsUpgrade: seat.needsUpgrade });
+        }
+        throw err;
+      }
 
       return res.status(201).json({
         code: invite.code,

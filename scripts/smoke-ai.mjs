@@ -1,9 +1,8 @@
 // Pure-module smoke harness.
 //
-// Runs every *.test.ts under server/lib/ (recursively — AI engines plus the
-// cursor-pagination codec) via tsx and aggregates results. Each test file is
-// independent and does its own pass/fail counting; we enforce that none exit
-// with a non-zero code.
+// Runs every *.test.ts under server/ (recursively — libs, routes, auth) via
+// tsx and aggregates results. Each test file is independent and does its own
+// pass/fail counting; we enforce that none exit with a non-zero code.
 //
 // Used by `npm run smoke:ai` and as part of the full `smoke` flow.
 
@@ -13,11 +12,12 @@ import path from "node:path";
 import url from "node:url";
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));
-const libDir = path.resolve(here, "..", "server", "lib");
+const serverDir = path.resolve(here, "..", "server");
 
 function collectTests(dir) {
   const out = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === "node_modules") continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) out.push(...collectTests(full));
     else if (entry.name.endsWith(".test.ts")) out.push(full);
@@ -29,17 +29,17 @@ let total = 0;
 let failed = 0;
 const startedAt = Date.now();
 
-const testFiles = collectTests(libDir).sort();
+const testFiles = collectTests(serverDir).sort();
 
 if (testFiles.length === 0) {
-  console.error("[FAIL] No test files found under server/lib/");
+  console.error("[FAIL] No test files found under server/");
   process.exit(1);
 }
 
 console.log(`[smoke:ai] running ${testFiles.length} test files\n`);
 
 for (const full of testFiles) {
-  const label = path.relative(libDir, full);
+  const label = path.relative(serverDir, full);
   const result = spawnSync("npx", ["tsx", full], {
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",

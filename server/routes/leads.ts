@@ -22,7 +22,7 @@ import {
   listLeadsQuerySchema,
 } from "@shared/schema";
 import { generateInviteCode } from "../lib/invite-code";
-import { canAddDriver } from "../lib/plans";
+import { canAddDriver, planForClient } from "../lib/plans";
 
 // Simple in-memory rate-limit: max 5 subscriptions per IP per hour.
 // Replaced by proper rate-limiter once the load is non-trivial.
@@ -228,6 +228,8 @@ export function registerLeadRoutes(app: Express): void {
       // Security (audit #2): a DISPATCHER must not escalate role or link a driver
       // into a carrier they are not assigned to via lead approval. Admins keep
       // full power (this block is skipped for them). Mirrors POST /api/admin/invites.
+      let seatCap: { clientId: string; maxSeats: number } | undefined;
+      let seatClient: ReturnType<typeof storage.getClient>;
       if (reviewer.role === "dispatcher") {
         // 1. Dispatchers onboard DRIVERS only -- never mint dispatcher accounts.
         if (parsed.data.role !== "driver") {
@@ -258,6 +260,15 @@ export function registerLeadRoutes(app: Express): void {
           if (!seat.allowed) {
             return res.status(402).json({ message: seat.reason, needsUpgrade: seat.needsUpgrade });
           }
+          // Re-check atomically inside the invite insert (check-then-create
+          // guard). Hard cap exists only when the plan sells no overage seats
+          // (mirrors canAddDriver); Infinity = uncapped.
+          const plan = planForClient(linkedClient);
+          seatCap = {
+            clientId: parsed.data.linkedClientId,
+            maxSeats: plan.additionalDriverCents === 0 ? plan.includedDriverSeats : Infinity,
+          };
+          seatClient = linkedClient;
         }
       }
 
@@ -280,14 +291,34 @@ export function registerLeadRoutes(app: Express): void {
       }
 
       // Lead is now approved — create the invite via the existing Phase 3 path.
-      const invite = storage.createInviteWithCode({
+      const inviteInput = {
         code,
         role: parsed.data.role,
         email: lead.email,
         linkedClientId: parsed.data.linkedClientId,
         ttlHours: 168, // 7 days
         createdByUserId: reviewer.id,
-      });
+      };
+      let invite;
+      try {
+        invite = seatCap
+          ? storage.createInviteIfSeatAvailable(inviteInput, seatCap)
+          : storage.createInviteWithCode(inviteInput);
+      } catch (err) {
+        if ((err as { code?: string }).code === "SEAT_CAP_EXCEEDED" && seatClient) {
+          // Concurrent seat grab between the gate above and the insert. The
+          // lead stays approved (no invite minted) — the dispatcher can retry
+          // after freeing a seat. Same 402 body as the gate (reason depends
+          // only on the plan).
+          const seat = canAddDriver({
+            planTier: seatClient.planTier,
+            persona: seatClient.persona,
+            driverSeatCount: Number.MAX_SAFE_INTEGER,
+          });
+          return res.status(402).json({ message: seat.reason, needsUpgrade: seat.needsUpgrade });
+        }
+        throw err;
+      }
 
       const signupUrl = `${hostFromReq(req)}/#/signup?code=${code}`;
 
