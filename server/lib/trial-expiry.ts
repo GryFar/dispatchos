@@ -1,0 +1,327 @@
+// ===========================================================================
+// server/lib/trial-expiry.ts — daily check for expiring/expired trials
+// ===========================================================================
+//
+// Two parallel mechanisms:
+//   1. **Reminders**: alerts at T-7, T-3, T-1 days before trial ends.
+//      Telegram + email to the owner. Anti-dupe via compliance_alerts_sent
+//      reuse (kind = 'trial_reminder').
+//
+//   2. **Expiry transition**: when trialEndsAt is in the past AND the client
+//      has no active Stripe subscription (or sub is canceled/past_due past
+//      grace), flip billingStatus → 'expired'. Frontend gates write
+//      operations behind this status.
+//
+// Read-only mode is enforced by middleware in server/auth.ts (added in this
+// PR) — `requireActiveBilling` returns 402 on mutating endpoints when status
+// is 'expired' or 'past_due' (with a 7-day grace period for past_due).
+// ---------------------------------------------------------------------------
+
+import { fetchWithTimeout } from "./fetch-timeout";
+import { storage } from "../storage";
+import { getIntegrationValue } from "./integration-config";
+import { sendEmail } from "./email";
+import { resolveOwnerEmail } from "./owner-email";
+
+const REMINDER_DAYS = [7, 3, 1];
+
+function daysUntil(iso: string): number {
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return Number.POSITIVE_INFINITY;
+  return Math.ceil((ms - Date.now()) / (24 * 3600 * 1000));
+}
+
+interface NotifyContext {
+  telegramBotToken: string | null;
+  telegramChatId: string | null;
+  resendFromEmail: string | null;
+  ownerEmail: string | null;
+}
+
+async function sendTelegram(
+  ctx: NotifyContext,
+  text: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!ctx.telegramBotToken || !ctx.telegramChatId) {
+    return { ok: false, error: "telegram not configured" };
+  }
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.telegram.org/bot${ctx.telegramBotToken}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          chat_id: ctx.telegramChatId,
+          text,
+          disable_web_page_preview: true,
+        }),
+      },
+    );
+    if (!res.ok) {
+      return { ok: false, error: `tg ${res.status}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
+/**
+ * Trial emails must reach the CUSTOMER — the client owner's account email —
+ * not the platform operator. Returns null when the client has no resolvable
+ * owner (legacy/admin-created carriers), in which case the caller falls back
+ * to the platform owner so the alert is never dropped.
+ */
+function resolveClientOwnerEmail(client: { ownerUserId?: unknown }): string | null {
+  const ownerId = client.ownerUserId;
+  if (typeof ownerId !== "string" || !ownerId) return null;
+  const owner = storage.getUserById(ownerId);
+  const email = owner?.email;
+  return typeof email === "string" && email.includes("@") ? email : null;
+}
+
+export interface TrialOutcome {
+  clientId: string;
+  clientName: string;
+  /** 'reminder' (notification only) or 'expired' (status transitioned). */
+  kind: "reminder" | "expired";
+  trialEndsAt: string;
+  daysUntil: number;
+  channels: ("telegram" | "email")[];
+  errors: string[];
+}
+
+/**
+ * Run one full pass — iterate clients with billingStatus='trial', fire
+ * reminders or transition to 'expired' as needed. Returns outcomes for logging.
+ */
+export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
+  const outcomes: TrialOutcome[] = [];
+
+  const ctx: NotifyContext = {
+    // Canonical telegram key is telegram_driver_bot/TELEGRAM_DRIVER_BOT_TOKEN
+    // (only telegram entry in the INTEGRATIONS registry). The old "telegram"/
+    // TELEGRAM_BOT_TOKEN lookup never matched the DB-configured token and fell
+    // back to an unset env var, so trial reminders/expiry alerts silently never
+    // sent. Mirror inbound/insurance/compliance.
+    telegramBotToken:
+      getIntegrationValue("telegram_driver_bot", "TELEGRAM_DRIVER_BOT_TOKEN") ??
+      process.env.TELEGRAM_DRIVER_BOT_TOKEN ??
+      null,
+    telegramChatId:
+      getIntegrationValue("telegram_driver_bot", "TELEGRAM_ALERT_CHAT_ID") ??
+      process.env.TELEGRAM_ALERT_CHAT_ID ??
+      null,
+    resendFromEmail:
+      getIntegrationValue("resend", "RESEND_FROM_EMAIL") ??
+      process.env.RESEND_FROM_EMAIL ??
+      null,
+    ownerEmail: resolveOwnerEmail(),
+  };
+
+  const base = process.env.DISPATCHOS_PUBLIC_URL || "https://dispatchos.co";
+
+  const clients = storage.listClients();
+  for (const client of clients) {
+    const c = client as Record<string, unknown> & {
+      id: string;
+      name: string;
+      billingStatus?: "trial" | "active" | "past_due" | "canceled" | "expired";
+      trialEndsAt?: string;
+      stripeSubscriptionId?: string;
+      ownerUserId?: string;
+    };
+
+    if (!c.trialEndsAt) continue;
+    if (c.billingStatus !== "trial") continue;
+
+    const days = daysUntil(c.trialEndsAt);
+
+    // Expiry transition — flip to 'expired' once the trial window ends and the
+    // client is NOT on a live subscription.
+    if (days <= 0) {
+      // NOTE: a bare stripeSubscriptionId is NOT proof of a live sub. The
+      // webhook (deriveSubscriptionUpdates) ALWAYS stamps the sub id even when
+      // the subscription is canceled/incomplete/unknown — and for those states
+      // it falls back to the existing billingStatus, which can stay 'trial'. So
+      // a dead checkout leaves 'trial' + a stale sub id behind. Gating skip on
+      // mere id presence would let that client keep write access forever. The
+      // authoritative signal here is billingStatus: a genuinely live sub moves
+      // it to 'active' (or, while still trialing, keeps 'trial' but syncs
+      // trialEndsAt forward — which would make days > 0 and never reach here).
+      // So a client still at billingStatus='trial' with an ended window must be
+      // expired regardless of any leftover sub id.
+      //
+      // Re-read FRESH right before the write. `client` is a snapshot from the
+      // top of the loop; we've since awaited network I/O for earlier clients,
+      // during which a Stripe webhook may have moved THIS client to active (or
+      // re-synced a live trialing sub forward). Expiring on the stale snapshot
+      // would clobber a paying customer to read-only. The re-read + write are
+      // synchronous (no await between) so under single-process this fully
+      // closes the race.
+      const fresh = storage.getClient(c.id) as
+        | (Record<string, unknown> & { billingStatus?: string; trialEndsAt?: string })
+        | undefined;
+      // Only the live billingStatus gates the skip — a stale sub id alone does
+      // not. Bail if a webhook already moved this client off 'trial', or if the
+      // fresh trial window now extends into the future (a live trialing sub
+      // re-synced trial_end forward).
+      if (
+        !fresh ||
+        fresh.billingStatus !== "trial" ||
+        (typeof fresh.trialEndsAt === "string" && daysUntil(fresh.trialEndsAt) > 0)
+      ) {
+        continue;
+      }
+      const sent: ("telegram" | "email")[] = [];
+      const errors: string[] = [];
+
+      // Guard the status transition: a busy/locked/constraint/IOERR throw from
+      // the SQLite write here must not abort the whole pass and skip every
+      // remaining client. Collect the error into this outcome and carry on. If
+      // the transition itself failed we skip the "expired" notification + audit
+      // for this client (don't announce a transition that never persisted) and
+      // record the outcome so the failure is visible.
+      try {
+        storage.upsertClient({
+          ...(fresh as unknown as Parameters<typeof storage.upsertClient>[0]),
+          billingStatus: "expired",
+        } as Parameters<typeof storage.upsertClient>[0]);
+      } catch (err) {
+        errors.push(`transition: ${(err as Error).message}`);
+        outcomes.push({
+          clientId: c.id,
+          clientName: c.name,
+          kind: "expired",
+          trialEndsAt: c.trialEndsAt,
+          daysUntil: days,
+          channels: sent,
+          errors,
+        });
+        continue;
+      }
+
+      // Email the CUSTOMER (client owner); fall back to the platform owner
+      // when the carrier has no resolvable owner. The Telegram alert always
+      // goes to the platform chat, and the audit below records the recipient,
+      // so the operator keeps visibility either way. The upgrade link points
+      // customers at the customer billing page, operators at the admin page.
+      const customerEmail = resolveClientOwnerEmail(c);
+      const recipient = customerEmail ?? ctx.ownerEmail;
+      const billingUrl = `${base}/#${customerEmail ? "/billing" : "/admin/billing"}`;
+      const text = [
+        `⏰ Trial expired for ${c.name}.`,
+        `Account is now read-only. Upgrade at ${billingUrl}`,
+      ].join("\n");
+      const tg = await sendTelegram(ctx, text);
+      if (tg.ok) sent.push("telegram");
+      else if (tg.error) errors.push(`telegram: ${tg.error}`);
+      if (recipient) {
+        try {
+          const r = await sendEmail({
+            from: ctx.resendFromEmail ?? undefined,
+            to: recipient,
+            subject: `[DispatchOS] Trial expired — ${c.name}`,
+            text,
+            html: `<pre style="font-family:inherit;white-space:pre-wrap">${text.replace(
+              /[<>&]/g,
+              (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch]!),
+            )}</pre>`,
+          });
+          if (r.ok) sent.push("email");
+          else if (r.error) errors.push(`email: ${r.error}`);
+        } catch (err) {
+          errors.push(`email: ${(err as Error).message}`);
+        }
+      }
+      // Guard the audit write too: a throw here must not abort the pass after
+      // the transition already persisted.
+      try {
+        storage.audit("billing.trial_expired", "client", c.id, {
+          trialEndsAt: c.trialEndsAt,
+          channels: sent,
+          emailTo: recipient ?? null,
+          sentToCustomer: Boolean(customerEmail),
+        });
+      } catch (err) {
+        errors.push(`audit: ${(err as Error).message}`);
+      }
+      outcomes.push({
+        clientId: c.id,
+        clientName: c.name,
+        kind: "expired",
+        trialEndsAt: c.trialEndsAt,
+        daysUntil: days,
+        channels: sent,
+        errors,
+      });
+      continue;
+    }
+
+    // Reminders.
+    if (!REMINDER_DAYS.includes(days)) continue;
+    if (
+      storage.hasComplianceAlertBeenSent(c.id, "trial_reminder", c.trialEndsAt, days)
+    ) {
+      continue;
+    }
+    // Same recipient/link resolution as the expiry branch: customer first,
+    // platform owner as fallback (audited below).
+    const customerEmail = resolveClientOwnerEmail(c);
+    const recipient = customerEmail ?? ctx.ownerEmail;
+    const billingUrl = `${base}/#${customerEmail ? "/billing" : "/admin/billing"}`;
+    const text = [
+      `⏳ Trial ends in ${days} day${days === 1 ? "" : "s"} for ${c.name}.`,
+      `Upgrade now: ${billingUrl}`,
+    ].join("\n");
+    const sent: ("telegram" | "email")[] = [];
+    const errors: string[] = [];
+    const tg = await sendTelegram(ctx, text);
+    if (tg.ok) sent.push("telegram");
+    else if (tg.error) errors.push(`telegram: ${tg.error}`);
+    if (recipient) {
+      try {
+        const r = await sendEmail({
+          from: ctx.resendFromEmail ?? undefined,
+          to: recipient,
+          subject: `[DispatchOS] Trial ends in ${days} day${days === 1 ? "" : "s"} — ${c.name}`,
+          text,
+          html: `<pre style="font-family:inherit;white-space:pre-wrap">${text.replace(
+            /[<>&]/g,
+            (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch]!),
+          )}</pre>`,
+        });
+        if (r.ok) sent.push("email");
+        else if (r.error) errors.push(`email: ${r.error}`);
+      } catch (err) {
+        errors.push(`email: ${(err as Error).message}`);
+      }
+    }
+    if (sent.length > 0) {
+      storage.recordComplianceAlertSent({
+        clientId: c.id,
+        kind: "trial_reminder",
+        expiresAt: c.trialEndsAt,
+        daysBefore: days,
+        channels: sent,
+      });
+      storage.audit("billing.trial_reminder", "client", c.id, {
+        daysUntil: days,
+        channels: sent,
+        emailTo: recipient ?? null,
+        sentToCustomer: Boolean(customerEmail),
+      });
+    }
+    outcomes.push({
+      clientId: c.id,
+      clientName: c.name,
+      kind: "reminder",
+      trialEndsAt: c.trialEndsAt,
+      daysUntil: days,
+      channels: sent,
+      errors,
+    });
+  }
+  return outcomes;
+}

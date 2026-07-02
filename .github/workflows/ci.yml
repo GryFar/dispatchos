@@ -1,0 +1,40 @@
+name: CI
+
+# Runs the type-check and both smoke suites on every PR (and on pushes to the
+# long-lived branches). deploy.yml only validates on push to develop/main, so
+# without this PRs merged nothing that actually exercises the server. Node 20 to
+# match the runtime (better-sqlite3 prebuilds + the Dockerfile base image).
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck + smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: TypeScript check
+        run: npm run check
+
+      - name: AI / unit smoke (server/**/*.test.ts)
+        run: npm run smoke:ai
+
+      - name: API smoke (boots the server, hits the endpoints)
+        run: npm run smoke

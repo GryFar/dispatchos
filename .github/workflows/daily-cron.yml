@@ -1,0 +1,78 @@
+name: Daily Cron (billing + compliance)
+
+# Fires every day at 13:00 UTC (09:00 ET / 06:00 PT) — early morning for US ops.
+# Hits four endpoints in sequence:
+#   1. /api/cron/check-insurance       — insurance expiry alerts (Phase 7.2)
+#   2. /api/cron/check-renewals        — UCR/IRP renewal alerts (PR #86)
+#   3. /api/cron/check-trial-expiry    — trial reminders + auto-expire (PR #94)
+#   4. /api/cron/purge-old-data        — retention purge
+#
+# Each call is independent — a failure on one doesn't skip the others. Every
+# step captures the HTTP code and records non-200s; a final step fails the job
+# (red check) if ANY cron did not return 200, so a 5xx/timeout/secret-drift no
+# longer passes silently (audit H1).
+# All endpoints are anti-spam / idempotent on their own (anti-dupe rows).
+
+on:
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: daily-cron
+  cancel-in-progress: false
+
+# Target host is configurable so the cron follows the real deployment. Set repo
+# variable DISPATCHOS_BASE_URL to the live app URL; falls back to demo. The old
+# hardcoded https://dispatchos.co pointed at the wrong host, so every cron
+# silently 404'd (trial-expiry / insurance / purge never ran in prod).
+env:
+  BASE_URL: ${{ vars.DISPATCHOS_BASE_URL || 'https://demo.dispatchos.co' }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check insurance expiries
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          CODE=$(curl -sS -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/check-insurance" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 60 || echo 000)
+          head -c 800 /tmp/resp 2>/dev/null; echo ""
+          if [ "$CODE" != "200" ]; then echo "::error::check-insurance HTTP $CODE"; echo "check-insurance=$CODE" >> /tmp/cron-failures; fi
+
+      - name: Check UCR/IRP renewals
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          CODE=$(curl -sS -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/check-renewals" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 60 || echo 000)
+          head -c 800 /tmp/resp 2>/dev/null; echo ""
+          if [ "$CODE" != "200" ]; then echo "::error::check-renewals HTTP $CODE"; echo "check-renewals=$CODE" >> /tmp/cron-failures; fi
+
+      - name: Check trial expiry
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          CODE=$(curl -sS -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/check-trial-expiry" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 60 || echo 000)
+          head -c 800 /tmp/resp 2>/dev/null; echo ""
+          if [ "$CODE" != "200" ]; then echo "::error::check-trial-expiry HTTP $CODE"; echo "check-trial-expiry=$CODE" >> /tmp/cron-failures; fi
+
+      - name: Purge old data (audit, fuel, email, pings)
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          CODE=$(curl -sS -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/purge-old-data" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 60 || echo 000)
+          head -c 800 /tmp/resp 2>/dev/null; echo ""
+          if [ "$CODE" != "200" ]; then echo "::error::purge-old-data HTTP $CODE"; echo "purge-old-data=$CODE" >> /tmp/cron-failures; fi
+
+      - name: Fail if any cron returned non-200
+        run: |
+          if [ -s /tmp/cron-failures ]; then
+            echo "One or more daily crons failed:"; cat /tmp/cron-failures; exit 1
+          fi
+          echo "All daily crons returned 200."

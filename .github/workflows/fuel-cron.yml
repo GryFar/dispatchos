@@ -1,0 +1,106 @@
+name: Weekly EIA Fuel Refresh
+
+# Refreshes PADD-level diesel prices from EIA each Wednesday at 09:00 UTC
+# (EIA publishes weekly retail diesel data Mondays evening — Wednesday gives
+# us a safe buffer for any delays).
+#
+# Required GitHub secrets (already set on the repo):
+#   CRON_SECRET   — must match Fly secret DISPATCHOS_CRON_SECRET
+
+on:
+  schedule:
+    - cron: "0 9 * * 3"      # Wed 09:00 UTC
+  workflow_dispatch:           # manual trigger for testing
+
+concurrency:
+  group: fuel-refresh
+  cancel-in-progress: false
+
+# Target host is configurable so the cron follows the real deployment. Set repo
+# variable DISPATCHOS_BASE_URL to the live app URL; falls back to demo. The old
+# hardcoded https://demo.dispatchos.co pointed at the wrong host, so the refresh
+# silently 404'd and the weekly EIA fuel update never ran in prod.
+env:
+  BASE_URL: ${{ vars.DISPATCHOS_BASE_URL || 'https://demo.dispatchos.co' }}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: POST /api/cron/refresh-fuel
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BOT_TOKEN: ${{ secrets.TELEGRAM_ALERT_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+        run: |
+          set +e
+          RESPONSE_BODY=$(mktemp)
+          HTTP_CODE=$(curl -s -o "$RESPONSE_BODY" -w "%{http_code}" \
+            -X POST "$BASE_URL/api/cron/refresh-fuel" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            --max-time 30)
+          echo "HTTP: $HTTP_CODE"
+          echo "Body: $(cat "$RESPONSE_BODY")"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            MSG=$(printf '⚠️ <b>Weekly EIA fuel refresh failed</b>\nHTTP %s — %s\n\n<i>Run:</i> %s' \
+              "$HTTP_CODE" \
+              "$(head -c 300 "$RESPONSE_BODY")" \
+              "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -nc --arg c "$CHAT_ID" --arg t "$MSG" \
+                    '{chat_id:$c,text:$t,parse_mode:"HTML",disable_web_page_preview:true}')" > /dev/null
+            exit 1
+          fi
+
+          # Success: post a short summary to TG only if anything actually changed
+          CHANGES=$(jq -c '.changes // []' "$RESPONSE_BODY")
+          CHANGE_COUNT=$(echo "$CHANGES" | jq 'length')
+          if [ "$CHANGE_COUNT" -gt 0 ]; then
+            SUMMARY=$(echo "$CHANGES" | jq -r '.[] | "  \(.padd): $\(.before) → $\(.after)"')
+            MSG=$(printf '⛽ <b>Weekly EIA fuel refresh</b>\n%s PADD%s updated:\n<pre>%s</pre>' \
+              "$CHANGE_COUNT" \
+              "$([ "$CHANGE_COUNT" -eq 1 ] || echo s)" \
+              "$SUMMARY")
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -nc --arg c "$CHAT_ID" --arg t "$MSG" \
+                    '{chat_id:$c,text:$t,parse_mode:"HTML",disable_web_page_preview:true}')" > /dev/null
+            echo "Posted change summary to TG"
+          else
+            echo "No price changes this week, skipping TG notification"
+          fi
+
+      # Must run AFTER refresh-fuel: new fuel prices invalidate cached
+      # net-profit load scores, so the dispatch board goes stale until the
+      # score cache is dropped. Steps in a job run sequentially, so this fires
+      # only once refresh-fuel above has completed.
+      - name: POST /api/cron/rescore
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BOT_TOKEN: ${{ secrets.TELEGRAM_ALERT_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+        run: |
+          set +e
+          RESPONSE_BODY=$(mktemp)
+          HTTP_CODE=$(curl -s -o "$RESPONSE_BODY" -w "%{http_code}" \
+            -X POST "$BASE_URL/api/cron/rescore" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            --max-time 30)
+          echo "HTTP: $HTTP_CODE"
+          echo "Body: $(cat "$RESPONSE_BODY")"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            MSG=$(printf '⚠️ <b>Rescore after fuel refresh failed</b>\nHTTP %s — %s\n\n<i>Run:</i> %s' \
+              "$HTTP_CODE" \
+              "$(head -c 300 "$RESPONSE_BODY")" \
+              "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -nc --arg c "$CHAT_ID" --arg t "$MSG" \
+                    '{chat_id:$c,text:$t,parse_mode:"HTML",disable_web_page_preview:true}')" > /dev/null
+            exit 1
+          fi
+          echo "Load score cache invalidated after fuel refresh"

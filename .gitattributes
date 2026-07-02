@@ -1,0 +1,24 @@
+# Normalize line endings. Eliminates the CRLF<->LF churn on Windows that caused
+# 300-file phantom diffs, endless "LF will be replaced by CRLF" warnings, and a
+# tsc parse failure after `git restore`. All text files are LF in the repo AND
+# the working tree; only Windows scripts keep CRLF.
+
+* text=auto eol=lf
+
+# Windows scripts must stay CRLF to run correctly.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binaries — never touch line endings (git auto-detects most, this is belt-and-suspenders).
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.pdf  binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.db   binary

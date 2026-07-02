@@ -1,0 +1,1282 @@
+// ===========================================================================
+// server/routes/me.ts — Phase 4 driver portal API (P0)
+// ===========================================================================
+//
+// All `/api/me/*` endpoints below the existing `GET /api/me` (which lives in
+// routes.ts and returns UserPublic). Driver portal aggregates and driver-
+// scoped reads/writes go here. Each handler is wrapped in
+// `requireRole('driver')` individually so they're registered BEFORE the
+// shared `app.use("/api", requireRole.any())` gate in routes.ts (same pattern
+// as registerAdminRoutes — see server/routes/admin.ts for the rationale).
+//
+// Tenant scoping rule: every endpoint MUST filter by the session user's id.
+// We never trust a path/query parameter to identify "self". The Phase 4
+// handoff §0.10 calls this out as the single most important security rule
+// for the driver portal — a buggy filter here leaks loads across drivers.
+//
+// Response shapes — all flat objects / arrays (Phase 3 handoff §2.2). No
+// `{ ok, data }` envelope. Errors use `{ message }` or
+// `{ message, issues:[...] }` for Zod validation failures, matching the
+// pattern in routes/admin.ts.
+// ---------------------------------------------------------------------------
+
+import type { Express, Request, Response, NextFunction } from "express";
+import fs from "node:fs";
+import path from "node:path";
+import { ZodError } from "zod";
+import { z } from "zod";
+import {
+  createCheckinSchema,
+  createExpenseSchema,
+  createFuelTransactionSchema,
+  createIssueSchema,
+  driverDocumentTypeSchema,
+  driverStatusSchema,
+  loadFullSchema,
+  uploadDriverDocumentSchema,
+  updateDriverProfileSchema,
+  updateDriverStatusSchema,
+  equipmentSchema,
+  type DriverDashboard,
+  type LoadFull,
+} from "@shared/schema";
+import { enrichLoadBestEffort } from "../lib/ai/enrich";
+import { parseReceipt } from "../lib/ai/receipt-ocr";
+import { parseLimit } from "../lib/query";
+import { getCurrentUser, requireRole, requireActiveBilling } from "../auth";
+import { storage, uploadsRoot } from "../storage";
+import { chargeAiCreditPack, AI_CREDIT_PACK } from "../lib/stripe";
+import { upload } from "../upload";
+import { todayInState } from "../lib/us-state-tz";
+
+// ---------------------------------------------------------------------------
+// Helpers (mirror server/routes/admin.ts conventions)
+// ---------------------------------------------------------------------------
+
+function zodIssues(error: ZodError) {
+  return error.issues.map((issue) => ({
+    path: issue.path,
+    message: issue.message,
+  }));
+}
+
+function send400Validation(res: Response, error: ZodError) {
+  return res.status(400).json({ message: "Validation failed", issues: zodIssues(error) });
+}
+
+function ah(
+  handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown> | unknown,
+) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve()
+      .then(() => handler(req, res, next))
+      .catch((error: unknown) => {
+        if (error instanceof ZodError) return send400Validation(res, error);
+        return next(error);
+      });
+  };
+}
+
+/**
+ * Reading the driver status off a load. We don't store a status column; we
+ * derive it. P0 only distinguishes "booked" (has driver + bookedAt) from
+ * "available" (anything else). Later phases (P1+, P3 booking flow) will add
+ * in_transit / at_delivery / delivered based on check-ins.
+ */
+function deriveLoadStatus(load: LoadFull): "available" | "booked" {
+  return load.driverId && load.bookedAt ? "booked" : "available";
+}
+
+/**
+ * Helper: cast a Load (Phase 1 narrow type) through loadFullSchema so the
+ * additive driverId/clientId/bookedAt fields are visible to the response
+ * shape. We round-trip through the schema (which is permissive on optionals)
+ * so downstream code sees a single, well-typed shape.
+ */
+function toLoadFull(load: unknown): LoadFull {
+  return loadFullSchema.parse(load);
+}
+
+// V5-003: a hired driver must not see a load's commercial / risk internals.
+// rate, brokerScore, fraudRisk, marketQuality and notes are dispatcher-side
+// data — the driver only needs the route, dates, equipment and who to call
+// (brokerName/brokerMc). An owner-operator IS their own carrier, so they keep
+// the full record (their money, their risk view). We delete the keys rather
+// than zero them so nothing leaks in the JSON; the cast keeps the existing
+// loadFullSchema-typed response shape.
+const DRIVER_HIDDEN_LOAD_FIELDS = [
+  "rate",
+  "brokerScore",
+  "fraudRisk",
+  "marketQuality",
+  "notes",
+] as const;
+
+function driverSafeLoad(load: LoadFull, isOwnerOperator: boolean): LoadFull {
+  if (isOwnerOperator) return load;
+  const clone: Record<string, unknown> = { ...load };
+  for (const key of DRIVER_HIDDEN_LOAD_FIELDS) {
+    delete clone[key];
+  }
+  return clone as LoadFull;
+}
+
+/**
+ * True only when `user` is THE OWNER of an owner-operator carrier — not merely
+ * a hired driver linked to one. Only the owner is entitled to the carrier's
+ * whole load board + commercial/risk fields. We compare against the client's
+ * ownerUserId (stamped at onboarding); legacy clients without it fall back to
+ * the persona check so existing single-owner accounts keep working.
+ */
+function isOwnerOf(client: unknown, user: { id: string }): boolean {
+  const c = client as { persona?: string; ownerUserId?: string } | undefined;
+  if (!c || c.persona !== "owner_operator") return false;
+  return c.ownerUserId ? c.ownerUserId === user.id : true;
+}
+
+/**
+ * Build a short "Pickup today" / "Delivery today" panel item. Returns null if
+ * the load's pickup (or delivery) is not on the current calendar date in UTC.
+ *
+ * P0 simplification: uses UTC calendar date for matching. This matches the
+ * date-only convention used everywhere else (bookedAt, weekStart). Later
+ * phases can layer driver-timezone awareness on top.
+ */
+function buildTodayStop(
+  iso: string,
+  city: string,
+  state: string,
+  contact?: string,
+): { time: string; address: string; contact?: string } | null {
+  if (!iso) return null;
+  // "Today" must be computed in the pickup/delivery local time, not UTC, or a
+  // driver on the West Coast loses the stop after ~16:00 local (already next
+  // day in UTC). `state` is the stop's USPS code; falls back to UTC if unknown.
+  //
+  // BOTH sides must be in the same time frame: compare the stop's LOCAL "today"
+  // against the load instant's LOCAL calendar date (not iso.slice(0,10), which
+  // is the UTC date). todayInState formats whatever Date it's given in the
+  // state's zone, so passing new Date(iso) yields the load's local date.
+  const loadInstant = new Date(iso);
+  if (Number.isNaN(loadInstant.getTime())) return null;
+  const today = todayInState(state);
+  const loadLocalDate = todayInState(state, loadInstant);
+  if (loadLocalDate !== today) return null;
+  return {
+    time: iso,
+    address: `${city}, ${state}`,
+    contact,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Receipt-OCR cost guard (per-driver). parseReceipt is a paid Claude vision
+// call; without a cap a single driver can run up an unbounded bill by hammering
+// scan-receipt. Mirror the in-memory per-user hourly-budget pattern used for
+// the dispatcher AI advisor (cockpit.ts aiRateCheck) and the Twilio verify
+// bucket. We additionally enforce a hard per-day ceiling so an attacker who
+// paces requests across hours still can't run an unbounded daily spend.
+// ---------------------------------------------------------------------------
+const OCR_MAX_PER_HOUR = 15;
+const OCR_MAX_PER_DAY = 60;
+const OCR_HOUR_MS = 60 * 60 * 1000;
+const OCR_DAY_MS = 24 * 60 * 60 * 1000;
+interface OcrBudget {
+  hourCount: number;
+  hourStart: number;
+  dayCount: number;
+  dayStart: number;
+}
+const ocrBudgets = new Map<string, OcrBudget>();
+function ocrRateCheck(userId: string): { allowed: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  let b = ocrBudgets.get(userId);
+  if (!b) {
+    b = { hourCount: 0, hourStart: now, dayCount: 0, dayStart: now };
+    ocrBudgets.set(userId, b);
+  }
+  if (now - b.hourStart > OCR_HOUR_MS) {
+    b.hourCount = 0;
+    b.hourStart = now;
+  }
+  if (now - b.dayStart > OCR_DAY_MS) {
+    b.dayCount = 0;
+    b.dayStart = now;
+  }
+  if (b.dayCount >= OCR_MAX_PER_DAY) {
+    return { allowed: false, retryAfterSec: Math.ceil((OCR_DAY_MS - (now - b.dayStart)) / 1000) };
+  }
+  if (b.hourCount >= OCR_MAX_PER_HOUR) {
+    return { allowed: false, retryAfterSec: Math.ceil((OCR_HOUR_MS - (now - b.hourStart)) / 1000) };
+  }
+  b.hourCount++;
+  b.dayCount++;
+  return { allowed: true, retryAfterSec: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Fuel occurredAt freshness clamp. Driver-supplied occurredAt drives IFTA
+// gallons-per-state attribution into a signed quarterly filing, so an arbitrary
+// past/future date lets a driver backdate gallons into a closed/filed quarter
+// or pre-load a future one (the GPS-ping path already clamps for the same
+// reason — see track.ts parseTimestamp). We accept only a bounded window:
+// up to FUEL_MAX_AGE in the past (late receipt entry is legitimate) and a
+// small clock-skew window into the future; anything outside — or unparseable —
+// falls back to server now().
+// ---------------------------------------------------------------------------
+const FUEL_MAX_AGE_MS = 35 * 24 * 60 * 60 * 1000; // ~5 weeks back (late entry)
+const FUEL_MAX_SKEW_MS = 60 * 60 * 1000; // 1h into the future (tz/clock drift)
+function clampFuelOccurredAt(raw: string | undefined): string {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  if (!raw) return nowIso;
+  const ms = new Date(raw).getTime();
+  if (!Number.isFinite(ms)) return nowIso;
+  if (ms < nowMs - FUEL_MAX_AGE_MS || ms > nowMs + FUEL_MAX_SKEW_MS) {
+    return nowIso;
+  }
+  return new Date(ms).toISOString();
+}
+
+// ---------------------------------------------------------------------------
+// Route registration
+// ---------------------------------------------------------------------------
+
+export function registerMeRoutes(app: Express): void {
+  const driver = requireRole("driver");
+
+  // Variant 2: the driver buys an AI-credit pack; charged to their carrier's
+  // Stripe customer. Credits are granted on the invoice.payment_succeeded
+  // webhook (not here) so a failed charge never hands out free requests.
+  app.post(
+    "/api/me/ai-credits/purchase",
+    driver,
+    ah(async (req: Request, res: Response) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      if (!user.linkedClientId) {
+        return res.status(400).json({
+          message: "Нет привязанной компании для оплаты — обратитесь к администратору.",
+          code: "no_carrier",
+        });
+      }
+      const result = await chargeAiCreditPack(user.id, user.linkedClientId);
+      if (!result.ok) {
+        return res.status(402).json({ message: "Оплата не оформлена.", code: result.reason });
+      }
+      return res.json({ ok: true, pack: AI_CREDIT_PACK.credits, priceCents: AI_CREDIT_PACK.priceCents });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/me/dashboard
+  // -------------------------------------------------------------------------
+  // Aggregates everything the driver home screen needs in a single round
+  // trip. The driver portal polls this on a 30s interval (TanStack Query
+  // refetchInterval) — keep it cheap. We do at most:
+  //   - 1 SELECT for the user (getCurrentUser already loaded it)
+  //   - 1 SELECT for loads-by-driver (index hit)
+  //
+  // Response shape: driverDashboardSchema (see shared/schema.ts).
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/me/dashboard",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+
+      // Pull a tight window of recent loads, newest first. We need:
+      //   - the current load (status='booked'),
+      //   - up to 3 recent loads to display in history,
+      //   - today's pickup/delivery, derived from the current load.
+      // Pulling 20 covers all three without a separate "latest" query — even
+      // a busy driver doesn't have many active loads at once.
+      //
+      // Owner-operator: also include all loads for their carrier company
+      // (clientId === linkedClientId), not only those assigned to this driver.
+      const page = storage.listLoadsForDriver(user.id, { limit: 20 });
+      let loads = page.items.map(toLoadFull);
+
+      // V5-003: determine once whether this driver is an owner-operator (their
+      // own carrier) — only then are they entitled to the loads' commercial data.
+      let isOwnerOperator = false;
+      if (user.linkedClientId) {
+        const linkedClient = storage.getClient(user.linkedClientId);
+        if (isOwnerOf(linkedClient, user)) {
+          isOwnerOperator = true;
+          const clientPage = storage.listLoadsForClientIds([user.linkedClientId], { limit: 20 });
+          const clientLoads = clientPage.items.map(toLoadFull);
+          // Merge: deduplicate by id, keep order newest-first
+          const seen = new Set(loads.map((l) => l.id));
+          for (const cl of clientLoads) {
+            if (!seen.has(cl.id)) {
+              seen.add(cl.id);
+              loads.push(cl);
+            }
+          }
+          // Re-sort merged list by pickupAt descending
+          loads.sort((a, b) => b.pickupAt.localeCompare(a.pickupAt));
+        }
+      }
+
+      const currentLoad = loads.find((l) => deriveLoadStatus(l) === "booked") ?? null;
+      const recentLoads = loads.slice(0, 3);
+
+      const todayPickup = currentLoad
+        ? buildTodayStop(
+            currentLoad.pickupAt,
+            currentLoad.originCity,
+            currentLoad.originState,
+            currentLoad.brokerName,
+          )
+        : null;
+      const todayDelivery = currentLoad
+        ? buildTodayStop(
+            currentLoad.deliveryAt,
+            currentLoad.destinationCity,
+            currentLoad.destinationState,
+          )
+        : null;
+
+      // Enrich with carrier (client) + active dispatcher (Phase 5 dashboard context).
+      // Driver should see "who I work for" and "who to call" without poking the API.
+      const carrier = user.linkedClientId
+        ? storage.getClient(user.linkedClientId)
+        : undefined;
+      const clientCard = carrier
+        ? { id: carrier.id, name: carrier.name, mc: carrier.mc, persona: (carrier as any).persona as "owner_operator" | "fleet" | "enterprise" | undefined }
+        : null;
+
+      let dispatcherCard: {
+        id: string;
+        fullName: string;
+        email: string;
+        phone: string | null;
+      } | null = null;
+      if (user.linkedClientId) {
+        const assignments = storage.listAssignmentsForClient(user.linkedClientId);
+        // Find the first valid active dispatcher. We iterate (not [0]) because
+        // a client may have stale assignments pointing to blocked or deleted
+        // users — we want the first usable contact, not necessarily the oldest.
+        for (const a of assignments) {
+          const disp = storage.getUserById(a.dispatcherUserId);
+          if (disp && !disp.blocked && disp.role === "dispatcher") {
+            dispatcherCard = {
+              id: disp.id,
+              fullName: disp.fullName ?? disp.email,
+              email: disp.email,
+              phone: disp.phone ?? null,
+            };
+            break;
+          }
+        }
+      }
+
+      const body: DriverDashboard = {
+        driver: {
+          id: user.id,
+          fullName: user.fullName,
+          email: user.email,
+          phone: user.phone,
+          status: user.driverStatus ?? "available",
+        },
+        client: clientCard,
+        dispatcher: dispatcherCard,
+        // V5-003: strip commercial/risk fields for hired drivers (O-O keeps them).
+        // todayPickup/todayDelivery were already built above from the full load
+        // (they only use brokerName, which stays), so projecting here is safe.
+        currentLoad: currentLoad ? driverSafeLoad(currentLoad, isOwnerOperator) : null,
+        todayPickup,
+        todayDelivery,
+        recentLoads: recentLoads.map((l) => driverSafeLoad(l, isOwnerOperator)),
+        // P0 stub — message threads land in a future phase.
+        hasUnreadMessages: false,
+        // P1: compute from driver_documents.expires_at. PendingDoc has more
+        // fields than the P0 stub shape (id, daysUntilExpiry, status) but
+        // this is a strict superset — P0 clients keep parsing without change.
+        pendingDocs: storage.computePendingDocsForUser(user.id, 30),
+      };
+      return res.json(body);
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/me/loads?status=available|booked&limit=&cursor=
+  // -------------------------------------------------------------------------
+  // Cursor pagination over `loads.driver_id = self.id`. Optional `status`
+  // filter applied AFTER fetching the page so we keep a single indexed query;
+  // P0 only has two meaningful values so the in-memory filter is fine.
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/me/loads",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+
+      const limitRaw = req.query.limit;
+      const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+      if (limit !== undefined && (!Number.isFinite(limit) || limit < 1 || limit > 200)) {
+        return res.status(400).json({ message: "limit must be an integer between 1 and 200" });
+      }
+      const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+
+      let statusFilter: "available" | "booked" | undefined;
+      if (typeof req.query.status === "string") {
+        if (req.query.status === "available" || req.query.status === "booked") {
+          statusFilter = req.query.status;
+        } else {
+          return res.status(400).json({
+            message: "status must be 'available' or 'booked'",
+          });
+        }
+      }
+
+      const page = storage.listLoadsForDriver(user.id, { limit, cursor });
+      let items = page.items.map(toLoadFull);
+
+      // Cursor/total contract: the driver page is created_at-ordered with a
+      // created_at-encoded cursor. The owner-operator merge below re-sorts the
+      // items by pickupAt and folds in a second result set, so the driver
+      // page's cursor/total no longer describe the returned items. When the
+      // merge path is taken we therefore drop the cursor (single, complete
+      // page) and recompute total from the merged deduped universe so we never
+      // skip/duplicate carrier loads across pages or understate the count.
+      let isOwnerOperator = false;
+      let merged = false;
+      if (user.linkedClientId) {
+        const linkedClient = storage.getClient(user.linkedClientId);
+        if (isOwnerOf(linkedClient, user)) {
+          isOwnerOperator = true;
+          merged = true;
+          const clientPage = storage.listLoadsForClientIds([user.linkedClientId], { limit: limit ?? 50 });
+          const seen = new Set(items.map((l) => l.id));
+          for (const cl of clientPage.items.map(toLoadFull)) {
+            if (!seen.has(cl.id)) {
+              seen.add(cl.id);
+              items.push(cl);
+            }
+          }
+          items.sort((a, b) => b.pickupAt.localeCompare(a.pickupAt));
+        }
+      }
+
+      // Merged-universe size (deduped) — computed BEFORE the status filter so
+      // total reflects the same unfiltered count semantics as the driver page.
+      const mergedTotal = items.length;
+
+      if (statusFilter) {
+        items = items.filter((l) => deriveLoadStatus(l) === statusFilter);
+      }
+
+      // V5-003: strip commercial/risk fields for hired drivers (O-O keeps them).
+      items = items.map((l) => driverSafeLoad(l, isOwnerOperator));
+
+      return res.json({
+        items,
+        // On the merge path the driver-page cursor can't paginate the merged,
+        // pickupAt-ordered set without skipping/duplicating carrier loads, so we
+        // return a single complete page (no further cursor).
+        nextCursor: merged ? null : page.nextCursor,
+        hasMore: merged ? false : page.nextCursor !== null,
+        // total reflects the unfiltered count. For the merge path that's the
+        // deduped merged universe; otherwise the driver-scoped storage count.
+        // The status filter is a UI convenience, not a separately-counted facet.
+        total: merged ? mergedTotal : page.total,
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/me/loads/:id
+  // -------------------------------------------------------------------------
+  // 404 (not 403) when the load belongs to a different driver. Returning 403
+  // here would leak the existence of the id to anyone with a driver session.
+  // 404 keeps the response identical for "no such load" and "not yours".
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/me/loads/:id",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+
+      const loadId = String(req.params.id);
+      const load = storage.getLoad(loadId);
+      if (!load) return res.status(404).json({ message: "Load not found" });
+
+      // Authorize: a driver may fetch a load assigned to them, OR — if they are
+      // the owner of an owner-operator carrier — any load belonging to their
+      // client (mirrors the dashboard/list merge, which already shows these).
+      const driverId = storage.getLoadDriverId(loadId);
+      const linkedClient = user.linkedClientId ? storage.getClient(user.linkedClientId) : undefined;
+      const isOwnerOperator = isOwnerOf(linkedClient, user);
+      const ownsByAssignment = driverId === user.id;
+      const ownsByCarrier =
+        isOwnerOperator && (load as { clientId?: string }).clientId === user.linkedClientId;
+      if (!ownsByAssignment && !ownsByCarrier) {
+        // Tenant leak prevention: same response shape as missing load.
+        return res.status(404).json({ message: "Load not found" });
+      }
+
+      // Strip commercial/risk fields unless this driver is the owner-operator.
+      return res.json(driverSafeLoad(toLoadFull(load), isOwnerOperator));
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/me/status   body: { status: 'available' | 'on_route' | 'off_duty' }
+  // -------------------------------------------------------------------------
+  // Only drivers have a status. We deliberately 400 (not 403) on admin or
+  // dispatcher hitting this — requireRole('driver') already 403s for those
+  // roles, but if Phase 5 ever loosens the gate (e.g. an "act-as" admin
+  // tool), this defensive check stays correct. Vlad confirmed in the Q-thread
+  // follow-up: explicit 400 > silent ignore.
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/me/status",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      if (user.role !== "driver") {
+        return res.status(400).json({ message: "Only drivers have a status" });
+      }
+
+      const body = updateDriverStatusSchema.parse(req.body);
+      // Defensive re-parse — the schema already validates the enum. Kept here
+      // to make the audit payload's `to` field a typed value.
+      const next = driverStatusSchema.parse(body.status);
+      const prev = user.driverStatus ?? "available";
+
+      // No-op fast path — still 200 so the client can treat the call as
+      // idempotent. Don't emit an audit event for a no-op (noise).
+      if (prev === next) {
+        return res.json(storage.toUserPublic(user));
+      }
+
+      const updated = storage.updateUserStatus(user.id, next);
+      if (!updated) return res.status(404).json({ message: "User not found" });
+
+      storage.audit("driver.status_changed", "user", user.id, {
+        userId: user.id,
+        from: prev,
+        to: next,
+      });
+      return res.json(storage.toUserPublic(updated));
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // PATCH /api/me/profile   body: { fullName?, phone? }
+  // -------------------------------------------------------------------------
+  // Driver-managed fields only. Email and role are admin-managed via
+  // /api/admin/users/:id. Schema enforces "at least one field" — empty bodies
+  // 400 cleanly.
+  // -------------------------------------------------------------------------
+  app.patch(
+    "/api/me/profile",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+
+      const patch = updateDriverProfileSchema.parse(req.body);
+      const updated = storage.updateUserProfileFields(user.id, patch);
+      if (!updated) return res.status(404).json({ message: "User not found" });
+
+      storage.audit("user.profile_updated", "user", user.id, {
+        userId: user.id,
+        actorUserId: user.id,
+        fields: Object.keys(patch),
+      });
+      return res.json(storage.toUserPublic(updated));
+    }),
+  );
+
+  // ===========================================================================
+  // Phase 4 P1 — Documents (driver-owned compliance docs)
+  // ===========================================================================
+  //
+  // GET    /api/me/documents              — list own docs (cursor pagination)
+  // POST   /api/me/documents              — multipart upload (file + metadata)
+  // DELETE /api/me/documents/:id          — delete own doc + unlink file
+  //
+  // Tenant scoping: every read/write filtered by session userId. /:id endpoints
+  // return 404 (not 403) if doc belongs to someone else — same anti-enumeration
+  // pattern as P0 /api/me/loads/:id.
+
+  app.get(
+    "/api/me/documents",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const limit = parseLimit(req.query.limit);
+      const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+      const out = storage.listDriverDocumentsForUser(user.id, { limit, cursor });
+      return res.json(out);
+    }),
+  );
+
+  app.post(
+    "/api/me/documents",
+    driver,
+    upload.single("file"),
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "file is required (multipart field 'file')" });
+
+      // Parse + validate metadata before we commit to a DB row. If parsing
+      // fails, drop the uploaded temp file so we don't accumulate orphans.
+      let meta: ReturnType<typeof uploadDriverDocumentSchema.parse>;
+      try {
+        meta = uploadDriverDocumentSchema.parse(req.body);
+      } catch (err) {
+        try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+        throw err;
+      }
+
+      // Audit V3-2 — carrier-level compliance docs (insurance, UCR, IRP,
+      // MCS-150, DQ file generic) MUST NOT be driver-writable. A driver who
+      // uploads a forged cargo_insurance with expiresAt=2030 would silence
+      // the alert calendar and feed Montgomery defense pack with garbage.
+      // Drivers can still self-upload PERSONAL compliance docs (CDL, medical,
+      // their own §391 paperwork) which are required for THEIR DQ file.
+      // Checked BEFORE the rename below so a rejected upload never gets moved
+      // out of multer's temp path — otherwise the cleanup unlinks a path that
+      // no longer exists and leaks an orphan blob under the uploads volume.
+      const CARRIER_LEVEL_DOC_TYPES = new Set([
+        "cargo_insurance",
+        "auto_liability",
+        "general_liability",
+        "ucr_certificate",
+        "irp_cab_card",
+        "mcs150",
+        "dq_file",
+      ]);
+      if (CARRIER_LEVEL_DOC_TYPES.has(meta.type)) {
+        // Cleanup multer temp file before bailing.
+        try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+        return res.status(403).json({
+          message:
+            "This document type is carrier-level and must be uploaded by an admin or dispatcher via /admin/clients/:id/documents.",
+        });
+      }
+
+      // Move the temp file from multer's `uploadsRoot` flat dir into a typed
+      // subfolder (driver-docs/<userId>/<filename>) for sanity in backups.
+      const subdir = path.join(uploadsRoot, "driver-docs", user.id);
+      fs.mkdirSync(subdir, { recursive: true });
+      const safeBase = `${Date.now()}-${path.basename(file.originalname).replace(/[^\w.\-]/g, "_")}`;
+      const finalPath = path.join(subdir, safeBase);
+      fs.renameSync(file.path, finalPath);
+      // storage_path is server-relative; resolution to absolute happens at read.
+      const storagePath = path.relative(uploadsRoot, finalPath);
+
+      // Driver-uploaded personal compliance docs (cdl, medical, dq_*) stay
+      // attached to the user. Linkage to the carrier is via the user.id;
+      // computeDqStatusForDriver picks them up there.
+      const inferredClientId: string | null = null;
+
+      const doc = storage.insertDriverDocument({
+        ownerUserId: user.id,
+        clientId: inferredClientId,
+        type: meta.type,
+        fileName: file.originalname,
+        storagePath,
+        expiresAt: meta.expiresAt ?? null,
+        notes: meta.notes ?? null,
+      });
+
+      storage.audit("driver.document_uploaded", "driver_document", doc.id, {
+        userId: user.id,
+        actorUserId: user.id,
+        type: doc.type,
+        expiresAt: doc.expiresAt,
+        sizeBytes: file.size,
+      });
+
+      return res.status(201).json(doc);
+    }),
+  );
+
+  app.delete(
+    "/api/me/documents/:id",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const id = String(req.params.id);
+      const doc = storage.getDriverDocument(id);
+      // 404 (not 403) when foreign — anti-enumeration, matches P0 loads/:id.
+      if (!doc || doc.ownerUserId !== user.id) {
+        return res.status(404).json({ message: "Document not found" });
+      }
+      const ok = storage.deleteDriverDocument(id, user.id);
+      if (!ok) return res.status(404).json({ message: "Document not found" });
+      // Best-effort unlink the file. Don't fail the request on FS errors —
+      // the DB row is already gone, an orphan blob is recoverable.
+      try {
+        const abs = path.join(uploadsRoot, doc.storagePath);
+        if (fs.existsSync(abs)) fs.unlinkSync(abs);
+      } catch { /* ignore */ }
+
+      storage.audit("driver.document_deleted", "driver_document", id, {
+        userId: user.id,
+        actorUserId: user.id,
+        type: doc.type,
+      });
+      return res.status(204).end();
+    }),
+  );
+
+  // ===========================================================================
+  // Phase 4 P1 — Check-ins
+  // ===========================================================================
+  //
+  // GET  /api/me/loads/:id/checkins  — timeline for one load (driver-scoped)
+  // POST /api/me/loads/:id/checkin   — record arrival/loaded/delivered + geo
+  //
+  // Load ownership is verified before any read/write — same 404 rule as P0.
+
+  app.get(
+    "/api/me/loads/:id/checkins",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const loadDriverId = storage.getLoadDriverId(String(req.params.id));
+      if (!loadDriverId || loadDriverId !== user.id) {
+        return res.status(404).json({ message: "Load not found" });
+      }
+      return res.json({ items: storage.listCheckinsForLoad(String(req.params.id)) });
+    }),
+  );
+
+  app.post(
+    "/api/me/loads/:id/checkin",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const loadDriverId = storage.getLoadDriverId(String(req.params.id));
+      if (!loadDriverId || loadDriverId !== user.id) {
+        return res.status(404).json({ message: "Load not found" });
+      }
+      const body = createCheckinSchema.parse(req.body);
+      const checkin = storage.insertLoadCheckin({
+        loadId: String(req.params.id),
+        driverUserId: user.id,
+        kind: body.kind,
+        lat: body.lat ?? null,
+        lng: body.lng ?? null,
+        notes: body.notes ?? null,
+      });
+      // A 'delivered' check-in completes the load: stamp deliveredAt + status so
+      // it leaves the active/billable set (ACTIVE_LOAD_SQL keys off
+      // payload.$.deliveredAt IS NULL). Without this the load stays active and
+      // billable forever. Ownership is already enforced above (loadDriverId ===
+      // user.id), so the driver can only complete their own load.
+      if (body.kind === "delivered") {
+        storage.markLoadDelivered(String(req.params.id));
+      }
+      storage.audit("driver.checkin", "load", String(req.params.id), {
+        userId: user.id,
+        actorUserId: user.id,
+        kind: body.kind,
+        hasGeo: typeof body.lat === "number",
+      });
+      return res.status(201).json(checkin);
+    }),
+  );
+
+  // ===========================================================================
+  // Phase 4 P1 — Expenses
+  // ===========================================================================
+  //
+  // GET  /api/me/expenses             — list own expenses (cursor + ?loadId=)
+  // POST /api/me/expenses             — log new expense (optional photo file)
+  //
+  // P1 scope: driver-side log only. No billing integration, no admin approval
+  // queue (will arrive in Phase 5). Amount taken as dollars in body, stored
+  // in cents (integer) to avoid floating-point drift in any future totals.
+
+  app.get(
+    "/api/me/expenses",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const limit = parseLimit(req.query.limit);
+      const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+      const loadId = typeof req.query.loadId === "string" ? req.query.loadId : undefined;
+      const out = storage.listExpensesForUser(user.id, { limit, cursor, loadId });
+      return res.json(out);
+    }),
+  );
+
+  app.post(
+    "/api/me/expenses",
+    driver,
+    upload.single("photo"),
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+
+      let body: ReturnType<typeof createExpenseSchema.parse>;
+      try {
+        body = createExpenseSchema.parse(req.body);
+      } catch (err) {
+        if (req.file) { try { fs.unlinkSync(req.file.path); } catch { /* ignore */ } }
+        throw err;
+      }
+
+      // If the expense references a load, verify it belongs to this driver
+      // (same anti-enumeration: a foreign loadId acts as if not found).
+      if (body.loadId) {
+        const owner = storage.getLoadDriverId(body.loadId);
+        if (!owner || owner !== user.id) {
+          if (req.file) { try { fs.unlinkSync(req.file.path); } catch { /* ignore */ } }
+          return res.status(404).json({ message: "Load not found" });
+        }
+      }
+
+      // Move uploaded photo (if any) into receipts subfolder.
+      let photoStoragePath: string | null = null;
+      if (req.file) {
+        const subdir = path.join(uploadsRoot, "receipts", user.id);
+        fs.mkdirSync(subdir, { recursive: true });
+        const safeBase = `${Date.now()}-${path.basename(req.file.originalname).replace(/[^\w.\-]/g, "_")}`;
+        const finalPath = path.join(subdir, safeBase);
+        fs.renameSync(req.file.path, finalPath);
+        photoStoragePath = path.relative(uploadsRoot, finalPath);
+      }
+
+      const expense = storage.insertDriverExpense({
+        driverUserId: user.id,
+        loadId: body.loadId ?? null,
+        category: body.category,
+        amountCents: Math.round(body.amount * 100),
+        photoStoragePath,
+        notes: body.notes ?? null,
+      });
+
+      storage.audit("driver.expense_filed", "driver_expense", expense.id, {
+        userId: user.id,
+        actorUserId: user.id,
+        category: expense.category,
+        amountCents: expense.amountCents,
+        loadId: expense.loadId,
+        hasPhoto: photoStoragePath !== null,
+      });
+
+      return res.status(201).json(expense);
+    }),
+  );
+
+  // ---------------------------------------------------------------------------
+  // POST /api/me/expenses/scan-receipt — OCR preview (no persistence)
+  // ---------------------------------------------------------------------------
+  //
+  // The driver uploads a fuel-receipt photo and we run it through Claude vision
+  // (server/lib/ai/receipt-ocr.ts — already used by the Telegram bot) to read
+  // the amount / station / gallons. This is a PREVIEW only: nothing is written
+  // to the DB and the temp file is always deleted. The client uses the result
+  // to pre-fill the expense amount, the driver confirms, then submits the
+  // normal POST /api/me/expenses. Degrades to { ocr: null } when
+  // ANTHROPIC_API_KEY is unset (parseReceipt returns null) — the form still
+  // works with manual entry.
+  app.post(
+    "/api/me/expenses/scan-receipt",
+    driver,
+    upload.single("photo"),
+    ah(async (req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const file = req.file;
+      if (!file) {
+        return res.status(400).json({ message: "photo is required (multipart field 'photo')" });
+      }
+      // Vision only accepts raster images. PDFs/text pass the upload filter but
+      // can't be OCR'd here — reject clearly rather than silently returning null.
+      const mediaType = file.mimetype === "image/png" ? "image/png" : "image/jpeg";
+      const isImage = file.mimetype === "image/png" || file.mimetype === "image/jpeg";
+      try {
+        if (!isImage) {
+          return res
+            .status(400)
+            .json({ message: "Only JPEG or PNG receipts can be scanned" });
+        }
+        // Per-driver cost cap on the paid vision call. Checked AFTER the cheap
+        // validations (so a bad request doesn't consume budget) but BEFORE the
+        // billable parseReceipt call.
+        const budget = ocrRateCheck(user.id);
+        if (!budget.allowed) {
+          res.setHeader("Retry-After", String(budget.retryAfterSec));
+          return res.status(429).json({
+            message: "Receipt-scan limit reached. Try again later or enter the amount manually.",
+            retryAfterSec: budget.retryAfterSec,
+          });
+        }
+        // Persistent per-user daily AI quota (50/day) + purchased credits, on top
+        // of the in-memory hourly/daily burst guard above. PRE-CHECK here (so a
+        // request with nothing left is rejected before the paid call), but only
+        // COMMIT the consume after a successful, billable OCR — see below. A
+        // null result (no API key / API error) returns { ocr: null } and must
+        // NOT charge a daily slot or a purchased credit. Abusive empty retries
+        // are still bounded by the in-memory ocrRateCheck guard above.
+        // Scope credit spend to the driver's linked carrier (the carrier their
+        // AI packs are purchased for): spend that carrier's scoped bucket first,
+        // then the legacy unscoped bucket. undefined linkedClientId → legacy-only
+        // behavior (exactly as before scoping existed).
+        const activeClientId = user.linkedClientId ?? undefined;
+        const quotaStatus = storage.getAiQuotaStatus(user.id, undefined, activeClientId);
+        if (quotaStatus.remainingToday <= 0 && quotaStatus.credits <= 0) {
+          return res.status(429).json({
+            message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
+            code: "ai_quota_exceeded",
+          });
+        }
+        const imageBase64 = fs.readFileSync(file.path).toString("base64");
+        const ocr = await parseReceipt(imageBase64, mediaType);
+        // Only charge the quota once we actually have a billable result. On a
+        // null OCR nothing is consumed, so the slot/credit is preserved.
+        if (ocr !== null) {
+          // consumeAiQuota is atomic; check its result rather than the stale
+          // pre-check above. A concurrent request can drain the last free slot
+          // or credit between getAiQuotaStatus and here — in that race the
+          // commit fails (ok=false) and we must NOT hand back a billable OCR we
+          // couldn't charge for. Surface the same quota-exhausted 429 as the
+          // sibling cockpit.ts path.
+          const quota = storage.consumeAiQuota(user.id, undefined, activeClientId);
+          if (!quota.ok) {
+            return res.status(429).json({
+              message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
+              code: "ai_quota_exceeded",
+            });
+          }
+        }
+        // Audit the attempt (not the image) so we can see OCR usage/hit-rate.
+        storage.audit("driver.receipt_scanned", "driver_expense", "preview", {
+          userId: user.id,
+          actorUserId: user.id,
+          matched: ocr !== null,
+        });
+        return res.json({ ocr });
+      } finally {
+        // Preview only — never keep the upload.
+        try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+      }
+    }),
+  );
+
+  // ===========================================================================
+  // Fuel transactions — a driver's actual fuel purchases
+  // ===========================================================================
+  //
+  // GET  /api/me/fuel   — list own fuel purchases (last 90 days)
+  // POST /api/me/fuel   — log a fuel purchase
+  //
+  // Unlike a generic expense, a fuel transaction feeds IFTA gallons-per-state
+  // and MPG analytics (server/lib/ifta.ts). The fuel_transactions table existed
+  // and was read by those reports, but nothing ever wrote driver purchases into
+  // it — so gallons were always 0. This is that write path. Station coordinates
+  // drive IFTA state attribution; when the client doesn't supply them we fall
+  // back to the driver's last known GPS location (they're at the pump).
+
+  app.get(
+    "/api/me/fuel",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const since = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
+      const items = storage.listFuelTransactionsForDriver(user.id, since);
+      return res.json({ items });
+    }),
+  );
+
+  app.post(
+    "/api/me/fuel",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const body = createFuelTransactionSchema.parse(req.body);
+
+      // A referenced load must belong to this driver (same 404 anti-enumeration).
+      if (body.loadId) {
+        const owner = storage.getLoadDriverId(body.loadId);
+        if (!owner || owner !== user.id) {
+          return res.status(404).json({ message: "Load not found" });
+        }
+      }
+
+      // Station coords: use what the client sent, else the driver's last ping.
+      const stationLat = body.stationLat ?? user.lastLat ?? null;
+      const stationLng = body.stationLng ?? user.lastLng ?? null;
+
+      const pricePerGallonCents = Math.round(body.pricePerGallon * 100);
+      const totalCents =
+        body.total != null
+          ? Math.round(body.total * 100)
+          : Math.round(body.gallons * body.pricePerGallon * 100);
+
+      const id = storage.recordFuelTransaction({
+        userId: user.id,
+        clientId: user.linkedClientId ?? null,
+        loadId: body.loadId ?? null,
+        stationName: body.stationName ?? null,
+        stationLat,
+        stationLng,
+        fuelType: body.fuelType,
+        gallons: body.gallons,
+        pricePerGallonCents,
+        totalCents,
+        odometerMiles: body.odometerMiles ?? null,
+        receiptStoragePath: null,
+        notes: body.notes ?? null,
+        // Clamp driver-supplied occurredAt to a sane window so fuel gallons
+        // can't be backdated into a filed IFTA quarter (or forward-dated).
+        occurredAt: clampFuelOccurredAt(body.occurredAt),
+      });
+
+      storage.audit("driver.fuel_logged", "fuel_transaction", id, {
+        userId: user.id,
+        actorUserId: user.id,
+        gallons: body.gallons,
+        totalCents,
+        clientId: user.linkedClientId ?? null,
+        loadId: body.loadId ?? null,
+        hasStationGeo: stationLat != null && stationLng != null,
+      });
+
+      return res.status(201).json(storage.getFuelTransaction(id));
+    }),
+  );
+
+  // ===========================================================================
+  // Phase 4 P1 — Issues (driver-reported problems)
+  // ===========================================================================
+  //
+  // POST /api/me/issues
+  //
+  // Creates an approval_task. Routing logic (Phase 4 P0 dispatcher portal):
+  //   1. Driver has linkedClientId AND that client has an active dispatcher
+  //      → assigneeRole='dispatcher', payload.dispatcherUserId = X,
+  //        payload.routedTo='dispatcher'
+  //   2. Otherwise (no linked client / unassigned client)
+  //      → assigneeRole='admin', payload.routedTo='admin_fallback'
+  //
+  // Admin queue (P1.1) sees both; dispatcher queue filters by
+  // payload.dispatcherUserId via json_extract. This way nothing ever falls
+  // through the cracks even before all clients have dispatchers attached.
+
+  app.post(
+    "/api/me/issues",
+    driver,
+    ah((req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+      const body = createIssueSchema.parse(req.body);
+
+      // If issue references a load, verify ownership (same 404 rule).
+      if (body.loadId) {
+        const owner = storage.getLoadDriverId(body.loadId);
+        if (!owner || owner !== user.id) {
+          return res.status(404).json({ message: "Load not found" });
+        }
+      }
+
+      // Routing: dispatcher first, admin fallback.
+      let assigneeRole: "dispatcher" | "admin" = "admin";
+      let dispatcherUserId: string | null = null;
+      let routedTo: "dispatcher" | "admin_fallback" = "admin_fallback";
+      if (user.linkedClientId) {
+        const active = storage.getActiveDispatcherForClient(user.linkedClientId);
+        if (active) {
+          assigneeRole = "dispatcher";
+          dispatcherUserId = active.dispatcherUserId;
+          routedTo = "dispatcher";
+        }
+      }
+
+      const task = storage.createApprovalTask({
+        taskType: "driver_issue",
+        assigneeRole,
+        payload: {
+          severity: body.severity,
+          title: body.title,
+          description: body.description ?? null,
+          loadId: body.loadId ?? null,
+          reporterUserId: user.id,
+          dispatcherUserId,
+          routedTo,
+        },
+        createdByUserId: user.id,
+      });
+
+      storage.audit("driver.issue_reported", "approval_task", task.id, {
+        userId: user.id,
+        actorUserId: user.id,
+        severity: body.severity,
+        title: body.title,
+        loadId: body.loadId ?? null,
+        routedTo,
+        dispatcherUserId,
+      });
+
+      return res.status(201).json(task);
+    }),
+  );
+
+  // ===========================================================================
+  // Owner-operator self-dispatch: POST /api/me/loads
+  // ===========================================================================
+  //
+  // Allows a driver with persona=owner_operator to create loads for their own
+  // company without going through an admin or dispatcher. The server:
+  //   1. Verifies caller is a driver with linkedClientId.
+  //   2. Verifies the linked client has persona=owner_operator.
+  //   3. Creates the load with clientId=linkedClientId, driverId=user.id.
+  //
+  // Security: we NEVER trust the body for clientId or driverId — both are
+  // derived from the session user, ensuring tenant isolation.
+  // ===========================================================================
+
+  // A parseable calendar instant. We deliberately DON'T use z.string().datetime()
+  // here: the driver UI submits a <input type="datetime-local"> value
+  // ("2026-06-25T14:30" — no seconds, no offset) which RFC-3339 .datetime()
+  // rejects, 400-ing legitimate submissions. new Date() accepts that form, so we
+  // validate parseability via the round-trip instead. This still rejects empty /
+  // garbage strings that would otherwise flow into deriveLoadStatus, buildTodayStop
+  // and the pickupAt-descending sorts as NaN/invalid instants.
+  const isParseableInstant = (s: string) => Number.isFinite(new Date(s).getTime());
+  const selfDispatchLoadSchema = z
+    .object({
+      originCity: z.string().min(1),
+      originState: z.string().min(2).max(2),
+      destinationCity: z.string().min(1),
+      destinationState: z.string().min(2).max(2),
+      rate: z.number().positive().max(1_000_000),
+      pickupAt: z.string().refine(isParseableInstant, {
+        message: "pickupAt must be a valid date/time",
+      }),
+      deliveryAt: z.string().refine(isParseableInstant, {
+        message: "deliveryAt must be a valid date/time",
+      }),
+      equipment: equipmentSchema,
+      brokerName: z.string().default("Self-dispatch"),
+      brokerMc: z.string().default(""),
+      notes: z.string().optional(),
+    })
+    // Delivery must not precede pickup — a reversed/equal window produces
+    // nonsensical durations in feasibility/buffer math downstream.
+    .refine(
+      (v) => new Date(v.deliveryAt).getTime() >= new Date(v.pickupAt).getTime(),
+      { message: "deliveryAt must be on or after pickupAt", path: ["deliveryAt"] },
+    );
+
+  app.post(
+    "/api/me/loads",
+    driver,
+    // Billing gate: a self-dispatched load is billable (3% success fee + flat),
+    // so an expired / past-due-over-grace carrier must not be able to create
+    // one. requireActiveBilling resolves the carrier from user.linkedClientId
+    // for drivers and 402s on expired/past_due-over-grace.
+    requireActiveBilling,
+    ah(async (req, res) => {
+      const user = getCurrentUser(req);
+      if (!user) return res.status(401).json({ message: "Authentication required" });
+
+      if (!user.linkedClientId) {
+        return res.status(403).json({
+          message: "Self-dispatch requires a linked carrier company. Contact your admin.",
+        });
+      }
+
+      const client = storage.getClient(user.linkedClientId);
+      // getClient resolves archived clients; a driver of an archived carrier
+      // must not be able to self-dispatch new loads.
+      if (!client || (client as { deletedAt?: string | null }).deletedAt) {
+        return res.status(403).json({ message: "Linked client not found." });
+      }
+
+      if ((client as any).persona !== "owner_operator") {
+        return res.status(403).json({
+          message: "Self-dispatch is only available for owner-operator accounts.",
+        });
+      }
+
+      const body = selfDispatchLoadSchema.parse(req.body);
+
+      // Build a full InsertLoad. brokerScore/fraudRisk default to neutral
+      // (see below); loadedMiles is approximated as 0 (planner phase later).
+      const rawLoad = {
+        source: "self_dispatch",
+        originCity: body.originCity,
+        originState: body.originState,
+        originLat: 0,
+        originLng: 0,
+        destinationCity: body.destinationCity,
+        destinationState: body.destinationState,
+        destinationLat: 0,
+        destinationLng: 0,
+        rate: body.rate,
+        loadedMiles: 0,
+        pickupAt: body.pickupAt,
+        deliveryAt: body.deliveryAt,
+        equipment: body.equipment,
+        brokerName: body.brokerName,
+        // Cross-tenant broker-trust poisoning guard: a self-dispatch load has no
+        // verified third-party broker relationship, yet storage.upsertLoad's auto
+        // write-path appends a positive 'load_booked' signal to the GLOBAL,
+        // cross-tenant broker_trust_signals table whenever brokerMc is non-empty.
+        // A free-text brokerMc here lets an owner-operator fabricate booking
+        // volume / positive-signal counts against ANY competitor's MC (poisoning
+        // the shared broker profile read by GET /api/broker-trust/:mc and /top).
+        // Force it empty so self-dispatch never emits third-party trust signals;
+        // this also short-circuits the FMCSA lookup in enrichLoadBestEffort (which
+        // no-ops on an empty brokerMc), matching the common keyless self-dispatch
+        // case. The display brokerName ("Self-dispatch" by default) is unaffected.
+        brokerMc: "",
+        // M2: a self-dispatched load has NO third-party broker vetting — claiming
+        // a perfect score / zero fraud poisons the broker-trust & lane analytics.
+        // Use neutral/unknown values so self-dispatch can't skew the scoring.
+        brokerScore: 50,
+        fraudRisk: 50,
+        marketQuality: 50,
+        notes: body.notes,
+        // Server-injected tenant fields — never from body
+        clientId: user.linkedClientId,
+        driverId: user.id,
+        // date-only convention (see billing week boundaries + dateOnlySchema);
+        // full ISO here 400s loadFullSchema on every view of this load.
+        bookedAt: new Date().toISOString().slice(0, 10),
+      };
+
+      // enrichLoadBestEffort always recomputes marketQuality (lane benchmark).
+      // The neutral brokerScore/fraudRisk above are only overwritten when the
+      // driver supplied a real brokerMc AND FMCSA_WEB_KEY is configured — in
+      // that case FMCSA verification of the third-party broker is strictly
+      // better than the neutral guess (double-brokering defense). With no MC
+      // (the common self-dispatch case) or no key, the neutral values stand and
+      // there is no network call. The FMCSA lookup is timeout-bounded and never
+      // blocks or fails the request.
+      const enriched = await enrichLoadBestEffort(rawLoad);
+      const load = storage.upsertLoad(enriched as any);
+
+      storage.audit("driver.self_dispatch_load_created", "load", load.id, {
+        actorUserId: user.id,
+        clientId: user.linkedClientId,
+        driverId: user.id,
+      });
+
+      return res.status(201).json(load);
+    }),
+  );
+}

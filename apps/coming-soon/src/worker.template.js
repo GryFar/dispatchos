@@ -72,7 +72,11 @@ export default {
         await env.SUBSCRIBERS.put(key, JSON.stringify(record));
 
         const indexRaw = (await env.SUBSCRIBERS.get('_index')) || '[]';
-        let index = JSON.parse(indexRaw);
+        // Parse defensively: a corrupted _index must never turn the already-
+        // committed primary `sub:<email>` write (above) into a 400. Fall back to
+        // [] on parse failure, mirroring the !Array.isArray defense below.
+        let index;
+        try { index = JSON.parse(indexRaw); } catch { index = []; }
         if (!Array.isArray(index)) index = [];
         index.push({ email, ts: record.ts, country: record.country });
         if (index.length > 10000) index = index.slice(-10000);
@@ -84,11 +88,21 @@ export default {
       }
     }
 
-    if (p === '/api/admin/subscribers' && req.method === 'GET') {
-      const auth = req.headers.get('authorization');
-      if (!env.ADMIN_TOKEN || auth !== 'Bearer ' + env.ADMIN_TOKEN) return jsonResp({ error: 'unauthorized' }, 401);
+    if (url.pathname === '/api/admin/subscribers' && req.method === 'GET') {
+      // Constant-time token compare — this endpoint returns subscriber PII, so a
+      // plain `!==` would leak the token byte-by-byte via response timing.
+      const auth = req.headers.get('authorization') || '';
+      const expected = 'Bearer ' + (env.ADMIN_TOKEN || '');
+      if (!env.ADMIN_TOKEN || !timingSafeEqual(auth, expected)) return jsonResp({ error: 'unauthorized' }, 401);
+      // NOTE: _index is maintained via a read-modify-write below and can drop
+      // entries under concurrent subscribes (KV has no CAS). These endpoints are
+      // currently unused by the live frontend (it posts to the Fly backend) —
+      // prefer removing them, or switch to KV list({prefix:'sub:'}) if revived.
       const indexRaw = (await env.SUBSCRIBERS.get('_index')) || '[]';
-      return new Response(indexRaw, { headers: { 'content-type': 'application/json' }});
+      // This body is subscriber PII (emails + countries): match the rest of the
+      // app by sending no-store + SECURITY_HEADERS. Emit the raw string directly
+      // (no re-parse) so a corrupted _index can't throw here.
+      return new Response(indexRaw, { headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...SECURITY_HEADERS }});
     }
 
     if (p === '/api/health') return jsonResp({ ok: true, time: new Date().toISOString() });
@@ -98,4 +112,11 @@ export default {
 };
 function jsonResp(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...SECURITY_HEADERS }});
+}
+// Constant-time string compare (content-timing-safe; length is not secret here).
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }

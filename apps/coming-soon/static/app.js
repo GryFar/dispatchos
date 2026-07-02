@@ -1,8 +1,8 @@
 // === i18n: UA / RU / EN ===
 const I18N = {
   en: {
-    status: 'building',
-    badge: 'v1.3.0 · in development',
+    status: 'early access',
+    badge: 'v1.3.1 · early access build',
     heroH1: 'The dispatch platform <br>owner-operators <em>actually</em> trust.',
     heroLede:
       "We're building something for hot shot and car hauler drivers who run their own authority. " +
@@ -22,19 +22,19 @@ const I18N = {
     phase0Title: 'Phase 0',  phase0Sub: 'Foundation',           phase0Body: 'Domains, security, repo, team',
     phase1Title: 'Phase 1-3', phase1Sub: 'Backend rewrite',     phase1Body: 'Multi-role auth, API split, schema migration',
     phase2Title: 'Phase 4-5', phase2Sub: 'Portals',             phase2Body: 'Admin · Dispatcher · Driver · Client',
-    phase3Title: 'Phase 6',  phase3Sub: 'Launch',               phase3Body: 'Production hardening, onboarding, support',
+    phase3Title: 'Phase 6',  phase3Sub: 'Load sources & launch', phase3Body: 'Board connectors, smart matching, onboarding',
     contactTitle: 'Need to reach us before launch?',
     contactOps: 'Operations',
     contactGeneral: 'General',
-    footerCo: '© 2026 DispatchOS · Florida LLC · Clearwater, FL',
+    footerCo: '© 2026 DispatchOS · Florida LLC · Saint Petersburg, FL',
     footerNote: 'Not a broker · Not a carrier · Dispatcher service only',
     msgInvalidEmail: 'Please enter a valid email address.',
     msgSuccess: "You're on the list. We'll email you at launch.",
     msgError: 'Could not save right now — try again in a sec, or email info@dispatchos.co.',
   },
   ua: {
-    status: 'розробка',
-    badge: 'v1.3.0 · у розробці',
+    status: 'ранній доступ',
+    badge: 'v1.3.1 · ранній доступ',
     heroH1: 'Диспетчерська платформа, <br>якій <em>дійсно</em> довіряють <br>owner-operators.',
     heroLede:
       "Ми будуємо систему для hot shot та car hauler водіїв з власною authority. " +
@@ -54,19 +54,19 @@ const I18N = {
     phase0Title: 'Фаза 0',   phase0Sub: 'Фундамент',            phase0Body: 'Домени, безпека, репозиторій, команда',
     phase1Title: 'Фази 1-3', phase1Sub: 'Перебудова бекенду',   phase1Body: 'Ролі, розподіл API, міграція схеми',
     phase2Title: 'Фази 4-5', phase2Sub: 'Портали',              phase2Body: 'Admin · Диспетчер · Водій · Клієнт',
-    phase3Title: 'Фаза 6',   phase3Sub: 'Запуск',               phase3Body: 'Production hardening, онбординг, підтримка',
+    phase3Title: 'Фаза 6',   phase3Sub: 'Інтеграції & лонч', phase3Body: 'Підключення бордів, скоринг, онбординг',
     contactTitle: 'Потрібно зв\'язатись до запуску?',
     contactOps: 'Операційка',
     contactGeneral: 'Загальні',
-    footerCo: '© 2026 DispatchOS · Florida LLC · Clearwater, FL',
+    footerCo: '© 2026 DispatchOS · Florida LLC · Saint Petersburg, FL',
     footerNote: 'Не брокер · Не carrier · Тільки dispatcher service',
     msgInvalidEmail: 'Введи валідний email.',
     msgSuccess: 'Ти у списку. Напишемо на запуск.',
     msgError: 'Не вдалось зберегти — спробуй ще раз або напиши на info@dispatchos.co.',
   },
   ru: {
-    status: 'разработка',
-    badge: 'v1.3.0 · в разработке',
+    status: 'ранний доступ',
+    badge: 'v1.3.1 · ранний доступ',
     heroH1: 'Диспетчерская платформа, <br>которой <em>реально</em> доверяют <br>owner-operators.',
     heroLede:
       "Мы делаем систему для hot shot и car hauler водителей со своей authority. " +
@@ -86,11 +86,11 @@ const I18N = {
     phase0Title: 'Фаза 0',   phase0Sub: 'Фундамент',            phase0Body: 'Домены, безопасность, репозиторий, команда',
     phase1Title: 'Фазы 1-3', phase1Sub: 'Перестройка бэкенда',  phase1Body: 'Роли, разделение API, миграция схемы',
     phase2Title: 'Фазы 4-5', phase2Sub: 'Порталы',              phase2Body: 'Admin · Диспетчер · Водитель · Клиент',
-    phase3Title: 'Фаза 6',   phase3Sub: 'Запуск',               phase3Body: 'Production hardening, онбординг, поддержка',
+    phase3Title: 'Фаза 6',   phase3Sub: 'Интеграции & лонч', phase3Body: 'Подключение бордов, скоринг, онбординг',
     contactTitle: 'Нужно связаться до запуска?',
     contactOps: 'Операционка',
     contactGeneral: 'Общие вопросы',
-    footerCo: '© 2026 DispatchOS · Florida LLC · Clearwater, FL',
+    footerCo: '© 2026 DispatchOS · Florida LLC · Saint Petersburg, FL',
     footerNote: 'Не брокер · Не carrier · Только dispatcher service',
     msgInvalidEmail: 'Введи валидный email.',
     msgSuccess: 'Ты в списке. Напишем на запуск.',
@@ -173,7 +173,7 @@ document.querySelectorAll('.lang-btn').forEach((btn) => {
 
 // === Day counter ===
 const PROJECT_START = new Date('2026-05-14T00:00:00-04:00');
-const PROGRESS_TARGET = 25;
+const PROGRESS_TARGET = 75;
 
 (function () {
   const now = new Date();
@@ -231,15 +231,13 @@ const PROGRESS_TARGET = 25;
     btn.disabled = true;
 
     try {
-      const res = await fetch('/api/subscribe', {
+      const res = await fetch('https://demo.dispatchos.co/api/public/subscribe', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           email,
-          source: 'coming-soon',
           lang,
-          ts: Date.now(),
-          referrer: document.referrer || null,
+          referer: document.referrer || undefined,
         }),
       });
 

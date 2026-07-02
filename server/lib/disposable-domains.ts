@@ -1,0 +1,96 @@
+// ===========================================================================
+// server/lib/disposable-domains.ts — disposable / throwaway email blocklist
+// ===========================================================================
+//
+// Anti-fraud: block trial signups from well-known temporary-email providers
+// (mailinator, guerrillamail, 10minutemail, ...). This is a pragmatic static
+// list — it won't catch every throwaway domain (new ones appear constantly),
+// but it stops the overwhelming majority of low-effort abuse without a paid
+// validation API. Combined with the invite gate + per-MC uniqueness, it raises
+// the cost of farming free trials.
+//
+// Matching is on the registrable domain, case-insensitive, and also catches
+// subdomains (e.g. "foo.mailinator.com" -> blocked because it ends with
+// ".mailinator.com").
+
+import { domainToASCII } from "node:url";
+
+const DISPOSABLE_DOMAINS: ReadonlySet<string> = new Set([
+  "mailinator.com",
+  "guerrillamail.com",
+  "guerrillamail.info",
+  "guerrillamail.biz",
+  "guerrillamail.net",
+  "guerrillamail.org",
+  "grr.la",
+  "sharklasers.com",
+  "10minutemail.com",
+  "10minutemail.net",
+  "tempmail.com",
+  "temp-mail.org",
+  "tempmail.net",
+  "throwawaymail.com",
+  "yopmail.com",
+  "yopmail.net",
+  "getnada.com",
+  "dispostable.com",
+  "trashmail.com",
+  "trashmail.net",
+  "maildrop.cc",
+  "mailnesia.com",
+  "mintemail.com",
+  "fakeinbox.com",
+  "spamgourmet.com",
+  "mohmal.com",
+  "emailondeck.com",
+  "tempinbox.com",
+  "moakt.com",
+  "mailcatch.com",
+  "inboxbear.com",
+  "tempr.email",
+  "discard.email",
+  "burnermail.io",
+  "33mail.com",
+  "anonbox.net",
+  "spam4.me",
+  "mailsac.com",
+  "harakirimail.com",
+  "tempmailo.com",
+  "luxusmail.org",
+  "emailfake.com",
+  "minuteinbox.com",
+]);
+
+/**
+ * Returns true if the email's domain is a known disposable/throwaway provider.
+ * Matches the exact registrable domain or any subdomain of it. Malformed input
+ * returns false (let the schema's .email() validator reject format issues).
+ */
+export function isDisposableEmail(email: string): boolean {
+  const at = email.lastIndexOf("@");
+  if (at < 0) return false;
+  // V4-008: canonicalize the domain to ASCII before matching. domainToASCII
+  // performs IDNA mapping, so the punycode and unicode spellings of the SAME
+  // registrable domain compare equal against the ASCII blocklist (and it
+  // returns "" on garbage, which we treat as "not disposable" — the schema's
+  // .email() rejects bad formats). NOTE: this does NOT defend against
+  // lookalike/homograph domains — IDNA does not fold accented or confusable
+  // characters to their ASCII base letters (e.g. "máilinator.com" maps to the
+  // distinct domain "xn--milinator-01a.com", not "mailinator.com"). Homograph
+  // defense, if wanted, would need a separate confusables-skeleton map.
+  // A trailing dot (the valid FQDN form "mailinator.com.") is stripped so it
+  // canonicalizes to the dotless blocklist entry instead of bypassing it.
+  const rawDomain = email.slice(at + 1).trim().replace(/\.+$/, "");
+  const asciiDomain = domainToASCII(rawDomain);
+  const domain = (asciiDomain || rawDomain).toLowerCase();
+  if (!domain) return false;
+  // Check the full domain, then progressively strip leftmost labels so a
+  // subdomain like "x.mailinator.com" still matches "mailinator.com" — all via
+  // O(labels) Set lookups, no Set iteration (keeps the TS target happy).
+  const parts = domain.split(".");
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const candidate = parts.slice(i).join(".");
+    if (DISPOSABLE_DOMAINS.has(candidate)) return true;
+  }
+  return false;
+}

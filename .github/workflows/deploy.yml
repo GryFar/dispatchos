@@ -1,0 +1,89 @@
+name: Deploy to Fly.io
+
+# Triggers:
+#   - push to develop  → deploy to demo (dispatchos-demo)
+#   - push to main     → reserved for future production app
+#   - manual trigger   → workflow_dispatch with optional app override
+
+on:
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "Fly app name (default: develop→demo, main→prod)"
+        required: false
+        default: ""
+
+concurrency:
+  group: fly-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: TypeScript check
+        run: npm run check
+
+      - name: AI smoke tests
+        run: npm run smoke:ai
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Only run actual deploy on develop/main pushes (not on PR builds, etc.)
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set target Fly app
+        id: app
+        run: |
+          if [ -n "${{ github.event.inputs.app }}" ]; then
+            echo "name=${{ github.event.inputs.app }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            # Reserved for future prod — until we create dispatchos-prod, fall
+            # back to demo so manual main pushes still work.
+            echo "name=dispatchos-demo" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=dispatchos-demo" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Audit V3-17 — pin to a release tag instead of @master so a compromise
+      # of the flyctl-actions repo can't immediately exfil our FLY_API_TOKEN.
+      # Bump to a newer tag intentionally when needed.
+      - uses: superfly/flyctl-actions/setup-flyctl@1.5
+
+      - name: Deploy to ${{ steps.app.outputs.name }}
+        run: flyctl deploy --remote-only --app "${{ steps.app.outputs.name }}"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Smoke check /api/health
+        run: |
+          # Wait up to 90s for the new release to be reachable
+          for i in 1 2 3 4 5 6 7 8 9; do
+            sleep 10
+            CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" https://demo.dispatchos.co/api/health || echo "000")
+            if [ "$CODE" = "200" ]; then
+              echo "Health OK after attempt $i"
+              cat /tmp/health.json
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $CODE — retrying..."
+          done
+          echo "Health check failed after 90s"
+          exit 1

@@ -1,0 +1,66 @@
+name: Weekly Billing (success-fee invoices)
+
+# The weekly 3% success fee — the core monetization. Before this workflow
+# existed, invoices were only ever created by a MANUAL admin POST per client
+# per week, so revenue was computed but never collected.
+#
+# Every Monday 12:00 UTC, POST /api/cron/weekly-billing generates last CLOSED
+# Mon–Sun week's invoice for every billable client and attempts the Stripe
+# charge. Cron policy (server/lib/billing-run.ts): only active/past_due
+# clients, zero-booked weeks skipped, 3% ONLY (the $150 flat fee is the manual
+# admin route's legacy managed-dispatch model — self-serve pricing is
+# "subscription + 3%"). The endpoint is idempotent (partial
+# UNIQUE(client_id, week_start) index — already-billed weeks count as
+# `skipped`, still-draft charges are retried), so a re-run or manual dispatch
+# after a failure only fills gaps and can never double-bill.
+#
+# Set repo variable DISPATCHOS_BASE_URL to the live app URL (falls back to
+# demo) and secret CRON_SECRET (must equal the app's DISPATCHOS_CRON_SECRET).
+
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: billing-cron
+  cancel-in-progress: false
+
+env:
+  BASE_URL: ${{ vars.DISPATCHOS_BASE_URL || 'https://demo.dispatchos.co' }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run weekly billing (generate + charge)
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          CODE=$(curl -sS -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/weekly-billing" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 300 || echo 000)
+          head -c 2000 /tmp/resp 2>/dev/null; echo ""
+          if [ "$CODE" != "200" ]; then
+            echo "::error::weekly-billing HTTP $CODE"
+            exit 1
+          fi
+          # Surface partial failures as a red check without masking the summary:
+          # generated/skipped are fine, but any `failed` client needs a look.
+          FAILED=$(jq -r '.failed // 0' /tmp/resp 2>/dev/null || echo 0)
+          if [ "$FAILED" != "0" ]; then
+            echo "::error::weekly-billing reported $FAILED failed client(s)"
+            exit 1
+          fi
+          # Invoices created but money not moving (no card, Stripe key revoked,
+          # every charge soft-failing) keeps the run green — that's exactly the
+          # "computed but never collected" failure this cron exists to kill, so
+          # surface it loudly as a warning annotation.
+          GEN=$(jq -r '.generated // 0' /tmp/resp 2>/dev/null || echo 0)
+          RETRIED=$(jq -r '.retried // 0' /tmp/resp 2>/dev/null || echo 0)
+          CHARGED=$(jq -r '.charged // 0' /tmp/resp 2>/dev/null || echo 0)
+          ATTEMPTED=$((GEN + RETRIED))
+          if [ "$ATTEMPTED" != "0" ] && [ "$CHARGED" -lt "$ATTEMPTED" ]; then
+            echo "::warning::weekly-billing: only $CHARGED of $ATTEMPTED invoice charge(s) succeeded — check chargeStatus per client in the summary above"
+          fi
+          echo "Weekly billing OK."
