@@ -27,6 +27,13 @@ import { fetchWithTimeout } from "../lib/fetch-timeout";
 import type { Express, Request, Response } from "express";
 import crypto from "node:crypto";
 import { storage } from "../storage";
+import { getCurrentUser } from "../auth";
+import {
+  consumeTelegramLinkCode,
+  isTelegramLinkCode,
+  mintTelegramLinkCode,
+} from "../lib/telegram-link-codes";
+import { getDriverBotInfo } from "../lib/telegram-bot-info";
 
 interface TgUser {
   id: number;
@@ -212,6 +219,17 @@ async function handleUpdate(botToken: string, update: TgUpdate): Promise<void> {
   // Linking flow (no user yet)
   // ---------------------------------------------------------------------------
   if (!user) {
+    // Web-initiated link flow (self-serve owners have no invite to redeem):
+    // the t.me deep link arrives as "/start <code>", and users can also paste
+    // the bare code. Probe the link-code ledger BEFORE the invite flow — codes
+    // are shape-distinct (TGL-…) so invite handling below is untouched.
+    const startPayload = cmd?.verb === "/start" ? cmd.args : cmd ? "" : text;
+    const linkCandidate = startPayload.trim().toUpperCase().replace(/\s+/g, "");
+    if (isTelegramLinkCode(linkCandidate)) {
+      await handleWebLinkCode(botToken, chatId, linkCandidate);
+      return;
+    }
+
     if (cmd?.verb === "/start" || cmd?.verb === "/help") {
       await tgSend(botToken, chatId, HELP_UNLINKED);
       return;
@@ -369,6 +387,41 @@ async function handleUpdate(botToken: string, update: TgUpdate): Promise<void> {
       await tgSend(botToken, chatId, `Unknown command <code>${escapeHtml(cmd.verb)}</code>. /help.`);
       return;
   }
+}
+
+// -----------------------------------------------------------------------------
+// Web link code — one-time code minted by POST /api/me/telegram/link-code
+// -----------------------------------------------------------------------------
+
+async function handleWebLinkCode(
+  botToken: string,
+  chatId: string,
+  code: string,
+): Promise<void> {
+  const claim = consumeTelegramLinkCode(code);
+  if (!claim) {
+    await tgSend(
+      botToken,
+      chatId,
+      "⌛ This link code is invalid or has expired. Generate a fresh one from your DispatchOS profile and try again.",
+    );
+    return;
+  }
+  const account = storage.getUserById(claim.userId);
+  if (!account || account.blocked || account.deletedAt) {
+    await tgSend(botToken, chatId, "This account can't be linked right now. Contact support.");
+    return;
+  }
+  // One chat ↔ one account: telegram_chat_id is not DB-unique (tg-04), so
+  // detach the chat from any prior owner before binding it here.
+  storage.clearTelegramChatIdEverywhere(chatId, account.id);
+  storage.setUserTelegramChatId(account.id, chatId);
+  storage.audit("telegram.link", "user", account.id, { chatId, via: "web_link_code" });
+  await tgSend(
+    botToken,
+    chatId,
+    `✅ Welcome, <b>${escapeHtml(account.fullName)}</b>. This chat is now linked to your DispatchOS account.\n\n${HELP_LINKED}`,
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -675,6 +728,41 @@ function redactToken(s: string, token: string): string {
 // -----------------------------------------------------------------------------
 
 export function registerTelegramBotRoutes(app: Express): void {
+  // GET /api/telegram/bot-info — the driver bot's public identity for the
+  // "Connect Telegram" buttons (onboarding Done step, driver profile). The
+  // username is resolved from getMe with the REAL webhook token, so the UI
+  // can never drift to the wrong bot. Auth-gated: semi-public data, but no
+  // reason to serve it to anonymous scrapers.
+  app.get("/api/telegram/bot-info", async (req: Request, res: Response) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Authentication required" });
+    return res.json(await getDriverBotInfo());
+  });
+
+  // POST /api/me/telegram/link-code — mint a short-lived one-time code that
+  // binds THIS logged-in account to whichever chat sends it to the bot
+  // (t.me deep link "/start <code>" or the bare pasted code). This is the
+  // link path for self-serve owners, who have no driver invite to redeem.
+  app.post("/api/me/telegram/link-code", async (req: Request, res: Response) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Authentication required" });
+    const info = await getDriverBotInfo();
+    if (!info.configured) {
+      return res.status(503).json({
+        message: "Telegram bot is not configured on this deployment",
+        code: "telegram_not_configured",
+      });
+    }
+    const { code, expiresAt } = mintTelegramLinkCode(user.id);
+    storage.audit("telegram.link_code_minted", "user", user.id, {});
+    return res.json({
+      code,
+      expiresAt,
+      botUsername: info.username,
+      deepLink: info.username ? `https://t.me/${info.username}?start=${code}` : null,
+    });
+  });
+
   // POST /api/telegram/webhook/:token
   //
   // :token must equal process.env.TELEGRAM_DRIVER_BOT_TOKEN.

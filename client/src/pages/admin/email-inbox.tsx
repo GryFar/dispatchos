@@ -84,12 +84,12 @@ export default function EmailInboxPage() {
           {t("admin.emailInbox.eyebrow")}
         </p>
         <h1 className="text-2xl font-semibold">{t("admin.emailInbox.title")}</h1>
+        {/* Do NOT advertise the bare base address here: every email source is
+            scoped to its own loads+<token>@ forwarding address (shown on the
+            source's page), and mail to the base address matches no source —
+            it lands in this feed but never becomes a load. */}
         <p className="text-sm text-muted-foreground">
-          {t("admin.emailInbox.subtitlePrefix")}{" "}
-          <code className="rounded bg-muted px-1 py-0.5 text-xs">
-            loads@dispatchos.co
-          </code>
-          {t("admin.emailInbox.subtitleSuffix")}
+          {t("admin.emailInbox.subtitle")}
         </p>
       </header>
 

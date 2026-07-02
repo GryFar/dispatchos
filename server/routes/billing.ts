@@ -117,6 +117,25 @@ export function resolveOwnedClientId(
 }
 
 /**
+ * Does the carrier have a LIVE Stripe subscription? A stored subscription id
+ * whose billingStatus hasn't gone canceled/expired means the customer is still
+ * on a real (active / trialing / dunning) subscription. Starting a SECOND
+ * Checkout in that state creates a second subscription on the same Stripe
+ * customer — double monthly billing, and canceling the obsolete one later
+ * flips the still-paying carrier to 'canceled' (read-only lockout). Plan
+ * changes for live subscribers go through the Customer Portal instead.
+ * Pure (no req) so the checkout gate is unit-testable.
+ */
+export function hasLiveSubscription(client: {
+  stripeSubscriptionId?: string | null;
+  billingStatus?: string | null;
+}): boolean {
+  if (!client.stripeSubscriptionId) return false;
+  const status = client.billingStatus ?? "trial";
+  return status !== "canceled" && status !== "expired";
+}
+
+/**
  * The Stripe customerEmail must belong to the CLIENT OWNER, not whoever is
  * driving the browser — admin-assisted checkout would otherwise stamp the
  * platform operator's email onto the customer's Stripe record (receipts,
@@ -303,6 +322,21 @@ export function registerBillingRoutes(app: Express): void {
     }
     if (!clientId) {
       return res.status(404).json({ message: "No client context for caller" });
+    }
+
+    // Plan-switch guard: an already-subscribed carrier must change plans via
+    // the Customer Portal — a fresh Checkout would mint a SECOND subscription
+    // (see hasLiveSubscription). Frontend swaps its plan buttons for the
+    // portal button on `hasSubscription`; this is the server-side backstop.
+    const existingClient = storage.getClient(clientId) as
+      | { stripeSubscriptionId?: string | null; billingStatus?: string | null }
+      | undefined;
+    if (existingClient && hasLiveSubscription(existingClient)) {
+      return res.status(409).json({
+        message:
+          "This account already has an active subscription. Use the billing portal to change plans.",
+        code: "subscription_exists",
+      });
     }
 
     const base = process.env.DISPATCHOS_PUBLIC_URL || "https://dispatchos.co";

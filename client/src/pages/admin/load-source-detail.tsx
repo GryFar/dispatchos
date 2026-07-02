@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Copy,
   KeyRound,
   Loader2,
   PlayCircle,
@@ -115,6 +116,7 @@ export default function LoadSourceDetailPage() {
 
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [inboundCopied, setInboundCopied] = useState(false);
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -243,6 +245,49 @@ export default function LoadSourceDetailPage() {
               />
             </div>
           </div>
+
+          {/* Per-source forwarding address (email adapters). The whole load
+              supply of an email source rides on this address — surface it as a
+              first-class copyable field, not just a line in the JSON dump. */}
+          {typeof source.configJson?.inboundAddress === "string" &&
+            source.configJson.inboundAddress && (
+              <div className="space-y-1.5">
+                <Label>{t("admin.loadSourceDetail.inboundAddress")}</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    readOnly
+                    value={String(source.configJson.inboundAddress)}
+                    className="font-mono text-xs"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    aria-label={t("admin.loadSourceDetail.copyInbound")}
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(
+                          String(source.configJson.inboundAddress),
+                        );
+                        setInboundCopied(true);
+                        setTimeout(() => setInboundCopied(false), 1500);
+                      } catch {
+                        // clipboard blocked — the field stays selectable
+                      }
+                    }}
+                  >
+                    {inboundCopied ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {t("admin.loadSourceDetail.inboundHint")}
+                </p>
+              </div>
+            )}
 
           {/* Config (read-only view of stored configJson) */}
           {Object.keys(source.configJson ?? {}).length > 0 && (

@@ -5,8 +5,11 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
+  CheckCircle2,
   ChevronsUpDown,
+  Copy,
   Loader2,
+  Mail,
   Radio,
 } from "lucide-react";
 import type { Client } from "@shared/schema";
@@ -135,6 +138,12 @@ export default function LoadSourceNewPage() {
   // Step 4
   const [pollIntervalMin, setPollIntervalMin] = useState("15");
   const [status, setStatus] = useState<"active" | "paused">("paused");
+  // Post-create: the minted per-source forwarding address (email adapters).
+  // Held here so we can show it with copy + setup instructions BEFORE leaving
+  // the wizard — it exists nowhere else in the flow, and mail sent to the bare
+  // base address matches no source and never becomes a load.
+  const [createdInbound, setCreatedInbound] = useState<string | null>(null);
+  const [inboundCopied, setInboundCopied] = useState(false);
 
   const { data: adapterData } = useQuery<{ adapters: AdapterMeta[] }>({
     queryKey: ["/api/admin/load-sources/adapters"],
@@ -192,12 +201,23 @@ export default function LoadSourceNewPage() {
           shape.credentials.map((f) => [f.key, credentials[f.key] ?? ""]),
         );
       }
-      return apiJson("POST", "/api/admin/load-sources", body);
+      return apiJson<{ loadSource?: { configJson?: Record<string, unknown> } }>(
+        "POST",
+        "/api/admin/load-sources",
+        body,
+      );
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       toast({ title: t("admin.loadSourceNew.sourceCreated") });
       qc.invalidateQueries({ queryKey: ["/api/admin/load-sources"], exact: false });
-      setLocation("/load-sources");
+      // Email adapters auto-mint a unique forwarding address — show it before
+      // redirecting (see createdInbound). Everything else goes straight back.
+      const inbound = res?.loadSource?.configJson?.inboundAddress;
+      if (typeof inbound === "string" && inbound) {
+        setCreatedInbound(inbound);
+      } else {
+        setLocation("/load-sources");
+      }
     },
     onError: (err: Error) => {
       const msg =
@@ -228,6 +248,65 @@ export default function LoadSourceNewPage() {
     else setLocation("/load-sources");
   }
   const isLastStep = step === steps[steps.length - 1];
+
+  // Post-create success: the forwarding address hand-off. The address is the
+  // deliverable of an email source — copy it, wire the broker / auto-forward,
+  // then leave.
+  if (createdInbound) {
+    const copyInbound = async () => {
+      try {
+        await navigator.clipboard.writeText(createdInbound);
+        setInboundCopied(true);
+        setTimeout(() => setInboundCopied(false), 1500);
+      } catch {
+        // clipboard blocked — the address stays visible for manual copy
+      }
+    };
+    return (
+      <div className="mx-auto max-w-2xl space-y-6">
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            {t("admin.loadSourceNew.breadcrumb")}
+          </p>
+          <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            <Mail className="h-6 w-6 text-primary" /> {t("admin.loadSourceNew.inboundTitle")}
+          </h1>
+        </div>
+        <Card>
+          <CardContent className="space-y-4 pt-6">
+            <div className="space-y-1.5">
+              <Label>{t("admin.loadSourceNew.inboundAddressLabel")}</Label>
+              <div className="flex items-center gap-2">
+                <Input readOnly value={createdInbound} className="font-mono text-xs" />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={copyInbound}
+                  aria-label={t("admin.loadSourceNew.copyAddress")}
+                >
+                  {inboundCopied ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {t("admin.loadSourceNew.inboundDesc")}
+            </p>
+            <div className="flex justify-end">
+              <Button onClick={() => setLocation("/load-sources")}>
+                {t("admin.loadSourceNew.goToSources")}
+                <ArrowRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">

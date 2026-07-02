@@ -1,6 +1,8 @@
-import { type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { Home, Package, FileText, User } from "lucide-react";
+import { useAuth } from "@/lib/use-auth";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
@@ -29,6 +31,7 @@ export function DriverShell({ children }: { children: ReactNode }) {
   return (
     <div>
       <div className="flex min-h-screen flex-col bg-background text-foreground">
+        <OnboardingGate />
         <DriverTopBar />
         <main
           // pb-24 reserves room for the fixed bottom nav (64px + safe-area)
@@ -42,6 +45,36 @@ export function DriverShell({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding gate — belt-and-braces for the server-side onboarding-aware
+// login redirect (server/lib/auth-redirect.ts). A self-serve carrier owner is
+// role 'driver' with NO linkedClientId until the /onboarding wizard provisions
+// their carrier; if such a user lands in /d anyway (stale bookmark, old tab,
+// hand-typed URL), the portal is a dead end — no carrier, no trial, no loads.
+// Bounce them back into the resumable wizard. Hired drivers all carry a
+// linkedClientId, so the query never even fires for them.
+// ---------------------------------------------------------------------------
+
+function OnboardingGate() {
+  const { user } = useAuth();
+  const [, setLocation] = useLocation();
+  const carrierless = Boolean(user && user.role === "driver" && !user.linkedClientId);
+
+  const onboardingQ = useQuery<{ hasCompleted: boolean }>({
+    queryKey: ["/api/me/onboarding"],
+    enabled: carrierless,
+  });
+
+  const needsOnboarding = carrierless && onboardingQ.data?.hasCompleted === false;
+
+  useEffect(() => {
+    // "~" escapes the nested /d router so we land on the top-level route.
+    if (needsOnboarding) setLocation("~/onboarding", { replace: true });
+  }, [needsOnboarding, setLocation]);
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------

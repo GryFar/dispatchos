@@ -99,6 +99,11 @@ export default function SignupPage() {
           setGlobalError(t("signup.errorInvite"));
           return;
         }
+        // Anti-fraud disposable-email block — stable machine code, localized copy.
+        if ((err.body as { code?: string } | null)?.code === "disposable_email") {
+          setGlobalError(t("signup.errorDisposable"));
+          return;
+        }
         if (err.status === 409) {
           setGlobalError(t("signup.errorEmailTaken"));
           return;
