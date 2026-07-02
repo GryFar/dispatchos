@@ -37,16 +37,27 @@ jobs:
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -sS -X POST "$BASE_URL/api/cron/run-load-sources" \
-            -H "X-Cron-Secret: $CRON_SECRET" \
-            --max-time 120 | head -c 1200
-          echo ""
+          # Capture the HTTP status and fail red on non-200. Without this a 401
+          # (CRON_SECRET drift), 503 (secret unset on Fly), 404 (base-URL drift)
+          # or network failure kept the run GREEN — piping curl into head made
+          # head's exit 0 win the pipeline — so the core load-ingest heartbeat
+          # could die silently for weeks. Mirrors daily-cron.yml.
+          CODE=$(curl -sS -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/run-load-sources" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 120 || echo 000)
+          head -c 1200 /tmp/resp 2>/dev/null; echo ""
+          if [ "$CODE" != "200" ]; then
+            echo "::error::run-load-sources HTTP $CODE"
+            exit 1
+          fi
 
       - name: Pickup reminders
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -sS -X POST "$BASE_URL/api/cron/pickup-reminders" \
-            -H "X-Cron-Secret: $CRON_SECRET" \
-            --max-time 60 | head -c 800
-          echo ""
+          CODE=$(curl -sS -o /tmp/resp -w '%{http_code}' -X POST "$BASE_URL/api/cron/pickup-reminders" \
+            -H "X-Cron-Secret: $CRON_SECRET" --max-time 60 || echo 000)
+          head -c 800 /tmp/resp 2>/dev/null; echo ""
+          if [ "$CODE" != "200" ]; then
+            echo "::error::pickup-reminders HTTP $CODE"
+            exit 1
+          fi
