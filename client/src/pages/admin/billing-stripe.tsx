@@ -34,7 +34,7 @@ interface BillingStatus {
   planTier?: string;
   planLabel?: string;
   monthlyCents?: number;
-  billingStatus?: "trial" | "active" | "past_due" | "canceled";
+  billingStatus?: "trial" | "active" | "past_due" | "canceled" | "expired";
   trialEndsAt?: string | null;
   hasStripeCustomer?: boolean;
   hasSubscription?: boolean;
@@ -231,6 +231,15 @@ export default function BillingStripePage() {
   const currentPlan = plans.find((p) => p.tier === status.planTier);
   const persona = currentPlan?.persona ?? "fleet";
   const availablePlans = plans.filter((p) => p.persona === persona);
+  // "Actually subscribed" — a live Stripe subscription exists. A trial/expired/
+  // canceled carrier has a planTier stamped by onboarding but no live sub, so
+  // its "Current" plan must still show a Subscribe (Checkout) button. Live
+  // subscribers change plans via the Customer Portal (server 409s a second
+  // Checkout, which would create a second subscription).
+  const subscribed =
+    Boolean(status.hasSubscription) &&
+    status.billingStatus !== "canceled" &&
+    status.billingStatus !== "expired";
 
   return (
     <div className="space-y-6">
@@ -374,22 +383,42 @@ export default function BillingStripePage() {
                     </li>
                   )}
                 </ul>
-                {!isCurrent && (
+                {/* Mirror of billing.tsx: Checkout while not subscribed
+                    (incl. the "Current" trial plan), portal once live. */}
+                {!subscribed ? (
                   <Button
                     size="sm"
                     className="mt-3 w-full"
-                    variant={isUpgrade ? "default" : "outline"}
+                    variant={isCurrent || isUpgrade ? "default" : "outline"}
                     onClick={() => startCheckout(p.tier)}
                     disabled={busy !== null}
                   >
                     {busy === p.tier ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : isCurrent ? (
+                      t("admin.billingStripe.subscribe")
                     ) : isUpgrade ? (
                       t("admin.billingStripe.upgrade")
                     ) : (
                       t("admin.billingStripe.downgrade")
                     )}
                   </Button>
+                ) : (
+                  !isCurrent && (
+                    <Button
+                      size="sm"
+                      className="mt-3 w-full"
+                      variant="outline"
+                      onClick={openPortal}
+                      disabled={busy !== null}
+                    >
+                      {busy === "portal" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        t("admin.billingStripe.changeInPortal")
+                      )}
+                    </Button>
+                  )
                 )}
               </Card>
             );
@@ -415,7 +444,7 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
 function BillingStatusBadge({
   billingStatus,
 }: {
-  billingStatus?: "trial" | "active" | "past_due" | "canceled";
+  billingStatus?: "trial" | "active" | "past_due" | "canceled" | "expired";
 }) {
   const { t } = useT();
   if (!billingStatus) return null;
@@ -424,8 +453,11 @@ function BillingStatusBadge({
     active: { label: t("admin.billingStripe.statusActive"), className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
     past_due: { label: t("admin.billingStripe.statusPastDue"), className: "bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-500/20" },
     canceled: { label: t("admin.billingStripe.statusCanceled"), className: "bg-muted text-muted-foreground border-border" },
+    // trial-expiry cron produces this; without an entry the badge crashed.
+    expired: { label: t("admin.billingStripe.statusExpired"), className: "bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-500/20" },
   };
   const c = map[billingStatus];
+  if (!c) return null;
   return (
     <Badge variant="outline" className={`text-[10px] ${c.className}`}>
       {c.label}

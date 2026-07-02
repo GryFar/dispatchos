@@ -251,7 +251,8 @@ assert(
 }
 
 // ---------------------------------------------------------------------------
-// customer.subscription.deleted -> canceled.
+// customer.subscription.deleted -> canceled. Legacy row with NO stored sub id:
+// a real cancel must never be missed, so the handler falls through and cancels.
 // ---------------------------------------------------------------------------
 {
   const c = mkClient({ billingStatus: "active" });
@@ -261,6 +262,47 @@ assert(
   const stored = storage.getClient(c.id) as any;
   assert("subscription.deleted: handled", res.handled === true);
   assert("subscription.deleted: billingStatus canceled", stored.billingStatus === "canceled");
+}
+
+// ---------------------------------------------------------------------------
+// customer.subscription.deleted with a MISMATCHED sub id — the plan-switch
+// double-subscription hazard: deleting an obsolete sub must NOT flip the
+// still-paying carrier (whose CURRENT sub id is stored) to 'canceled'
+// (read-only lockout). Only a deletion of the stored subscription cancels.
+// ---------------------------------------------------------------------------
+{
+  const c = mkClient({ billingStatus: "active", stripeSubscriptionId: "sub_current" });
+
+  // Stale/duplicate sub deleted → ignored, carrier keeps paying access.
+  const staleRes = await handleWebhookEvent(
+    ev(
+      "customer.subscription.deleted",
+      subObj({ status: "canceled", id: "sub_obsolete", metadata: { clientId: c.id } }),
+    ),
+  );
+  const afterStale = storage.getClient(c.id) as any;
+  assert("deleted(stale sub): handled (acked, not retried)", staleRes.handled === true);
+  assert(
+    "deleted(stale sub): billingStatus UNCHANGED (still active)",
+    afterStale.billingStatus === "active",
+  );
+  assert(
+    "deleted(stale sub): stored sub id untouched",
+    afterStale.stripeSubscriptionId === "sub_current",
+  );
+
+  // The CURRENT sub deleted → real cancel proceeds.
+  await handleWebhookEvent(
+    ev(
+      "customer.subscription.deleted",
+      subObj({ status: "canceled", id: "sub_current", metadata: { clientId: c.id } }),
+    ),
+  );
+  const afterReal = storage.getClient(c.id) as any;
+  assert(
+    "deleted(current sub): billingStatus canceled",
+    afterReal.billingStatus === "canceled",
+  );
 }
 
 // ---------------------------------------------------------------------------
