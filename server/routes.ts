@@ -62,6 +62,7 @@ import { registerCronRoutes } from "./routes/cron";
 import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { registerBillingRoutes } from "./routes/billing";
+import { registerPasswordResetRoutes } from "./routes/password-reset";
 import { outboundMarketScore, getRouteFuelPrice, observedLaneQualityAdjustment } from "./lib/ai";
 import { enrichLoadBestEffort } from "./lib/ai/enrich";
 import { resolveScoreWeights } from "./lib/score-weights";
@@ -2125,6 +2126,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Public lead capture from landing page (no auth) + dispatcher review queue.
   // Must register BEFORE any catch-all auth gate so /api/public/* is open.
   registerLeadRoutes(app);
+
+  // Self-serve password reset (public /api/auth/* — email token flow).
+  registerPasswordResetRoutes(app);
 
   // Public webhook receivers (Resend, future: Stripe, Twilio).
   // No auth gate; each route verifies its own service-specific signature.

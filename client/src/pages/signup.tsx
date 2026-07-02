@@ -395,7 +395,8 @@ function PostSignupTotp({ data, onContinue }: { data: SignupResponse; onContinue
   );
 }
 
-function passwordStrength(pw: string, t: (key: string) => string): { score: 0 | 1 | 2 | 3 | 4; label: string } {
+// Exported: reset-password.tsx shows the exact same strength meter.
+export function passwordStrength(pw: string, t: (key: string) => string): { score: 0 | 1 | 2 | 3 | 4; label: string } {
   if (pw.length === 0) return { score: 0, label: "" };
   let score = 0;
   if (pw.length >= 10) score++;
