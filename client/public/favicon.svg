@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#0B1220"/>
+  <rect width="64" height="64" rx="14" fill="none" stroke="#f59e0b" stroke-opacity="0.25" stroke-width="2"/>
+  <!-- route glyph: origin dot -> curved leg -> destination dot -->
+  <circle cx="19" cy="45" r="5" fill="#f59e0b"/>
+  <path d="M19 45 C 19 30, 45 34, 45 19" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="45" cy="19" r="5" fill="#ffffff"/>
+</svg>

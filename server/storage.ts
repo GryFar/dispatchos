@@ -6193,7 +6193,9 @@ export const storage = {
     // sees their own mail. Domain is env-configurable.
     const config: Record<string, unknown> = { ...(input.configJson ?? {}) };
     if (input.adapterKey.includes("email") && !config.inboundAddress) {
-      const domain = process.env.DISPATCHOS_INBOUND_DOMAIN || "inbound.dispatchos.co";
+      // Default to the apex: it is the only domain with an MX record, so mail
+      // to inbound.dispatchos.co addresses would silently bounce.
+      const domain = process.env.DISPATCHOS_INBOUND_DOMAIN || "dispatchos.co";
       config.inboundAddress = `loads+${id.replace(/^ls-/, "")}@${domain}`;
     }
     sqlite.prepare(`

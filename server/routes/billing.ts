@@ -50,12 +50,13 @@ const checkoutBodySchema = z.object({
  *   for now we hand the first client back since DispatchOS is single-tenant per env.
  * - dispatcher: ?clientId from their assigned set
  * - driver: their linkedClientId
+ *
+ * Pure (no req) so route-level tenancy logic is unit-testable.
  */
-function resolveCallerClientId(req: Request): string | null {
-  const user = getCurrentUser(req);
-  if (!user) return null;
-  const queryId = typeof req.query.clientId === "string" ? req.query.clientId : null;
-
+export function resolveClientIdForUser(
+  user: { id: string; role: string; linkedClientId?: string },
+  queryId: string | null,
+): string | null {
   if (user.role === "admin") {
     if (queryId) return queryId;
     // No explicit ?clientId: fall back to the single client ONLY when there is
@@ -81,6 +82,58 @@ function resolveCallerClientId(req: Request): string | null {
   }
   // driver
   return user.linkedClientId ?? null;
+}
+
+function resolveCallerClientId(req: Request): string | null {
+  const user = getCurrentUser(req);
+  if (!user) return null;
+  const queryId = typeof req.query.clientId === "string" ? req.query.clientId : null;
+  return resolveClientIdForUser(user, queryId);
+}
+
+/**
+ * Self-serve billing gate: a non-admin caller may touch billing ONLY for the
+ * carrier they OWN — their linkedClientId must resolve to a live client whose
+ * ownerUserId is them, and any explicitly requested clientId must be that same
+ * client. Hired drivers (linked but not owner) and unlinked users get null →
+ * handlers respond 403. Admin never goes through this gate.
+ */
+export function resolveOwnedClientId(
+  user: { id: string; linkedClientId?: string },
+  requestedClientId: string | null,
+): string | null {
+  if (!user.linkedClientId) return null;
+  const client = storage.getClient(user.linkedClientId) as
+    | (Record<string, unknown> & {
+        id: string;
+        ownerUserId?: string;
+        deletedAt?: string | null;
+      })
+    | undefined;
+  if (!client || client.deletedAt) return null;
+  if (client.ownerUserId !== user.id) return null;
+  if (requestedClientId && requestedClientId !== client.id) return null;
+  return client.id;
+}
+
+/**
+ * The Stripe customerEmail must belong to the CLIENT OWNER, not whoever is
+ * driving the browser — admin-assisted checkout would otherwise stamp the
+ * platform operator's email onto the customer's Stripe record (receipts,
+ * invoices, portal login all go to that address). Falls back to the caller's
+ * email only when the client has no resolvable owner.
+ */
+export function resolveCheckoutCustomerEmail(
+  clientId: string,
+  fallbackEmail?: string,
+): string | undefined {
+  const client = storage.getClient(clientId) as
+    | (Record<string, unknown> & { ownerUserId?: string })
+    | undefined;
+  const ownerId = client?.ownerUserId;
+  const owner = typeof ownerId === "string" && ownerId ? storage.getUserById(ownerId) : undefined;
+  const email = owner?.email;
+  return typeof email === "string" && email.includes("@") ? email : fallbackEmail;
 }
 
 export function registerBillingRoutes(app: Express): void {
@@ -157,14 +210,29 @@ export function registerBillingRoutes(app: Express): void {
   // carrier. Used by the dashboard banner ("Trial ends in 9 days") and the
   // settings/billing page.
   // ---------------------------------------------------------------------
-  app.get("/api/billing/status", requireRole("admin", "dispatcher"), (req, res) => {
+  app.get("/api/billing/status", requireRole("admin", "dispatcher", "driver"), (req, res) => {
     if (!isStripeConfigured()) {
       return res.json({
         configured: false,
         message: "Stripe is not configured on this deployment.",
       });
     }
-    const clientId = resolveCallerClientId(req);
+    const user = getCurrentUser(req)!;
+    // Self-serve signups land as role 'driver'; only the carrier OWNER among
+    // them may read billing. Admin/dispatcher resolution is unchanged.
+    let clientId: string | null;
+    let isBillingOwner: boolean;
+    if (user.role === "driver") {
+      const queryId = typeof req.query.clientId === "string" ? req.query.clientId : null;
+      clientId = resolveOwnedClientId(user, queryId);
+      if (!clientId) {
+        return res.status(403).json({ message: "Only the carrier owner can view billing" });
+      }
+      isBillingOwner = true;
+    } else {
+      clientId = resolveCallerClientId(req);
+      isBillingOwner = user.role === "admin";
+    }
     if (!clientId) {
       return res.status(404).json({ message: "No client context for caller" });
     }
@@ -177,6 +245,7 @@ export function registerBillingRoutes(app: Express): void {
     return res.json({
       configured: true,
       clientId,
+      isBillingOwner,
       planTier: c.planTier ?? "trial",
       planLabel: plan.label,
       monthlyCents: plan.monthlyCents,
@@ -200,7 +269,7 @@ export function registerBillingRoutes(app: Express): void {
   // Creates a Stripe Checkout session for the chosen plan tier. Returns the
   // URL; frontend does `window.location.href = url`.
   // ---------------------------------------------------------------------
-  app.post("/api/billing/checkout", requireRole("admin"), async (req, res) => {
+  app.post("/api/billing/checkout", requireRole("admin", "driver"), async (req, res) => {
     if (!isStripeConfigured()) {
       return res.status(503).json({ message: "Stripe is not configured" });
     }
@@ -221,15 +290,27 @@ export function registerBillingRoutes(app: Express): void {
         .json({ message: "Trial doesn't need Checkout — it's auto-assigned on onboarding completion" });
     }
 
-    const clientId = resolveCallerClientId(req);
+    const user = getCurrentUser(req)!;
+    let clientId: string | null;
+    if (user.role === "driver") {
+      const queryId = typeof req.query.clientId === "string" ? req.query.clientId : null;
+      clientId = resolveOwnedClientId(user, queryId);
+      if (!clientId) {
+        return res.status(403).json({ message: "Only the carrier owner can manage billing" });
+      }
+    } else {
+      clientId = resolveCallerClientId(req);
+    }
     if (!clientId) {
       return res.status(404).json({ message: "No client context for caller" });
     }
-    const user = getCurrentUser(req)!;
 
     const base = process.env.DISPATCHOS_PUBLIC_URL || "https://dispatchos.co";
-    const successUrl = `${base}/#${body.successPath ?? "/admin/billing"}?checkout=success`;
-    const cancelUrl = `${base}/#${body.cancelPath ?? "/admin/billing"}?checkout=canceled`;
+    // Default return page depends on who is checking out: platform admins land
+    // back on the admin billing screen, customers on the customer billing page.
+    const defaultPath = user.role === "admin" ? "/admin/billing" : "/billing";
+    const successUrl = `${base}/#${body.successPath ?? defaultPath}?checkout=success`;
+    const cancelUrl = `${base}/#${body.cancelPath ?? defaultPath}?checkout=canceled`;
 
     try {
       const session = await createCheckoutSession({
@@ -237,7 +318,7 @@ export function registerBillingRoutes(app: Express): void {
         tier: body.tier,
         successUrl,
         cancelUrl,
-        customerEmail: user.email,
+        customerEmail: resolveCheckoutCustomerEmail(clientId, user.email),
       });
       return res.json({ url: session.url, sessionId: session.sessionId });
     } catch (err) {
@@ -254,16 +335,26 @@ export function registerBillingRoutes(app: Express): void {
   // Creates a Stripe Customer Portal session for self-service plan/card
   // management. Returns the URL.
   // ---------------------------------------------------------------------
-  app.post("/api/billing/portal", requireRole("admin"), async (req, res) => {
+  app.post("/api/billing/portal", requireRole("admin", "driver"), async (req, res) => {
     if (!isStripeConfigured()) {
       return res.status(503).json({ message: "Stripe is not configured" });
     }
-    const clientId = resolveCallerClientId(req);
+    const user = getCurrentUser(req)!;
+    let clientId: string | null;
+    if (user.role === "driver") {
+      const queryId = typeof req.query.clientId === "string" ? req.query.clientId : null;
+      clientId = resolveOwnedClientId(user, queryId);
+      if (!clientId) {
+        return res.status(403).json({ message: "Only the carrier owner can manage billing" });
+      }
+    } else {
+      clientId = resolveCallerClientId(req);
+    }
     if (!clientId) {
       return res.status(404).json({ message: "No client context for caller" });
     }
     const base = process.env.DISPATCHOS_PUBLIC_URL || "https://dispatchos.co";
-    const returnUrl = `${base}/#/admin/billing`;
+    const returnUrl = `${base}/#${user.role === "admin" ? "/admin/billing" : "/billing"}`;
     try {
       const session = await createPortalSession(clientId, returnUrl);
       return res.json({ url: session.url });

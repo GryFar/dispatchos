@@ -1,16 +1,18 @@
-name: Weekly DB Backup
+name: Daily DB Backup
 
 # Audit H5 — offsite, restore-grade DB backup. Pulls a CONSISTENT online
 # snapshot of the live SQLite file from /api/cron/backup and stores it as a
 # GitHub Actions artifact. This is the zero-config OFFSITE copy: free, needs no
 # S3/R2 credentials. (A future S3/R2 target is an owner option, not required.)
 #
-# Runs weekly (Mondays 07:00 UTC) and on manual dispatch. The DB is tiny (~1MB),
-# so streaming it back over HTTP is safe and non-blocking.
+# Runs daily (07:00 UTC) and on manual dispatch — with real customers a weekly
+# cadence risked losing up to 7 days of bookings/invoices. The DB is tiny
+# (~1MB), so streaming it back over HTTP is safe and non-blocking. Restore
+# procedure: docs/runbooks/RESTORE.md.
 
 on:
   schedule:
-    - cron: "0 7 * * 1"
+    - cron: "0 7 * * *"
   workflow_dispatch:
 
 concurrency:

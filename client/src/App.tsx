@@ -26,6 +26,9 @@ import NotFound from "@/pages/not-found";
 const AdminRouter = lazy(() => import("@/pages/admin/_router"));
 const DispatchRouter = lazy(() => import("@/pages/dispatch/_router"));
 const DriverRouter = lazy(() => import("@/pages/driver/_router"));
+// Customer billing (carrier owners are role 'driver'; the page itself shows an
+// owner-only notice for hired drivers — the server 403s them).
+const CustomerBillingPage = lazy(() => import("@/pages/billing"));
 
 /**
  * Wrapped hash-location hook that strips any `?query` (and `#fragment`) from
@@ -210,6 +213,18 @@ export default function App() {
                   <ErrorBoundary>
                     <Suspense fallback={<PortalLoading />}>
                       <DriverRouter />
+                    </Suspense>
+                  </ErrorBoundary>
+                </RoleGate>
+              </Route>
+
+              {/* Customer billing page — self-serve carrier owners (role 'driver').
+                  Trial reminder emails + Stripe checkout return URLs point here. */}
+              <Route path="/billing">
+                <RoleGate allow={["driver"]}>
+                  <ErrorBoundary>
+                    <Suspense fallback={<PortalLoading />}>
+                      <CustomerBillingPage />
                     </Suspense>
                   </ErrorBoundary>
                 </RoleGate>

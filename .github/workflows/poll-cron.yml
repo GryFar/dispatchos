@@ -8,15 +8,17 @@ name: Poll Cron (load sources + driver reminders)
 #   2. /api/cron/pickup-reminders  — ping assigned drivers before a load's
 #      pickup window (default 3h lead). Needs sub-hourly cadence to be useful.
 #
-# These were NOT scheduled anywhere, so in prod load sources were never polled
-# (no matched-load alerts) and pickup reminders never fired. Runs every 15 min.
+# Runs every 30 min — frequent enough for load boards and the 3h pickup-
+# reminder lead while staying inside the free GH-Actions minutes budget
+# (the old */15 here plus a duplicate */5 load-sources-poll.yml burned far
+# past the 2k free min/mo; this is now the ONLY load-source poller).
 #
 # Set repo variable DISPATCHOS_BASE_URL to the live app URL (falls back to demo)
 # and secret CRON_SECRET (must equal the app's DISPATCHOS_CRON_SECRET).
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 concurrency:

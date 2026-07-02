@@ -67,6 +67,20 @@ async function sendTelegram(
   }
 }
 
+/**
+ * Trial emails must reach the CUSTOMER — the client owner's account email —
+ * not the platform operator. Returns null when the client has no resolvable
+ * owner (legacy/admin-created carriers), in which case the caller falls back
+ * to the platform owner so the alert is never dropped.
+ */
+function resolveClientOwnerEmail(client: { ownerUserId?: unknown }): string | null {
+  const ownerId = client.ownerUserId;
+  if (typeof ownerId !== "string" || !ownerId) return null;
+  const owner = storage.getUserById(ownerId);
+  const email = owner?.email;
+  return typeof email === "string" && email.includes("@") ? email : null;
+}
+
 export interface TrialOutcome {
   clientId: string;
   clientName: string;
@@ -106,6 +120,8 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
     ownerEmail: resolveOwnerEmail(),
   };
 
+  const base = process.env.DISPATCHOS_PUBLIC_URL || "https://dispatchos.co";
+
   const clients = storage.listClients();
   for (const client of clients) {
     const c = client as Record<string, unknown> & {
@@ -114,6 +130,7 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
       billingStatus?: "trial" | "active" | "past_due" | "canceled" | "expired";
       trialEndsAt?: string;
       stripeSubscriptionId?: string;
+      ownerUserId?: string;
     };
 
     if (!c.trialEndsAt) continue;
@@ -185,18 +202,26 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
         continue;
       }
 
+      // Email the CUSTOMER (client owner); fall back to the platform owner
+      // when the carrier has no resolvable owner. The Telegram alert always
+      // goes to the platform chat, and the audit below records the recipient,
+      // so the operator keeps visibility either way. The upgrade link points
+      // customers at the customer billing page, operators at the admin page.
+      const customerEmail = resolveClientOwnerEmail(c);
+      const recipient = customerEmail ?? ctx.ownerEmail;
+      const billingUrl = `${base}/#${customerEmail ? "/billing" : "/admin/billing"}`;
       const text = [
         `⏰ Trial expired for ${c.name}.`,
-        `Account is now read-only. Upgrade at https://dispatchos.co/#/admin/billing`,
+        `Account is now read-only. Upgrade at ${billingUrl}`,
       ].join("\n");
       const tg = await sendTelegram(ctx, text);
       if (tg.ok) sent.push("telegram");
       else if (tg.error) errors.push(`telegram: ${tg.error}`);
-      if (ctx.ownerEmail) {
+      if (recipient) {
         try {
           const r = await sendEmail({
             from: ctx.resendFromEmail ?? undefined,
-            to: ctx.ownerEmail,
+            to: recipient,
             subject: `[DispatchOS] Trial expired — ${c.name}`,
             text,
             html: `<pre style="font-family:inherit;white-space:pre-wrap">${text.replace(
@@ -216,6 +241,8 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
         storage.audit("billing.trial_expired", "client", c.id, {
           trialEndsAt: c.trialEndsAt,
           channels: sent,
+          emailTo: recipient ?? null,
+          sentToCustomer: Boolean(customerEmail),
         });
       } catch (err) {
         errors.push(`audit: ${(err as Error).message}`);
@@ -239,20 +266,25 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
     ) {
       continue;
     }
+    // Same recipient/link resolution as the expiry branch: customer first,
+    // platform owner as fallback (audited below).
+    const customerEmail = resolveClientOwnerEmail(c);
+    const recipient = customerEmail ?? ctx.ownerEmail;
+    const billingUrl = `${base}/#${customerEmail ? "/billing" : "/admin/billing"}`;
     const text = [
       `⏳ Trial ends in ${days} day${days === 1 ? "" : "s"} for ${c.name}.`,
-      `Upgrade now: https://dispatchos.co/#/admin/billing`,
+      `Upgrade now: ${billingUrl}`,
     ].join("\n");
     const sent: ("telegram" | "email")[] = [];
     const errors: string[] = [];
     const tg = await sendTelegram(ctx, text);
     if (tg.ok) sent.push("telegram");
     else if (tg.error) errors.push(`telegram: ${tg.error}`);
-    if (ctx.ownerEmail) {
+    if (recipient) {
       try {
         const r = await sendEmail({
           from: ctx.resendFromEmail ?? undefined,
-          to: ctx.ownerEmail,
+          to: recipient,
           subject: `[DispatchOS] Trial ends in ${days} day${days === 1 ? "" : "s"} — ${c.name}`,
           text,
           html: `<pre style="font-family:inherit;white-space:pre-wrap">${text.replace(
@@ -277,6 +309,8 @@ export async function runTrialExpiryCheck(): Promise<TrialOutcome[]> {
       storage.audit("billing.trial_reminder", "client", c.id, {
         daysUntil: days,
         channels: sent,
+        emailTo: recipient ?? null,
+        sentToCustomer: Boolean(customerEmail),
       });
     }
     outcomes.push({
