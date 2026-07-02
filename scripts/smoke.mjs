@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import { writeFileSync, rmSync } from "node:fs";
 import FormData from "form-data";
+import Database from "better-sqlite3";
 
 const port = 5055;
 const baseUrl = `http://127.0.0.1:${port}`;
@@ -1249,6 +1250,138 @@ try {
     throw new Error(`reset-totp unknown user returned ${totp404}, expected 404`);
   }
   console.log("[OK] reset-totp / reset-password 404 on unknown user");
+
+  // -- self-serve password reset (forgot -> token -> reset -> login) --------
+  // Dedicated throwaway user (no TOTP, so a plain password login proves the
+  // reset end-to-end; dispUser's temp password is reused by later sections).
+  // The reset endpoints are public — run them without the admin cookie.
+  {
+    const pwUser = await request("/api/admin/users", {
+      method: "POST",
+      body: {
+        email: "pwreset.selfserve@example.com",
+        fullName: "Self Serve Reset",
+        role: "driver",
+      },
+    });
+    const preReset = await request(`/api/admin/users/${pwUser.id}/reset-password`, {
+      method: "POST",
+      body: {},
+    });
+    const oldPassword = preReset.temporaryPassword;
+
+    const adminCookie = cookieHeader;
+    cookieHeader = "";
+
+    // Uniform 200 { ok:true } for known AND unknown email — no existence oracle.
+    const forgotKnown = await request("/api/auth/forgot-password", {
+      method: "POST",
+      body: { email: pwUser.email },
+    });
+    const forgotUnknown = await request("/api/auth/forgot-password", {
+      method: "POST",
+      body: { email: "no.such.account@example.com" },
+    });
+    if (JSON.stringify(forgotKnown) !== JSON.stringify(forgotUnknown) || forgotKnown.ok !== true) {
+      throw new Error(
+        `forgot-password responses must be identical for known/unknown email: ${JSON.stringify(forgotKnown)} vs ${JSON.stringify(forgotUnknown)}`,
+      );
+    }
+    console.log("[OK] POST /api/auth/forgot-password uniform 200 (no account-existence oracle)");
+
+    // Inspect the DB directly: only sha256(token) is stored, so the emailed raw
+    // token is unrecoverable from the row. To complete the flow E2E we mint our
+    // own raw token and insert its hash the same way the server does.
+    const smokeDb = new Database(SMOKE_DB_PATH);
+    smokeDb.pragma("busy_timeout = 5000");
+    const mintedRow = smokeDb
+      .prepare(
+        "SELECT * FROM password_reset_tokens WHERE user_id = ? AND used_at IS NULL ORDER BY created_at DESC LIMIT 1",
+      )
+      .get(pwUser.id);
+    if (!mintedRow || !/^[0-9a-f]{64}$/.test(mintedRow.token_hash)) {
+      throw new Error("forgot-password did not store a sha256 token hash for the user");
+    }
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    smokeDb
+      .prepare(
+        "INSERT INTO password_reset_tokens (id, token_hash, user_id, expires_at, used_at, created_at) VALUES (?, ?, ?, ?, NULL, ?)",
+      )
+      .run(
+        `pwreset-smoke-${Date.now()}`,
+        tokenHash,
+        pwUser.id,
+        new Date(Date.now() + 30 * 60_000).toISOString(),
+        new Date().toISOString(),
+      );
+    smokeDb.close();
+    console.log("[OK] password_reset_tokens stores sha256 only (raw token not in DB)");
+
+    // Weak password → 400 (same policy as signup, min 10).
+    let weakStatus = 0;
+    try {
+      await request("/api/auth/reset-password", {
+        method: "POST",
+        body: { token: rawToken, newPassword: "short" },
+      });
+    } catch (err) {
+      weakStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    }
+    if (weakStatus !== 400) {
+      throw new Error(`reset-password weak password returned ${weakStatus}, expected 400`);
+    }
+
+    const newPassword = "SelfServeReset123!";
+    const resetOk = await request("/api/auth/reset-password", {
+      method: "POST",
+      body: { token: rawToken, newPassword },
+    });
+    if (resetOk.ok !== true) {
+      throw new Error(`reset-password should return { ok:true }, got ${JSON.stringify(resetOk)}`);
+    }
+
+    // Single-use: the same token again → 400.
+    let replayStatus = 0;
+    try {
+      await request("/api/auth/reset-password", {
+        method: "POST",
+        body: { token: rawToken, newPassword: "AnotherPass456!" },
+      });
+    } catch (err) {
+      replayStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    }
+    if (replayStatus !== 400) {
+      throw new Error(`reset-password token replay returned ${replayStatus}, expected 400`);
+    }
+    console.log("[OK] POST /api/auth/reset-password (weak pw 400, happy path, single-use)");
+
+    // Old (admin-issued temp) password must fail; the new one must log in.
+    cookieHeader = "";
+    let oldPwStatus = 0;
+    try {
+      await request("/api/auth/login", {
+        method: "POST",
+        body: { email: pwUser.email, password: oldPassword },
+      });
+    } catch (err) {
+      oldPwStatus = Number(String(err.message).match(/returned (\d+)/)?.[1] || 0);
+    }
+    if (oldPwStatus !== 401) {
+      throw new Error(`login with pre-reset password returned ${oldPwStatus}, expected 401`);
+    }
+    cookieHeader = "";
+    const newLogin = await request("/api/auth/login", {
+      method: "POST",
+      body: { email: pwUser.email, password: newPassword },
+    });
+    if (newLogin.ok !== true) {
+      throw new Error("login with self-serve reset password failed");
+    }
+    console.log("[OK] self-serve password reset E2E (old password dead, new password logs in)");
+
+    cookieHeader = adminCookie;
+  }
 
   // -- DELETE /api/admin/invites/:code (revoke) -----------------------------
   const liveInvite = await request("/api/admin/invites", {
