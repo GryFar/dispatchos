@@ -39,7 +39,7 @@ import {
   Truck,
 } from "lucide-react";
 import { useAuth } from "@/lib/use-auth";
-import { apiJson } from "@/lib/queryClient";
+import { apiJson, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
@@ -189,9 +189,26 @@ export default function OnboardingPage() {
         });
       }
     } catch (err) {
+      // Hard gates (MC authority/uniqueness, persona, provision) return stable
+      // machine `code`s — map them to localized copy instead of toasting the
+      // raw server message at the exact moment the user is refused a trial.
+      const code =
+        err instanceof ApiError ? (err.body as { code?: string } | null)?.code : undefined;
+      const codeKey =
+        code === "mc_not_authorized"
+          ? "onboarding.error.mcNotAuthorized"
+          : code === "mc_already_claimed"
+            ? "onboarding.error.mcAlreadyClaimed"
+            : code === "mc_required_to_complete"
+              ? "onboarding.error.mcRequired"
+              : code === "persona_required_to_complete"
+                ? "onboarding.error.personaRequired"
+                : code === "provision_failed"
+                  ? "onboarding.error.provisionFailed"
+                  : null;
       toast({
         title: t("onboarding.toast.saveError.title"),
-        description: (err as Error).message,
+        description: codeKey ? t(codeKey) : (err as Error).message,
         variant: "destructive",
       });
     }
@@ -910,6 +927,44 @@ function PlanStep({
 
 function DoneStep({ onContinue }: { onContinue: () => void }) {
   const { t } = useT();
+  const { toast } = useToast();
+  const [connecting, setConnecting] = useState(false);
+
+  // Resolve the REAL driver bot (getMe on the webhook token, server-cached) —
+  // a hardcoded username here once pointed every customer at the wrong bot.
+  const botInfoQ = useQuery<{ configured: boolean; username: string | null }>({
+    queryKey: ["/api/telegram/bot-info"],
+  });
+  const botUsername = botInfoQ.data?.configured ? botInfoQ.data.username : null;
+
+  // Mint a one-time link code and open the t.me deep link: the bot receives
+  // "/start <code>" and binds this chat to the logged-in account — the only
+  // link path a self-serve owner has (no driver invite to redeem).
+  async function connectTelegram() {
+    if (!botUsername) return;
+    setConnecting(true);
+    try {
+      const res = await apiJson<{ deepLink: string | null }>(
+        "POST",
+        "/api/me/telegram/link-code",
+        {},
+      );
+      window.open(
+        res.deepLink ?? `https://t.me/${botUsername}`,
+        "_blank",
+        "noopener,noreferrer",
+      );
+    } catch (err) {
+      toast({
+        title: t("onboarding.done.telegramLinkFailed"),
+        description: (err as Error).message,
+        variant: "destructive",
+      });
+    } finally {
+      setConnecting(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="inline-flex items-center gap-2 rounded-full border border-[rgba(52,211,153,0.3)] bg-[rgba(52,211,153,0.08)] px-3 py-1 text-xs font-medium text-[#34d399]">
@@ -930,13 +985,21 @@ function DoneStep({ onContinue }: { onContinue: () => void }) {
           {t("onboarding.done.gotoDashboard")}
           <ArrowRight className="ml-2 h-4 w-4" />
         </Button>
-        <Button
-          variant="outline"
-          onClick={() => window.open("https://t.me/DispatchOS_Computer_Bot", "_blank", "noopener,noreferrer")}
-          className="border-[rgba(255,255,255,0.14)] bg-transparent text-white hover:bg-[rgba(255,255,255,0.06)]"
-        >
-          {t("onboarding.done.connectTelegram")}
-        </Button>
+        {botInfoQ.isLoading || botUsername ? (
+          <Button
+            variant="outline"
+            onClick={connectTelegram}
+            disabled={connecting || !botUsername}
+            className="border-[rgba(255,255,255,0.14)] bg-transparent text-white hover:bg-[rgba(255,255,255,0.06)]"
+          >
+            {connecting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {t("onboarding.done.connectTelegram")}
+          </Button>
+        ) : (
+          <p className="self-center text-xs text-[#6b7390]">
+            {t("onboarding.done.telegramNotConfigured")}
+          </p>
+        )}
       </div>
     </div>
   );

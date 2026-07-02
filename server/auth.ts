@@ -384,19 +384,27 @@ export function requireActiveBilling(
 
   const reason = billingBlockReason(client);
   // 'expired' / 'canceled' share one message; 'past_due' (after grace) gets the
-  // overdue-payment message. Keeping the exact wording/billingStatus payload
-  // preserves the middleware's external behavior.
+  // overdue-payment message. Error toasts render the message verbatim, so it
+  // must be English and point at a billing page the CALLER's role can actually
+  // open: self-serve owners (role 'driver') manage the subscription at /billing,
+  // /admin/billing is RoleGate-locked to admins, and dispatchers can open
+  // neither — they get pointed at the account owner. The machine-readable
+  // billingStatus payload is preserved for client-side handling.
+  const billingHint =
+    user.role === "admin"
+      ? "at /admin/billing"
+      : user.role === "driver"
+        ? "on the Billing page (/billing)"
+        : "— ask the account owner";
   if (reason === "expired" || reason === "canceled") {
     return res.status(402).json({
-      message:
-        "Аккаунт в режиме только для чтения (пробный период истёк или подписка отменена). Продлите на /admin/billing.",
+      message: `Your account is read-only (the trial ended or the subscription was canceled). Renew ${billingHint}.`,
       billingStatus: reason,
     });
   }
   if (reason === "past_due") {
     return res.status(402).json({
-      message:
-        "Оплата просрочена более 7 дней. Аккаунт только для чтения. Обновите карту на /admin/billing.",
+      message: `Payment is more than 7 days overdue — your account is read-only. Update your card ${billingHint}.`,
       billingStatus: "past_due",
     });
   }

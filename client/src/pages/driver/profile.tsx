@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { LogOut, User as UserIcon, Mail, Phone, Save } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { LogOut, User as UserIcon, Mail, Phone, Save, Send } from "lucide-react";
 import type { UpdateDriverProfileInput, UserPublic } from "@shared/schema";
 import { apiJson, ApiError } from "@/lib/queryClient";
 import { useAuth, clearAuthCache } from "@/lib/use-auth";
@@ -203,6 +203,8 @@ export default function DriverProfilePage() {
         </Card>
       </form>
 
+      <TelegramLinkCard />
+
       <Card className="p-4">
         <Button
           variant="outline"
@@ -216,5 +218,86 @@ export default function DriverProfilePage() {
         </Button>
       </Card>
     </div>
+  );
+}
+
+/**
+ * Telegram linking — POST /api/me/telegram/link-code mints a one-time code,
+ * we open the t.me deep link (Telegram delivers it as "/start <code>") and the
+ * bot binds this account's chat. This is the only link path for self-serve
+ * carrier owners (they have no driver invite to redeem), and a fallback for
+ * anyone whose invite-based link never happened. The code is also shown for
+ * manual pasting (desktop without a Telegram handler, etc).
+ */
+function TelegramLinkCard() {
+  const { t } = useT();
+  const { toast } = useToast();
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkCode, setLinkCode] = useState<string | null>(null);
+
+  const botInfoQ = useQuery<{ configured: boolean; username: string | null }>({
+    queryKey: ["/api/telegram/bot-info"],
+  });
+  const botUsername = botInfoQ.data?.configured ? botInfoQ.data.username : null;
+
+  async function connectTelegram() {
+    if (!botUsername) return;
+    setLinkBusy(true);
+    try {
+      const res = await apiJson<{ code: string; deepLink: string | null }>(
+        "POST",
+        "/api/me/telegram/link-code",
+        {},
+      );
+      setLinkCode(res.code);
+      window.open(
+        res.deepLink ?? `https://t.me/${botUsername}`,
+        "_blank",
+        "noopener,noreferrer",
+      );
+    } catch (err) {
+      toast({
+        title: t("common.error"),
+        description: err instanceof ApiError ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center gap-3 pb-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/15 text-primary">
+          <Send className="h-5 w-5" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">{t("driver.profile.telegramTitle")}</p>
+          <p className="text-xs text-muted-foreground">{t("driver.profile.telegramHint")}</p>
+        </div>
+      </div>
+      {botInfoQ.isLoading || botUsername ? (
+        <>
+          <Button
+            variant="outline"
+            className="w-full justify-center"
+            onClick={connectTelegram}
+            disabled={linkBusy || !botUsername}
+          >
+            {linkBusy ? t("common.loading") : t("driver.profile.telegramConnect")}
+          </Button>
+          {linkCode && (
+            <p className="mt-2 text-center text-xs text-muted-foreground">
+              {t("driver.profile.telegramCodeHint", { code: linkCode })}
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          {t("driver.profile.telegramNotConfigured")}
+        </p>
+      )}
+    </Card>
   );
 }

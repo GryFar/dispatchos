@@ -62,6 +62,7 @@ import { registerCronRoutes } from "./routes/cron";
 import { registerInboundRoutes } from "./routes/inbound";
 import { registerTelegramBotRoutes } from "./routes/telegram-bot";
 import { registerBillingRoutes } from "./routes/billing";
+import { registerAiDraftRoutes } from "./routes/ai-drafts";
 import { registerPasswordResetRoutes } from "./routes/password-reset";
 import { outboundMarketScore, getRouteFuelPrice, observedLaneQualityAdjustment } from "./lib/ai";
 import { enrichLoadBestEffort } from "./lib/ai/enrich";
@@ -71,6 +72,7 @@ import { getIntegrationValue } from "./lib/integration-config";
 import { parseLimit } from "./lib/query";
 import { fetchByMc } from "./lib/ai/fmcsa";
 import { isDisposableEmail } from "./lib/disposable-domains";
+import { postAuthRedirect } from "./lib/auth-redirect";
 import {
   TWILIO_VERIFY_CONFIGURED,
   sendVerificationCode,
@@ -1334,7 +1336,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (user.totpSecret && !user.totpConfirmedAt) {
       storage.audit("auth.login_failed", "user", user.id, { reason: "totp_setup_required" });
       return res.status(401).json({
-        message: "Завершите настройку 2FA — отсканируйте QR и подтвердите код.",
+        message: "Finish setting up 2FA — scan the QR code and confirm a code.",
         code: "totp_setup_required",
       });
     }
@@ -1399,7 +1401,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
         storage.recordUserLogin(user.id);
         storage.audit("auth.login", "user", user.id, { email: user.email, role: user.role });
-        res.json({ ok: true, role: user.role, redirect: `/${user.role === "admin" ? "admin" : user.role === "dispatcher" ? "dispatch" : "d"}` });
+        // Redirect is onboarding-aware: a self-serve owner mid-wizard resumes
+        // /onboarding instead of landing in an empty portal (see auth-redirect.ts).
+        res.json({ ok: true, role: user.role, redirect: postAuthRedirect(user) });
       });
     });
   });
@@ -1440,7 +1444,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         emailDomain: body.email.slice(body.email.lastIndexOf("@") + 1).toLowerCase(),
       });
       return res.status(400).json({
-        message: "Пожалуйста, используйте постоянный рабочий email (временные адреса не принимаются).",
+        message: "Please use a permanent work email (temporary addresses are not accepted).",
         code: "disposable_email",
       });
     }
@@ -1572,7 +1576,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const claimed = verifyPendingConfirmationToken(body.pendingConfirmationToken);
     if (!claimed) {
       return res.status(401).json({
-        message: "Ссылка истекла — повторите регистрацию.",
+        message: "The link has expired — please sign up again.",
         code: "token_expired",
       });
     }
@@ -1607,13 +1611,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (acceptedCounter === null) {
       storage.audit("auth.confirm_signup_failed", "user", user.id, { reason: "bad_totp" });
       return res.status(401).json({
-        message: "Неверный код — проверьте цифры в приложении и повторите.",
+        message: "Invalid code — check the digits in your authenticator app and try again.",
         code: "totp_invalid",
       });
     }
 
     if (!storage.setLastUsedTotpCounter(user.id, acceptedCounter)) {
-      return res.status(401).json({ message: "Неверный код — проверьте цифры в приложении и повторите.", code: "totp_invalid" });
+      return res.status(401).json({ message: "Invalid code — check the digits in your authenticator app and try again.", code: "totp_invalid" });
     }
     const { firstConfirm } = storage.confirmTotpSetup(user.id);
     if (!firstConfirm) {
@@ -1643,9 +1647,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
         storage.recordUserLogin(user.id);
         storage.audit("auth.signup_login", "user", user.id, { role: user.role });
-        const redirect =
-          user.role === "admin" ? "/admin" : user.role === "dispatcher" ? "/dispatch" : "/d";
-        return res.json({ ok: true, role: user.role, redirect });
+        // Resume-2FA users confirm here without ever seeing the signup flow's
+        // needsOnboarding navigation — route them onboarding-aware too.
+        return res.json({ ok: true, role: user.role, redirect: postAuthRedirect(user) });
       });
     });
   });
@@ -1874,7 +1878,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             notes: `operatingStatus=${carrier.operatingStatus} (onboarding hard-reject)`,
           });
           return res.status(422).json({
-            message: `У этого MC# нет действующей FMCSA authority (${carrier.operatingStatus}). Trial недоступен.`,
+            message: `This MC# has no active FMCSA operating authority (${carrier.operatingStatus}). A trial is not available.`,
             code: "mc_not_authorized",
           });
         }
@@ -1885,7 +1889,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const owner = storage.getMcRegistryOwner(normalized);
       if (owner && owner.userId !== user.id) {
         return res.status(409).json({
-          message: "Этот MC# уже привязан к другому аккаунту. Если это ошибка — свяжитесь с поддержкой.",
+          message: "This MC# is already linked to another account. If you believe this is an error, contact support.",
           code: "mc_already_claimed",
         });
       }
@@ -1901,7 +1905,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!claim.ok) {
           storage.audit("onboarding.mc_claim_conflict", "user", user.id, { mc: normalized });
           return res.status(409).json({
-            message: "Этот MC# уже привязан к другому аккаунту. Если это ошибка — свяжитесь с поддержкой.",
+            message: "This MC# is already linked to another account. If you believe this is an error, contact support.",
             code: "mc_already_claimed",
           });
         }
@@ -1931,7 +1935,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
         return res.status(422).json({
           message:
-            "Нельзя завершить onboarding без MC#. Введите ваш MC номер и дождитесь FMCSA SAFER верификации.",
+            "Onboarding can't be completed without an MC#. Enter your MC number and wait for the FMCSA SAFER verification.",
           code: "mc_required_to_complete",
         });
       }
@@ -1949,7 +1953,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
         return res.status(422).json({
           message:
-            "Не выбран тип аккаунта (owner-operator / fleet / enterprise). Вернитесь на шаг «Тип аккаунта».",
+            "No account type selected (owner-operator / fleet / enterprise). Go back to the \"Account type\" step.",
           code: "persona_required_to_complete",
         });
       }
@@ -1991,7 +1995,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             step: body.step,
           });
           return res.status(500).json({
-            message: "Не удалось создать carrier. Попробуйте ещё раз или напишите в поддержку.",
+            message: "Couldn't create the carrier. Please try again or contact support.",
             code: "provision_failed",
           });
         }
@@ -2089,7 +2093,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     if (perUserActive || carrierActive) return next();
     return res.status(402).json({
-      message: "Подписка истекла. Обратитесь к администратору для продления.",
+      message: "Your subscription has expired. Contact your administrator to renew.",
       code: "subscription_expired",
     });
   });
@@ -2188,6 +2192,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     return requireRole.any()(req, res, next);
   });
+
+  // AI broker-reply drafts (dispatcher-only, per-user AI quota). Registered
+  // AFTER the shared /api gate above so an expired subscription blocks it the
+  // same as every other authenticated route. See server/routes/ai-drafts.ts.
+  registerAiDraftRoutes(app);
 
   // Audit V3-13 — dispatch board is operational data (loads, drivers,
   // statuses). Admin-only: dispatchers get fleet/load data via the cockpit and

@@ -76,9 +76,27 @@ export interface CheckoutInput {
 }
 
 /**
+ * One 14-day free trial per carrier (the legal page promises exactly that).
+ * Checkout may grant `trial_period_days` ONLY to a carrier that has never had
+ * a trial or a subscription: onboarding provisioning stamps trialEndsAt when
+ * the trial starts, and stripeSubscriptionId survives cancellation — either
+ * one means the trial was already consumed, so Checkout must charge
+ * immediately instead of re-provisioning an expired/canceled carrier with a
+ * fresh free 14 days (repeatable forever via cancel/re-checkout).
+ * Pure so the gate is unit-testable.
+ */
+export function shouldGrantCheckoutTrial(client: {
+  trialEndsAt?: string | null;
+  stripeSubscriptionId?: string | null;
+}): boolean {
+  return !client.trialEndsAt && !client.stripeSubscriptionId;
+}
+
+/**
  * Create a Stripe Checkout session for a plan tier. Returns the URL to
  * redirect the browser to. We honor the 14-day trial via
- * `subscription_data.trial_period_days = 14`.
+ * `subscription_data.trial_period_days = 14` — but only for carriers that
+ * never had one (shouldGrantCheckoutTrial).
  *
  * If the client already has a stripeCustomerId, we reuse it so the same
  * Customer accumulates subscription history (and Customer Portal works).
@@ -101,7 +119,13 @@ export async function createCheckoutSession(
   }
 
   const client = storage.getClient(input.clientId) as
-    | (Record<string, unknown> & { name?: string; stripeCustomerId?: string; deletedAt?: string | null })
+    | (Record<string, unknown> & {
+        name?: string;
+        stripeCustomerId?: string;
+        stripeSubscriptionId?: string;
+        trialEndsAt?: string;
+        deletedAt?: string | null;
+      })
     | undefined;
   // getClient resolves archived clients (needed for webhook reconciliation);
   // an archived carrier must not be able to START a new checkout.
@@ -121,7 +145,8 @@ export async function createCheckoutSession(
     success_url: input.successUrl,
     cancel_url: input.cancelUrl,
     subscription_data: {
-      trial_period_days: 14,
+      // First-ever trial only; an expired/canceled carrier pays immediately.
+      ...(shouldGrantCheckoutTrial(client) ? { trial_period_days: 14 } : {}),
       // We embed clientId so the webhook can reconcile back to our DB
       // without needing a Stripe Customer lookup.
       metadata: {
@@ -885,6 +910,20 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       if (!clientId) return { handled: false, clientId: null };
       const client = storage.getClient(clientId);
       if (!client) return { handled: false, clientId };
+      // Only the CURRENT subscription's deletion may lock the carrier: if the
+      // stored id differs, the deleted sub is an obsolete duplicate (e.g. the
+      // pre-guard plan-switch double-subscription) and flipping billingStatus
+      // to 'canceled' would 402-lock a still-paying customer. Audit + ignore.
+      // A client with NO stored id falls through (a real cancel must never be
+      // missed for legacy rows that predate id stamping).
+      const storedSubId = (client as { stripeSubscriptionId?: string }).stripeSubscriptionId;
+      if (storedSubId && storedSubId !== sub.id) {
+        storage.audit("billing.subscription_delete_ignored", "client", clientId, {
+          subscriptionId: sub.id,
+          currentSubscriptionId: storedSubId,
+        });
+        return { handled: true, clientId, changes: {} };
+      }
       storage.upsertClient({
         ...(client as unknown as Parameters<typeof storage.upsertClient>[0]),
         billingStatus: "canceled",

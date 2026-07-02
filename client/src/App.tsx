@@ -142,15 +142,17 @@ class ErrorBoundary extends Component<{ children: ReactNode }, PortalBoundarySta
     if (this.state.error) {
       return (
         <div className="flex h-screen flex-col items-center justify-center gap-4 p-6 text-center">
+          {/* Renders OUTSIDE the i18n provider (class component, may fire before
+              context mounts), so plain English — the product's default locale. */}
           <p className="text-sm text-muted-foreground">
-            Не удалось загрузить страницу. Обновите её, чтобы продолжить.
+            Couldn't load the page. Refresh to continue.
           </p>
           <button
             type="button"
             onClick={this.handleReload}
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Обновить
+            Refresh
           </button>
         </div>
       );

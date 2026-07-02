@@ -55,6 +55,8 @@ const S = {
   current: "Current",
   upgrade: "Upgrade",
   switchPlan: "Switch plan",
+  subscribe: "Subscribe",
+  changeInPortal: "Change plan in billing portal",
   checkoutFailed: "Couldn't open checkout",
   portalFailed: "Couldn't open the billing portal",
   statusLabels: {
@@ -256,6 +258,15 @@ function BillingBody({
   const persona = currentPlan?.persona ?? "owner_operator";
   const availablePlans = plans.filter((p) => p.persona === persona);
   const expired = status.billingStatus === "expired";
+  // "Actually subscribed" — a live Stripe subscription exists. Trial (from
+  // onboarding), expired and canceled carriers have a planTier stamped but no
+  // live sub: their "Current" plan is exactly the one that needs a Subscribe
+  // button. Live subscribers change plans via the Customer Portal instead of
+  // Checkout (a second Checkout would create a second subscription).
+  const subscribed =
+    Boolean(status.hasSubscription) &&
+    status.billingStatus !== "canceled" &&
+    status.billingStatus !== "expired";
 
   return (
     <>
@@ -360,8 +371,7 @@ function BillingBody({
         <h2 className="mb-3 text-base font-semibold">{S.availablePlans}</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           {availablePlans.map((p) => {
-            const isCurrent =
-              p.tier === status.planTier && status.billingStatus !== "expired";
+            const isCurrent = p.tier === status.planTier;
             const isUpgrade = (p.monthlyCents ?? 0) > (status.monthlyCents ?? 0);
             return (
               <Card
@@ -401,22 +411,44 @@ function BillingBody({
                   )}
                   {p.features?.apiAccess && <PlanFeature text={S.featApi} />}
                 </ul>
-                {!isCurrent && (
+                {/* Not subscribed yet (trial/expired/canceled): every plan —
+                    especially the already-chosen "Current" one — is buyable
+                    via Checkout. Subscribed: plan changes go through the
+                    Customer Portal (server 409s a second Checkout). */}
+                {!subscribed ? (
                   <Button
                     size="sm"
                     className="mt-3 w-full"
-                    variant={isUpgrade || expired ? "default" : "outline"}
+                    variant={isCurrent || isUpgrade || expired ? "default" : "outline"}
                     onClick={() => onCheckout(p.tier)}
                     disabled={busy !== null}
                   >
                     {busy === p.tier ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : isCurrent ? (
+                      S.subscribe
                     ) : isUpgrade || expired ? (
                       S.upgrade
                     ) : (
                       S.switchPlan
                     )}
                   </Button>
+                ) : (
+                  !isCurrent && (
+                    <Button
+                      size="sm"
+                      className="mt-3 w-full"
+                      variant="outline"
+                      onClick={onPortal}
+                      disabled={busy !== null}
+                    >
+                      {busy === "portal" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        S.changeInPortal
+                      )}
+                    </Button>
+                  )
                 )}
               </Card>
             );

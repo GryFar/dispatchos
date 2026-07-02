@@ -2117,6 +2117,39 @@ try {
     throw new Error(`self-serve signup redirect expected "/d", got ${selfServe.redirect}`);
   }
   console.log("[OK] self-serve signup without invite (role=driver, no carrier yet)");
+
+  // deadend-P0 A1/A2: a carrier-less self-serve user whose onboarding wizard is
+  // not completed must be routed back into /onboarding — confirm-signup (the
+  // resume-2FA landing) and login used to hardcode "/d", stranding every
+  // interrupted signup in an empty driver portal with no path to the MC claim /
+  // trial. Invited drivers (linkedClientId) keep "/d" — asserted above and at
+  // the loginA re-check below.
+  const selfServeConfirm = await confirmTotpSignup(
+    selfServe.pendingConfirmationToken,
+    selfServe.totpSecret,
+  );
+  if (selfServeConfirm.redirect !== "/onboarding") {
+    throw new Error(
+      `self-serve confirm-signup redirect expected "/onboarding" (no carrier, wizard incomplete), got ${selfServeConfirm.redirect}`,
+    );
+  }
+  cookieHeader = "";
+  const selfServeLogin = await request("/api/auth/login", {
+    method: "POST",
+    body: {
+      email: "selfserve.smoke@example.com",
+      password: "SelfServe123!",
+      // stepOffset=1: confirm-signup consumed the current TOTP window and the
+      // counter guard (PR #99) rejects replays of the same code.
+      token: totp(selfServe.totpSecret, 1),
+    },
+  });
+  if (selfServeLogin.redirect !== "/onboarding") {
+    throw new Error(
+      `self-serve login redirect expected "/onboarding" (no carrier, wizard incomplete), got ${selfServeLogin.redirect}`,
+    );
+  }
+  console.log("[OK] deadend-A1/A2: carrier-less self-serve confirm-signup + login redirect to /onboarding");
   cookieHeader = driverACookie;
 
   // GET /api/me — driverStatus + linkedClientId surfaced via toUserPublic
