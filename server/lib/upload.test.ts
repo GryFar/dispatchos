@@ -1,10 +1,10 @@
 // Regression tests for the shared multer upload middleware (server/upload.ts).
 // Run: npx tsx server/lib/upload.test.ts
 //
-// NOTE on location: this test lives under server/lib/ (not next to its source
-// at server/upload.ts) because the unit-test runner scripts/smoke-ai.mjs only
-// recurses server/lib/. A test placed at server/upload.test.ts is never picked
-// up by `npm run smoke:ai` / CI, so it would give false confidence.
+// NOTE on location: this test predates the harness widening — it lives under
+// server/lib/ rather than next to its source at server/upload.ts. The runner
+// scripts/smoke-ai.mjs now recurses ALL of server/, so either location is
+// picked up by `npm run smoke:ai` / CI; kept here to avoid churn.
 //
 // server/upload.ts exports exactly ONE symbol: `upload`, the single multer
 // instance the whole server shares. It imports `uploadsRoot` from ./storage,

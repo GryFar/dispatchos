@@ -152,5 +152,35 @@ async function accepted(adapter: { fetchLoads: (r: LoadSourceRow, n?: number) =>
   assert("rxo: From with no '@' (bare 'rxo.com') NOT matched", !(await accepted(rxoEmailAdapter, row, noAt)));
 }
 
+// ---------------------------------------------------------------------------
+// 5) Window-completeness (silent-drop regression): an in-window offer buried
+//    under >200 NEWER unrelated emails must still be found. The pre-fix fetch
+//    fed a GLOBAL newest-200 listEmailIngest() page (cron passes no limit →
+//    cap 200) into the per-source filters, so 200+ unrelated emails arriving
+//    in a poll interval evicted another source's still-in-window offers — and
+//    rows only get older, so they were never seen again (purged at 180d).
+//    The buried-offer assertion FAILS on the old newest-200-global code.
+// ---------------------------------------------------------------------------
+{
+  const buriedFrom = `buried-${rnd()}@rxo.com`;
+  seedEmail(buriedFrom);
+  // Guarantee the noise below is strictly NEWER (created_at has ms precision;
+  // a 15ms gap removes any same-millisecond ordering ambiguity).
+  await new Promise((r) => setTimeout(r, 15));
+  const noiseFrom = `noise-${rnd()}@unrelated.example`;
+  for (let i = 0; i < 220; i++) seedEmail(noiseFrom);
+
+  const row = srcRow("rxo_email");
+  const out = await rxoEmailAdapter.fetchLoads(row); // no limit, like the cron poller
+  assert(
+    "window: in-window RXO offer buried under 220 newer noise emails is still found",
+    out.some((r) => String(r.from) === buriedFrom),
+  );
+  assert(
+    "window: unrelated noise still filtered out",
+    !out.some((r) => String(r.from) === noiseFrom),
+  );
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

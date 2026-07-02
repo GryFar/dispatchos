@@ -20,8 +20,20 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { dollarsToCents, centsToDollars, FLAT_FEE_CENTS } from "./billing";
+// billing.ts imports ../storage, which opens better-sqlite3 at module load
+// using DISPATCHOS_DB_PATH — point it at a temp file BEFORE importing so the
+// computeInvoiceForWeek test below never touches a real database (same
+// pattern as billing-week-boundary.test.ts).
+process.env.DISPATCHOS_DB_PATH = join(
+  tmpdir(),
+  `dispatchos-billing-unit-test-${Date.now()}-${process.pid}.db`,
+);
+const { dollarsToCents, centsToDollars, FLAT_FEE_CENTS, computeInvoiceForWeek } =
+  await import("./billing");
+const { storage } = await import("../storage");
 
 test("dollarsToCents — clean inputs", () => {
   assert.equal(dollarsToCents(0), 0);
@@ -71,19 +83,46 @@ test("percent fee is exactly 3% via basis points (no float drift)", () => {
   assert.equal(centsToDollars(feeCents), 296.30);
 });
 
-test("sum-of-many-loads has zero cumulative drift (vs old float sum)", () => {
-  // Simulate 100 loads with rates that float-summed would drift.
-  const rates = Array.from({ length: 100 }, () => 1234.56 + Math.random() * 0.01);
+test("invoice gross is the exact integer sum of per-load cents (fails on float-sum revert)", () => {
+  // 100 loads at $1000.005 each. Per-load: dollarsToCents(1000.005) = 100_000¢
+  // (1000.005 is stored as 1000.00499…, so toFixed(2) → "1000.00").
+  // Old pre-fix pipeline float-summed the rates FIRST and rounded once:
+  //   Σ rate = 100_000.4999… → round(×100) = 10_000_050¢
+  // — a 50¢ divergence, so this test bites if billing ever reverts to
+  // sum-then-round.
+  const RATE = 1000.005;
+  const COUNT = 100;
+  const PER_LOAD_CENTS = 100_000;
+  const EXPECTED_GROSS_CENTS = COUNT * PER_LOAD_CENTS; // 10_000_000¢
 
-  // Old approach: float sum → round once.
-  const oldGross = Math.round(rates.reduce((s, r) => s + r, 0) * 100) / 100;
+  // Guard the guard: prove the chosen inputs actually distinguish the two
+  // pipelines, so the assertion below can never go vacuous.
+  assert.equal(dollarsToCents(RATE), PER_LOAD_CENTS);
+  const oldFloatSumCents = Math.round(
+    Array.from({ length: COUNT }, () => RATE).reduce((s, r) => s + r, 0) * 100,
+  );
+  assert.notEqual(oldFloatSumCents, EXPECTED_GROSS_CENTS, "inputs no longer diverge; pick new rates");
 
-  // New approach: per-rate to cents, sum integers.
-  const newCents = rates.reduce((s, r) => s + dollarsToCents(r), 0);
-  const newGross = centsToDollars(newCents);
+  // Exercise the real invoice path end-to-end through storage.
+  const clientId = `bill-drift-${Math.random().toString(36).slice(2, 10)}`;
+  for (let i = 0; i < COUNT; i++) {
+    storage.upsertLoad({
+      id: `load-drift-${clientId}-${i}`,
+      clientId,
+      bookedAt: "2026-06-10T12:00:00.000Z",
+      rate: RATE,
+      brokerMc: "MC-1",
+      brokerName: "B",
+    } as Parameters<typeof storage.upsertLoad>[0]);
+  }
 
-  // Drift must be <= 1¢ * loadCount worst-case but in practice always 0¢
-  // because we round once per load with toFixed(2) protection.
-  const driftDollars = Math.abs(oldGross - newGross);
-  assert.ok(driftDollars <= 0.5, `cumulative drift too large: ${driftDollars}`);
+  const inv = computeInvoiceForWeek(clientId, "2026-06-08", "2026-06-14");
+  assert.equal(inv.breakdown.loadCount, COUNT);
+  // EXACT integer equality — no tolerance. A float-sum revert yields
+  // 10_000_050¢ here and fails.
+  assert.equal(inv.grossBookedCents, EXPECTED_GROSS_CENTS);
+  assert.equal(inv.grossBooked, centsToDollars(EXPECTED_GROSS_CENTS));
+  // 3% in basis points on the exact gross: 10_000_000 × 300 / 10_000 = 300_000¢.
+  assert.equal(inv.percentFeeCents, 300_000);
+  assert.equal(inv.totalDueCents, FLAT_FEE_CENTS + 300_000);
 });

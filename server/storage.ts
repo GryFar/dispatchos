@@ -2220,6 +2220,40 @@ export const storage = {
   },
 
   /**
+   * Atomically re-count driver seats AND create the user in ONE transaction,
+   * closing the check-then-create gap in the admin/lead seat-cap gates (the
+   * route-level canAddDriver pre-check can race a concurrent create; single-
+   * process SQLite makes that inert today, but the invariant belongs here).
+   * `maxSeats` is the plan's hard cap; pass Infinity when the plan sells
+   * overage seats (no hard cap). Throws Error with code='SEAT_CAP_EXCEEDED'
+   * on overflow — nothing is inserted in that case.
+   */
+  createUserIfSeatAvailable(
+    input: {
+      email: string;
+      fullName: string;
+      role: UserRole;
+      passwordSalt: string;
+      passwordHash: string;
+      totpSecret?: string;
+      linkedClientId?: string;
+      actorUserId?: string;
+    },
+    cap: { clientId: string; maxSeats: number },
+  ): UserInternal {
+    return sqlite.transaction(() => {
+      if (Number.isFinite(cap.maxSeats) && this.countDriverSeats(cap.clientId) >= cap.maxSeats) {
+        const err = new Error(
+          `Driver seat cap (${cap.maxSeats}) reached for client ${cap.clientId}`,
+        ) as Error & { code: string };
+        err.code = "SEAT_CAP_EXCEEDED";
+        throw err;
+      }
+      return this.createUser(input);
+    })();
+  },
+
+  /**
    * Atomically create a user AND consume the single-use invite in one
    * transaction. If a concurrent signup already consumed the code, the whole
    * thing rolls back (no orphan user) and returns { alreadyConsumed: true }.
@@ -3216,6 +3250,36 @@ export const storage = {
       createdByUserId: input.createdByUserId,
     });
     return invite;
+  },
+
+  /**
+   * Seat-cap-guarded twin of createInviteWithCode: re-counts driver seats and
+   * inserts the invite in ONE transaction (countDriverSeats includes pending
+   * invites, so two concurrent invite creations can't both slip under the cap).
+   * Same cap/sentinel contract as createUserIfSeatAvailable.
+   */
+  createInviteIfSeatAvailable(
+    input: {
+      code: string;
+      role: UserRole;
+      email?: string;
+      ttlHours?: number;
+      linkedClientId?: string;
+      subscriptionDays?: number;
+      createdByUserId: string;
+    },
+    cap: { clientId: string; maxSeats: number },
+  ): Invite {
+    return sqlite.transaction(() => {
+      if (Number.isFinite(cap.maxSeats) && this.countDriverSeats(cap.clientId) >= cap.maxSeats) {
+        const err = new Error(
+          `Driver seat cap (${cap.maxSeats}) reached for client ${cap.clientId}`,
+        ) as Error & { code: string };
+        err.code = "SEAT_CAP_EXCEEDED";
+        throw err;
+      }
+      return this.createInviteWithCode(input);
+    })();
   },
 
   /**
@@ -6531,6 +6595,71 @@ export const storage = {
       )
       .all(limit)
       .map((row: any) => ({ id: row.id, ...JSON.parse(row.payload), createdAt: row.createdAt }));
+  },
+
+  /**
+   * Window-COMPLETE email_ingest scan for the email adapters (created_at >=
+   * sinceIso, oldest first). listEmailIngest is a global newest-N page: feeding
+   * it into the adapters' per-source filters meant >N unrelated emails per poll
+   * evicted another source's still-in-window offers permanently (rows only get
+   * older, so they never re-entered the page). Keyset-paginates on
+   * (created_at, id) like listLocationPingsInWindow, so the scan is bounded per
+   * statement but covers the whole window. Oldest-first matters: if the safety
+   * ceiling truncates, the NEWEST rows are the ones deferred — they move toward
+   * the front of the lookback window and get scanned on a later poll, whereas
+   * dropping oldest would reproduce the permanent-eviction bug. Rows are shaped
+   * like listEmailIngest rows ({ id, ...payload, createdAt }).
+   */
+  listEmailIngestInWindow(
+    sinceIso: string,
+    opts?: { batchSize?: number; maxRows?: number },
+  ): Array<{ id: string; createdAt: string } & Record<string, unknown>> {
+    const batchSize = opts?.batchSize ?? 500;
+    const maxRows = opts?.maxRows ?? 5000;
+    const out: Array<{ id: string; createdAt: string } & Record<string, unknown>> = [];
+    const stmt = sqlite.prepare(`
+      SELECT id, payload, created_at AS createdAt FROM email_ingest
+      WHERE created_at >= ?
+        AND (created_at > ? OR (created_at = ? AND id > ?))
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `);
+    let lastCreated = sinceIso;
+    let lastId = "";
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const rows = stmt.all(sinceIso, lastCreated, lastCreated, lastId, batchSize) as Array<{
+        id: string;
+        payload: string;
+        createdAt: string;
+      }>;
+      if (rows.length === 0) break;
+      for (const r of rows) {
+        if (out.length >= maxRows) break;
+        out.push({ id: r.id, ...JSON.parse(r.payload), createdAt: r.createdAt });
+      }
+      if (out.length >= maxRows) {
+        // Safety ceiling: never silent. Count what the window really holds so
+        // the operator sees the truncation and can shorten the lookback.
+        const total = (
+          sqlite
+            .prepare("SELECT COUNT(*) AS c FROM email_ingest WHERE created_at >= ?")
+            .get(sinceIso) as { c: number }
+        ).c;
+        if (total > out.length) {
+          console.warn(
+            `[email-ingest] window scan hit the ${maxRows}-row safety ceiling: ${total} rows since ${sinceIso}, ` +
+              `returning oldest ${out.length}; newest ${total - out.length} deferred to a later poll`,
+          );
+        }
+        break;
+      }
+      const last = rows[rows.length - 1]!;
+      lastCreated = last.createdAt;
+      lastId = last.id;
+      if (rows.length < batchSize) break;
+    }
+    return out;
   },
 
   // -------------------------------------------------------------------------

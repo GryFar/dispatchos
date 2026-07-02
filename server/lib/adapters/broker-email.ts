@@ -86,32 +86,34 @@ export function makeBrokerEmailAdapter(opts: {
     async fetchLoads(row: LoadSourceRow, limit?: number): Promise<RawLoad[]> {
       const cfg = row.configJson as BrokerEmailConfig;
       // Operator JSON config is unvalidated: a string ('1440') or any
-      // non-number makes the multiplication NaN, so `cutoff` is NaN and the
-      // `< cutoff` per-row guard (x < NaN === false) never skips anything —
-      // every email in the scan passes regardless of age. A negative value
-      // would push the cutoff into the future and skip everything. Coerce and
-      // fall back to the 24h default unless we have a finite, positive number.
+      // non-number makes the multiplication NaN, so `cutoff` is NaN and
+      // new Date(NaN).toISOString() below would throw, failing the poll. A
+      // negative value would push the cutoff into the future and skip
+      // everything. Coerce and fall back to the 24h default unless we have a
+      // finite, positive number.
       const lm = Number(cfg.lookbackMinutes);
       const lookbackMin = Number.isFinite(lm) && lm > 0 ? lm : 1440;
       const cutoff = Date.now() - lookbackMin * 60_000;
       const inbox = cfg.inboundAddress?.toLowerCase();
       const domains = [...opts.senderDomains, ...(cfg.senderDomains ?? [])];
-      const cap = Math.min(limit ?? 200, 500);
+      // `limit` caps MATCHED offers for explicit callers (source test = 1);
+      // the cron poller passes none and gets everything in the window.
+      const cap = limit !== undefined ? Math.min(limit, 500) : Infinity;
 
-      const rows = storage.listEmailIngest(cap);
+      // Window-COMPLETE fetch: the per-source filters below run in memory, so
+      // the DB scan must cover the whole lookback window. The old code fed a
+      // global newest-200 listEmailIngest() page into these filters — >200
+      // unrelated emails per poll evicted another source's in-window offers
+      // permanently (rows only get older; purged at 180d unprocessed).
+      const rows = storage.listEmailIngestInWindow(new Date(cutoff).toISOString());
       const out: RawLoad[] = [];
       for (const r of rows) {
-        // Skip rows whose timestamp can't be parsed: an unparseable createdAt
-        // yields NaN, and `NaN < cutoff` is false, which would otherwise let a
-        // bad-timestamp row slip past the age window.
-        const createdMs = new Date(r.createdAt).getTime();
-        if (!Number.isFinite(createdMs) || createdMs < cutoff) continue;
-        // storage.listEmailIngest already JSON-parses the stored payload and
-        // SPREADS its fields (from/to/subject/body) onto the row alongside
-        // id/createdAt — so the row itself IS the email payload. The previous
-        // code re-read r.payload, which no longer exists after that spread, so
-        // `payload` was always undefined and EVERY email was silently dropped
-        // (the email source ingested nothing). Use the row directly.
+        // storage.listEmailIngestInWindow (like listEmailIngest) JSON-parses
+        // the stored payload and SPREADS its fields (from/to/subject/body)
+        // onto the row alongside id/createdAt — so the row itself IS the email
+        // payload. Earlier code re-read r.payload, which no longer exists
+        // after that spread, so `payload` was always undefined and EVERY email
+        // was silently dropped (the email source ingested nothing).
         const payload = r as unknown as Record<string, unknown>;
         // Scope to this source's mailbox sub-address (if set) AND to the
         // broker's sender domains (so two broker sources sharing one mailbox
@@ -123,7 +125,10 @@ export function makeBrokerEmailAdapter(opts: {
         if (!senderMatches(String(payload?.from ?? ""), domains)) continue;
         out.push({ ingestId: r.id, ...payload } as RawLoad);
       }
-      return out;
+      // The window scan is oldest-first, so a plain head-slice would hand
+      // limited callers the STALEST matches — the admin "test source" probe
+      // (limit=1) must show the latest offer. Cap by keeping the newest.
+      return out.length > cap ? out.slice(out.length - cap) : out;
     },
 
     normalizeToLoad(raw: RawLoad, row: LoadSourceRow): NormalizedLoad {
