@@ -59,19 +59,31 @@ export const sylectusEmailAdapter: BoardAdapter = {
 
   async fetchLoads(row: LoadSourceRow, limit?: number): Promise<RawLoad[]> {
     const cfg = row.configJson as SylectusConfig;
-    const lookback = (cfg.lookbackMinutes ?? 1440) * 60_000;
-    const cutoff = Date.now() - lookback;
+    // Coerce operator JSON: a string ('1440') or garbage makes the product NaN,
+    // so `cutoff` is NaN and new Date(NaN).toISOString() below throws and fails
+    // the poll; a negative value would push the cutoff into the future and skip
+    // everything. Mirror broker-email.ts — fall back to the 24h default unless
+    // finite + positive.
+    const lm = Number(cfg.lookbackMinutes);
+    const lookbackMin = Number.isFinite(lm) && lm > 0 ? lm : 1440;
+    const cutoff = Date.now() - lookbackMin * 60_000;
     const inbox = cfg.inboundAddress?.toLowerCase();
     const domains = [...SYLECTUS_SENDER_DOMAINS, ...(cfg.senderDomains ?? [])];
-    const cap = Math.min(limit ?? 200, 500);
+    // `limit` caps offers for explicit callers (source test); the cron poller
+    // passes none and must get the WHOLE window (not a global newest-N page).
+    const cap = limit !== undefined ? Math.min(limit, 500) : Infinity;
 
-    const rows = storage.listEmailIngest(cap);
+    // Window-COMPLETE scan: the per-source filters below run in memory, so the
+    // DB scan must cover the whole lookback window. The old code fed a global
+    // newest-200 listEmailIngest() page into these filters — >200 unrelated
+    // emails per poll evicted another source's in-window offers permanently
+    // (rows only get older; purged at 180d unprocessed). Mirrors broker-email.ts.
+    const rows = storage.listEmailIngestInWindow(new Date(cutoff).toISOString());
     const out: RawLoad[] = [];
     for (const r of rows) {
-      if (new Date(r.createdAt).getTime() < cutoff) continue;
-      // listEmailIngest already parses + spreads the email fields onto the row,
-      // so the row IS the payload. The old r.payload re-read was always
-      // undefined post-spread → every email was silently dropped.
+      // listEmailIngestInWindow already bounds by created_at >= cutoff and
+      // parses + spreads the email fields onto the row, so the row IS the
+      // payload (an old r.payload re-read would be undefined post-spread).
       const payload = r as unknown as Record<string, unknown>;
       // Scope to this source's mailbox sub-address (if set) so two sources
       // sharing one mailbox don't steal each other's emails.
@@ -97,7 +109,9 @@ export const sylectusEmailAdapter: BoardAdapter = {
       if (!parsed.matched) continue;
       out.push({ ingestId: r.id, ...payload } as RawLoad);
     }
-    return out;
+    // The window scan is oldest-first, so a plain head-slice would hand limited
+    // callers the STALEST matches — cap by keeping the newest (mirrors broker-email).
+    return out.length > cap ? out.slice(out.length - cap) : out;
   },
 
   normalizeToLoad(raw: RawLoad, row: LoadSourceRow): NormalizedLoad {

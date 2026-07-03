@@ -150,6 +150,21 @@ async function main() {
     delete process.env.DISPATCHOS_AI_PARSE_DAILY_CAP;
   }
 
+  // 9. Kill-switch (DISPATCHOS_AI_KILL) -> AI never called, even with key +
+  //    budget available. Mirrors the platform-wide lever in storage.ts so the
+  //    system-side poller path also stops instantly during a cost incident.
+  {
+    process.env.DISPATCHOS_AI_KILL = "1";
+    mockAi({ rate: 2400, confidenceRate: 1 });
+    const r = await parseBrokerEmailWithAi(NO_RATE);
+    assert("kill-switch=1: AI not called", fetchCalls === 0, `calls=${fetchCalls}`);
+    assert(
+      "kill-switch=1: byte-identical to regex parse",
+      JSON.stringify(r) === JSON.stringify(parseBrokerEmail(NO_RATE)),
+    );
+    delete process.env.DISPATCHOS_AI_KILL;
+  }
+
   globalThis.fetch = realFetch;
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);

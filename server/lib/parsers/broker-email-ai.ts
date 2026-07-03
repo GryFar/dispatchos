@@ -60,6 +60,15 @@ function budgetAllows(): boolean {
   return true;
 }
 
+// Operator kill-switch, mirrored from storage.ts (DISPATCHOS_AI_KILL). The
+// per-user AI routes honor it via consumeAiQuota; this parser runs system-side
+// (the cron poller, no user), so it must check the same lever directly — else a
+// cost incident could not stop the poller's model calls without a redeploy.
+function aiKillSwitchOn(): boolean {
+  const v = process.env.DISPATCHOS_AI_KILL;
+  return v === "1" || v === "true";
+}
+
 /** Shape the model must return: each core field optional + a 0..1 confidence. */
 interface AiFields {
   originCity?: string;
@@ -222,6 +231,7 @@ export async function parseBrokerEmailWithAi(input: {
   const base = parseBrokerEmail(input);
   if (criticalComplete(base)) return base; // clean mail -> zero AI cost
   if (!process.env.ANTHROPIC_API_KEY) return base; // graceful without a key
+  if (aiKillSwitchOn()) return base; // operator emergency stop (mirror storage.ts)
   if (!budgetAllows()) return base; // daily cap reached -> silently regex-only
 
   const ai = await callModel(String(input.subject ?? ""), String(input.body ?? ""));

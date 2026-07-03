@@ -11,6 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.DISPATCHOS_DB_PATH = join(tmpdir(), `dispatchos-generic-email-${Date.now()}.db`);
+// fetchLoads now gates on parsed.matched and AI-assists incomplete parses on the
+// no-limit path; drop any key so this scoping test stays offline + deterministic.
+delete process.env.ANTHROPIC_API_KEY;
 const { storage } = await import("../../storage");
 const { getAdapter, listAdapters } = await import("./index");
 
@@ -49,7 +52,9 @@ storage.saveEmailIngest({
   from: "dispatch@mybroker.com",
   to: "loads+ivan@dispatchos.co",
   subject: "Load offer",
-  body: "Dallas, TX to Atlanta, GA — 780 mi — $2400",
+  // Parseable, complete load — fetchLoads now drops emails that don't parse to a
+  // matched load (fix a), so the one email this test expects back must parse.
+  body: "Origin: Dallas, TX\nDestination: Atlanta, GA\nRate: $2,400\nMiles: 780\nPickup: 2026-07-10",
 });
 storage.saveEmailIngest({
   from: "dispatch@mybroker.com",
