@@ -624,6 +624,63 @@ export function registerMeRoutes(app: Express): void {
   );
 
   // -------------------------------------------------------------------------
+  // WAVE B — B.1  GET /api/me/loads/scored — owner's scored load board.
+  // -------------------------------------------------------------------------
+  // MUST be registered BEFORE `/api/me/loads/:id` below, or Express matches the
+  // literal "scored" as an :id param and 404s ("Load not found"). Wraps
+  // scoreLoadForClient(..., persist=false) so an auto-refreshing board never
+  // fires a lane_history + load_scores write per load. Universe is the owner's
+  // OWN carrier only (listLoadsForClientIds([linkedClientId])). Because the
+  // owner IS the carrier, full commercial fields (rate/net/score/warnings) are
+  // correct to expose — same reasoning as driverSafeLoad(isOwnerOp=true). Gated
+  // to owner-operators via requireOwnerOperator; a hired driver gets 403.
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/me/loads/scored",
+    driver,
+    ah((req, res) => {
+      const ctx = requireOwnerOperator(req);
+      if ("status" in ctx) return res.status(ctx.status).json({ message: ctx.message });
+      const { user, client } = ctx;
+
+      const available = storage.listLoadsForClientIds([user.linkedClientId], {
+        status: "available",
+        limit: 200,
+      });
+      // One memoized lane-avg resolver per request (persist=false path — no
+      // writes, so the memoized value is always correct).
+      const laneAvg = createLaneAvgResolver();
+      const items = available.items
+        .map((load: Load) => scoreLoadForClient(client, load, false, laneAvg))
+        .filter((l): l is ScoredLoad => Boolean(l))
+        .sort((a, b) => b.dispatchScore - a.dispatchScore)
+        .map((l) => ({
+          id: l.id,
+          originCity: l.originCity,
+          originState: l.originState,
+          destinationCity: l.destinationCity,
+          destinationState: l.destinationState,
+          rate: l.rate,
+          loadedMiles: l.loadedMiles,
+          equipment: l.equipment,
+          pickupAt: l.pickupAt,
+          deliveryAt: l.deliveryAt,
+          brokerName: (l as Load & { brokerName?: string }).brokerName ?? null,
+          dispatchScore: l.dispatchScore,
+          verdict: l.verdict,
+          estimatedNet: l.estimatedNet,
+          netPpmTotal: l.netPpmTotal,
+          deadheadMiles: l.deadheadMiles,
+          backhaulScore: l.backhaulScore ?? 0,
+          counterOffer: l.counterOffer,
+          warnings: l.warnings,
+        }));
+
+      return res.json({ generatedAt: new Date().toISOString(), items });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
   // GET /api/me/loads/:id
   // -------------------------------------------------------------------------
   // 404 (not 403) when the load belongs to a different driver. Returning 403
@@ -1433,59 +1490,6 @@ export function registerMeRoutes(app: Express): void {
   // pay (auth.ts requireActiveBilling doc). The advisor POST spends AI quota,
   // not a carrier mutation, and carries its own quota/credit guard.
   // ===========================================================================
-
-  // -------------------------------------------------------------------------
-  // B.1  GET /api/me/loads/scored — owner's scored load board.
-  // Wraps scoreLoadForClient(..., persist=false) so an auto-refreshing board
-  // never fires a lane_history + load_scores write per load. Universe is the
-  // owner's OWN carrier only (listLoadsForClientIds([linkedClientId])). Because
-  // the owner IS the carrier, full commercial fields (rate/net/score/warnings)
-  // are correct to expose — same reasoning as driverSafeLoad(isOwnerOp=true).
-  // -------------------------------------------------------------------------
-  app.get(
-    "/api/me/loads/scored",
-    driver,
-    ah((req, res) => {
-      const ctx = requireOwnerOperator(req);
-      if ("status" in ctx) return res.status(ctx.status).json({ message: ctx.message });
-      const { user, client } = ctx;
-
-      const available = storage.listLoadsForClientIds([user.linkedClientId], {
-        status: "available",
-        limit: 200,
-      });
-      // One memoized lane-avg resolver per request (persist=false path — no
-      // writes, so the memoized value is always correct).
-      const laneAvg = createLaneAvgResolver();
-      const items = available.items
-        .map((load: Load) => scoreLoadForClient(client, load, false, laneAvg))
-        .filter((l): l is ScoredLoad => Boolean(l))
-        .sort((a, b) => b.dispatchScore - a.dispatchScore)
-        .map((l) => ({
-          id: l.id,
-          originCity: l.originCity,
-          originState: l.originState,
-          destinationCity: l.destinationCity,
-          destinationState: l.destinationState,
-          rate: l.rate,
-          loadedMiles: l.loadedMiles,
-          equipment: l.equipment,
-          pickupAt: l.pickupAt,
-          deliveryAt: l.deliveryAt,
-          brokerName: (l as Load & { brokerName?: string }).brokerName ?? null,
-          dispatchScore: l.dispatchScore,
-          verdict: l.verdict,
-          estimatedNet: l.estimatedNet,
-          netPpmTotal: l.netPpmTotal,
-          deadheadMiles: l.deadheadMiles,
-          backhaulScore: l.backhaulScore ?? 0,
-          counterOffer: l.counterOffer,
-          warnings: l.warnings,
-        }));
-
-      return res.json({ generatedAt: new Date().toISOString(), items });
-    }),
-  );
 
   // -------------------------------------------------------------------------
   // B.2  POST /api/me/loads/ai-recommend — AI booking advisor over the owner's
