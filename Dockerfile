@@ -19,8 +19,11 @@ RUN apk add --no-cache python3 make g++ libc6-compat
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm install --no-audit --no-fund
+# Reproducible install from the committed lockfile: npm ci fails loudly if
+# package.json and package-lock.json disagree instead of silently resolving a
+# fresh (potentially different) dependency tree at build time.
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 COPY . .
 RUN npm run build
