@@ -7,12 +7,20 @@
 // result inline (with id/status/generatedAt = null); generate also persists
 // via storage.createInvoice.
 //
-// Formula (spec §4.1, §4.2):
-//   grossBookedCents = Σ rate-in-cents across booked loads
+// Fee policy (2026-07 restructure — supersedes the original booked-based spec):
+//   The 3% success fee is charged ONLY on loads that are BOTH platform-sourced
+//   (source_id IS NOT NULL) AND delivered within the billed week. Loads the
+//   carrier enters themselves (manual / CSV / self-dispatch → source_id NULL)
+//   are FREE. Booking no longer triggers the fee — DELIVERY does — so a load
+//   booked in one week and delivered in a later week bills in the delivery week.
+//   The fee is then capped monthly at 2× the client's plan price.
+//
+//   grossBookedCents = Σ rate-in-cents across platform-sourced loads
 //                      where load.clientId matches AND
-//                      load.bookedAt ∈ [weekStart, weekEnd] (date-only, inclusive)
-//   flatFeeCents     = 15_000 (configurable)
-//   percentFeeCents  = round(grossBookedCents * 0.03)
+//                      payload.deliveredAt ∈ [weekStart, weekEnd] (inclusive)
+//   flatFeeCents     = 15_000 (legacy managed-dispatch flat; cron passes 0)
+//   percentFeeCents  = min(round(grossBookedCents * 0.03),
+//                          max(0, monthlyCap − already-billed-this-month))
 //   totalDueCents    = flatFeeCents + percentFeeCents
 //
 // Audit Critical #7 (2026-05-26):
@@ -30,6 +38,7 @@
 
 import type { Load } from "@shared/schema";
 import { storage } from "../storage";
+import { planForClient } from "./plans";
 
 export const FLAT_FEE_CENTS = 15_000;            // $150.00 in integer cents
 export const PERCENT_FEE_BASIS_POINTS = 300;     // 0.03 = 300 bps. 10_000 bps = 100%.
@@ -112,6 +121,13 @@ export interface InvoiceCalculation {
   percentFeeCents: number;
   grossBookedCents: number;
   totalDueCents: number;
+  // Monthly cap telemetry (2026-07). The uncapped 3% before clamping, the cap
+  // itself (2× plan price), how much fee the month already carried, and whether
+  // the clamp actually bit — surfaced in the invoice notes + audit log.
+  percentFeeUncappedCents: number;
+  monthlyCapCents: number;
+  monthAlreadyBilledCents: number;
+  capApplied: boolean;
   breakdown: {
     loadCount: number;
     loads: BreakdownLoad[];
@@ -122,12 +138,12 @@ export interface InvoiceCalculation {
  * Calculate an invoice without touching the database.
  *
  * `weekStart` and `weekEnd` are date-only strings ("YYYY-MM-DD"). Bounds are
- * INCLUSIVE on both ends, matching `bookedAt >= weekStart AND <= weekEnd` in
- * the storage index lookup.
+ * INCLUSIVE on both ends, matching `deliveredAt >= weekStart AND <= weekEnd` in
+ * the storage selector (listDeliveredSourcedLoadsForClientWeek).
  *
- * Caller must validate that the client exists and that weekStart <= weekEnd
- * before calling this. We don't repeat those checks here so the function is a
- * pure transformation suitable for unit testing.
+ * NOT a pure transformation anymore: it reads the client's plan (for the monthly
+ * cap) and the month's already-billed success fees. Caller must validate that
+ * the client exists and that weekStart <= weekEnd before calling this.
  */
 export function computeInvoiceForWeek(
   clientId: string,
@@ -138,12 +154,13 @@ export function computeInvoiceForWeek(
   // so the automated weekly cron overrides this to 0 — see billing-run.ts.
   opts?: { flatFeeCents?: number },
 ): InvoiceCalculation {
-  // listBookedLoadsForClientWeek filters by booked_at window only (no status
-  // predicate), and booked_at is never cleared on cancel — so drop cancelled
-  // loads here before any money is summed. Delivered/completed loads remain
-  // billable; only cancelled/canceled are excluded.
+  // Fee-restructure (2026-07): bill ONLY platform-sourced loads (source_id NOT
+  // NULL) that were DELIVERED within the week (payload.deliveredAt in window).
+  // listDeliveredSourcedLoadsForClientWeek already enforces both plus the
+  // cancelled/canceled exclusion; the redundant isCancelledLoad filter is kept
+  // as cheap defense-in-depth (mirrors the storage-layer predicate).
   const loads: Load[] = storage
-    .listBookedLoadsForClientWeek(clientId, weekStart, weekEnd)
+    .listDeliveredSourcedLoadsForClientWeek(clientId, weekStart, weekEnd)
     .filter((load) => !isCancelledLoad(load));
 
   // Sum in cents to avoid float accumulation drift.
@@ -152,10 +169,26 @@ export function computeInvoiceForWeek(
     0,
   );
 
-  // 3 % fee. Integer math: cents * 300 / 10_000, rounded once.
-  const percentFeeCents = Math.round(
+  // 3 % fee before the monthly cap. Integer math: cents * 300 / 10_000, once.
+  const percentFeeUncappedCents = Math.round(
     (grossBookedCents * PERCENT_FEE_BASIS_POINTS) / PERCENT_FEE_DIVISOR,
   );
+
+  // Monthly cap = 2× the client's plan monthlyCents. Sum the client's existing
+  // NON-VOID success-fee invoices whose week_start is in the SAME calendar month
+  // as this week, then clamp the new fee so the month total ≤ cap (clamp to 0 if
+  // the cap is already exhausted). The cap is keyed on weekStart's month — the
+  // billed week's Monday — which is how the cron/admin windows are aligned.
+  const client = storage.getClient(clientId) as
+    | { planTier?: string; persona?: "owner_operator" | "fleet" | "enterprise" }
+    | undefined;
+  const plan = planForClient(client ?? {});
+  const monthlyCapCents = plan.monthlyCents * 2;
+  const monthAlreadyBilledCents = storage.sumMonthPercentFeeCents(clientId, weekStart);
+  const capRemainingCents = Math.max(0, monthlyCapCents - monthAlreadyBilledCents);
+  const percentFeeCents = Math.min(percentFeeUncappedCents, capRemainingCents);
+  const capApplied = percentFeeCents < percentFeeUncappedCents;
+
   const flatFeeCents = opts?.flatFeeCents ?? FLAT_FEE_CENTS;
   const totalDueCents = flatFeeCents + percentFeeCents;
 
@@ -167,9 +200,10 @@ export function computeInvoiceForWeek(
       rateCents,
       originCity: load.originCity,
       destinationCity: load.destinationCity,
-      // The spec uses `deliveredAt` here, mapped from the existing `deliveryAt`
-      // field on loadSchema. Optional, so omit when missing.
-      deliveredAt: load.deliveryAt || undefined,
+      // Prefer the real delivery timestamp (what triggered billing); fall back
+      // to the planned deliveryAt for older rows that predate deliveredAt.
+      deliveredAt:
+        (load as { deliveredAt?: string }).deliveredAt || load.deliveryAt || undefined,
     };
   });
 
@@ -185,6 +219,10 @@ export function computeInvoiceForWeek(
     percentFeeCents,
     grossBookedCents,
     totalDueCents,
+    percentFeeUncappedCents,
+    monthlyCapCents,
+    monthAlreadyBilledCents,
+    capApplied,
     breakdown: {
       loadCount: loads.length,
       loads: breakdownLoads,

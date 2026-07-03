@@ -853,6 +853,11 @@ function PlanStep({
                 </span>
                 <span className="text-sm text-[#9aa3ba]">{t("onboarding.plan.perMonth")}</span>
               </div>
+              {/* Fee disclosure near the price — the 3% success fee applies only
+                  to platform-sourced loads and is capped monthly at 2× plan. */}
+              <p className="text-[11px] leading-snug text-[#6b7390]">
+                {t("onboarding.plan.feeDisclosure")}
+              </p>
               <ul className="space-y-1.5 text-xs text-[#9aa3ba]">
                 <li className="flex items-start gap-1.5">
                   <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-[#34d399]" />
@@ -901,18 +906,9 @@ function PlanStep({
                     <span>{t("onboarding.plan.feature.counterpartyVetting")}</span>
                   </li>
                 )}
-                {plan.features.apiAccess && (
-                  <li className="flex items-start gap-1.5">
-                    <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-[#34d399]" />
-                    <span>{t("onboarding.plan.feature.apiAccess")}</span>
-                  </li>
-                )}
-                {plan.features.ssoSaml && (
-                  <li className="flex items-start gap-1.5">
-                    <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-[#34d399]" />
-                    <span>{t("onboarding.plan.feature.ssoSaml")}</span>
-                  </li>
-                )}
+                {/* «REST API + webhooks» and «SSO / SAML» bullets intentionally
+                    not rendered — those integrations aren't built yet, so we
+                    don't advertise them (plans.ts feature flags are untouched). */}
                 <li className="text-[10px] text-[#6b7390]">
                   {t("onboarding.plan.auditRetention", { days: plan.auditRetentionDays })}
                 </li>
