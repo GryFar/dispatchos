@@ -39,6 +39,9 @@ import {
   equipmentSchema,
   type DriverDashboard,
   type LoadFull,
+  type Client,
+  type Load,
+  type ScoredLoad,
 } from "@shared/schema";
 import { enrichLoadBestEffort } from "../lib/ai/enrich";
 import { parseReceipt } from "../lib/ai/receipt-ocr";
@@ -48,6 +51,26 @@ import { storage, uploadsRoot } from "../storage";
 import { chargeAiCreditPack, AI_CREDIT_PACK } from "../lib/stripe";
 import { upload } from "../upload";
 import { todayInState } from "../lib/us-state-tz";
+// WAVE B (owner-view): thin read-only re-exposure of the heavy libraries the
+// admin/dispatch surfaces already use, gated to owner-operators only. See
+// WAVEB-OWNERVIEW-SPEC.md.
+import { scoreLoadForClient } from "../routes";
+import { createLaneAvgResolver } from "../lib/lane-avg-resolver";
+import { getAiRecommendation } from "../lib/ai/dispatch-advisor";
+import {
+  computeTrustScore,
+  computeBreakdown,
+  trustTier,
+  type TrustSignalLike,
+} from "../lib/ai/broker-trust";
+import {
+  computeDetentionForLoad,
+  totalDetentionCents,
+  DEFAULT_FREE_HOURS,
+  DEFAULT_DETENTION_RATE_PER_HOUR_CENTS,
+  type DetentionEvent,
+} from "../lib/detention";
+import { buildIftaQuarterly, renderIftaCsv } from "../lib/ifta";
 
 // ---------------------------------------------------------------------------
 // Helpers (mirror server/routes/admin.ts conventions)
@@ -132,6 +155,118 @@ function isOwnerOf(client: unknown, user: { id: string }): boolean {
   const c = client as { persona?: string; ownerUserId?: string } | undefined;
   if (!c || c.persona !== "owner_operator") return false;
   return c.ownerUserId ? c.ownerUserId === user.id : true;
+}
+
+// ---------------------------------------------------------------------------
+// WAVE B owner-operator guard (single source of truth for every /api/me/*
+// owner-view read endpoint). Runs the SAME three-layer check the self-dispatch
+// POST /api/me/loads already performs (me.ts ~1196-1216): a driver session →
+// linkedClientId present → client resolvable & not archived → is THE owner of
+// an owner-operator carrier. A hired driver (persona!=="owner_operator") or a
+// driver linked to an owner-op carrier they don't own (ownerUserId mismatch)
+// gets a clean 403 and never sees the board. Returns the resolved
+// { user, client } on success so callers don't re-fetch.
+// ---------------------------------------------------------------------------
+type OwnerContext = { user: { id: string; linkedClientId: string }; client: Client };
+function requireOwnerOperator(
+  req: Request,
+): OwnerContext | { status: number; message: string } {
+  const user = getCurrentUser(req);
+  if (!user) return { status: 401, message: "Authentication required" };
+  if (!user.linkedClientId) {
+    return { status: 403, message: "Owner-operator carrier required. Contact your admin." };
+  }
+  const client = storage.getClient(user.linkedClientId);
+  if (!client || (client as { deletedAt?: string | null }).deletedAt) {
+    return { status: 403, message: "Linked carrier not found." };
+  }
+  if (!isOwnerOf(client, user)) {
+    return { status: 403, message: "Owner-operator only." };
+  }
+  return {
+    user: { id: user.id, linkedClientId: user.linkedClientId },
+    client: client as Client,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// WAVE B: AI advisor cost guard (in-memory per-user hourly burst cap). The
+// owner-view advisor is the same paid Claude call the dispatcher cockpit makes
+// (~$40/day if hammered — see cockpit.ts). Mirror the cockpit aiRateCheck /
+// this file's ocrRateCheck shape: a per-user hourly budget, evicting elapsed
+// windows so the Map doesn't grow unbounded. This is layered ON TOP of the
+// persistent daily quota + purchased credits (storage.getAiQuotaStatus /
+// consumeAiQuota), which is checked separately in the handler.
+// ---------------------------------------------------------------------------
+const OWNER_AI_MAX_PER_HOUR = 20;
+const OWNER_AI_WINDOW_MS = 60 * 60 * 1000;
+interface OwnerAiBudget {
+  count: number;
+  windowStart: number;
+}
+const ownerAiBudgets = new Map<string, OwnerAiBudget>();
+function ownerAiSweepExpired(now: number): void {
+  const toDelete: string[] = [];
+  ownerAiBudgets.forEach((entry, key) => {
+    if (now - entry.windowStart > OWNER_AI_WINDOW_MS) toDelete.push(key);
+  });
+  toDelete.forEach((k) => ownerAiBudgets.delete(k));
+}
+function ownerAiRateCheck(userId: string): { allowed: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  const b = ownerAiBudgets.get(userId);
+  if (!b || now - b.windowStart > OWNER_AI_WINDOW_MS) {
+    ownerAiSweepExpired(now);
+    ownerAiBudgets.set(userId, { count: 1, windowStart: now });
+    return { allowed: true, retryAfterSec: 0 };
+  }
+  if (b.count >= OWNER_AI_MAX_PER_HOUR) {
+    return {
+      allowed: false,
+      retryAfterSec: Math.ceil((OWNER_AI_WINDOW_MS - (now - b.windowStart)) / 1000),
+    };
+  }
+  b.count++;
+  return { allowed: true, retryAfterSec: 0 };
+}
+
+// WAVE B: tenant-safe public projection of a broker_trust_signals row. Mirrors
+// broker-trust.ts shapeSignalPublic VERBATIM (the AUDIT-2026-06-19 H2 fix). The
+// signals table is GLOBAL (keyed by broker MC), so /api/me/broker-trust
+// aggregates signals from ALL tenants. NEVER expose per-signal notes / clientId
+// / reportedByUserId — that leaks which competing carriers work a broker and
+// their internal notes. Return only the non-identifying fields. An owner-op is
+// even less trusted than a dispatcher here.
+function shapeSignalPublic(row: Record<string, unknown>): {
+  signalType: string;
+  positive: boolean;
+  reportedAt: string;
+} {
+  return {
+    signalType: row.signal_type as string,
+    positive: Boolean(row.positive),
+    reportedAt: row.reported_at as string,
+  };
+}
+
+// WAVE B: IFTA quarter query parser (mirrors admin.ts parseIftaQuery). Defaults
+// to the current UTC quarter, validates ranges. Kept local (~12 lines) rather
+// than lifting a shared helper across the routes/admin boundary.
+function parseOwnerIftaQuery(
+  req: Request,
+): { year: number; quarter: 1 | 2 | 3 | 4 } | { error: string } {
+  const now = new Date();
+  const defaultYear = now.getUTCFullYear();
+  const defaultQuarter = (Math.floor(now.getUTCMonth() / 3) + 1) as 1 | 2 | 3 | 4;
+  const year = Number(req.query.year ?? defaultYear);
+  const quarter = Number(req.query.quarter ?? defaultQuarter);
+  if (!Number.isInteger(year) || year < 2020 || year > 2100) {
+    return { error: "year must be an integer between 2020 and 2100" };
+  }
+  if (![1, 2, 3, 4].includes(quarter)) {
+    return { error: "quarter must be 1, 2, 3, or 4" };
+  }
+  return { year, quarter: quarter as 1 | 2 | 3 | 4 };
 }
 
 /**
@@ -485,6 +620,63 @@ export function registerMeRoutes(app: Express): void {
         // The status filter is a UI convenience, not a separately-counted facet.
         total: merged ? mergedTotal : page.total,
       });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // WAVE B — B.1  GET /api/me/loads/scored — owner's scored load board.
+  // -------------------------------------------------------------------------
+  // MUST be registered BEFORE `/api/me/loads/:id` below, or Express matches the
+  // literal "scored" as an :id param and 404s ("Load not found"). Wraps
+  // scoreLoadForClient(..., persist=false) so an auto-refreshing board never
+  // fires a lane_history + load_scores write per load. Universe is the owner's
+  // OWN carrier only (listLoadsForClientIds([linkedClientId])). Because the
+  // owner IS the carrier, full commercial fields (rate/net/score/warnings) are
+  // correct to expose — same reasoning as driverSafeLoad(isOwnerOp=true). Gated
+  // to owner-operators via requireOwnerOperator; a hired driver gets 403.
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/me/loads/scored",
+    driver,
+    ah((req, res) => {
+      const ctx = requireOwnerOperator(req);
+      if ("status" in ctx) return res.status(ctx.status).json({ message: ctx.message });
+      const { user, client } = ctx;
+
+      const available = storage.listLoadsForClientIds([user.linkedClientId], {
+        status: "available",
+        limit: 200,
+      });
+      // One memoized lane-avg resolver per request (persist=false path — no
+      // writes, so the memoized value is always correct).
+      const laneAvg = createLaneAvgResolver();
+      const items = available.items
+        .map((load: Load) => scoreLoadForClient(client, load, false, laneAvg))
+        .filter((l): l is ScoredLoad => Boolean(l))
+        .sort((a, b) => b.dispatchScore - a.dispatchScore)
+        .map((l) => ({
+          id: l.id,
+          originCity: l.originCity,
+          originState: l.originState,
+          destinationCity: l.destinationCity,
+          destinationState: l.destinationState,
+          rate: l.rate,
+          loadedMiles: l.loadedMiles,
+          equipment: l.equipment,
+          pickupAt: l.pickupAt,
+          deliveryAt: l.deliveryAt,
+          brokerName: (l as Load & { brokerName?: string }).brokerName ?? null,
+          dispatchScore: l.dispatchScore,
+          verdict: l.verdict,
+          estimatedNet: l.estimatedNet,
+          netPpmTotal: l.netPpmTotal,
+          deadheadMiles: l.deadheadMiles,
+          backhaulScore: l.backhaulScore ?? 0,
+          counterOffer: l.counterOffer,
+          warnings: l.warnings,
+        }));
+
+      return res.json({ generatedAt: new Date().toISOString(), items });
     }),
   );
 
@@ -1280,6 +1472,278 @@ export function registerMeRoutes(app: Express): void {
       });
 
       return res.status(201).json(load);
+    }),
+  );
+
+  // ===========================================================================
+  // WAVE B — Owner-view read-only endpoints
+  // ===========================================================================
+  //
+  // Give the paying owner-operator (role `driver`, /d portal) READ-ONLY access
+  // to the scored board / AI advisor / broker-trust / detention / IFTA that are
+  // otherwise locked behind /admin + /dispatch. Thin wrappers over the existing
+  // client-parameterized libraries; every handler runs requireOwnerOperator(req)
+  // first, so a hired driver (or any non-owner) gets a clean 403.
+  //
+  // These GET reads are INTENTIONALLY NOT behind requireActiveBilling — reads
+  // stay open when past-due so the owner can see what he paid for and then go
+  // pay (auth.ts requireActiveBilling doc). The advisor POST spends AI quota,
+  // not a carrier mutation, and carries its own quota/credit guard.
+  // ===========================================================================
+
+  // -------------------------------------------------------------------------
+  // B.2  POST /api/me/loads/ai-recommend — AI booking advisor over the owner's
+  // top scored loads. POST (not GET): it SPENDS AI quota, so it must be an
+  // explicit user tap, never an auto-refresh. Clones the cockpit advisor
+  // pipeline (cockpit.ts): persist=true scoring (reads-then-writes lane
+  // history) → in-memory hourly burst cap → persistent daily quota + credits
+  // (consume ONLY on success) → getAiRecommendation. Body is empty; the carrier
+  // is derived from the session, so there is zero cross-tenant data in the
+  // prompt (the advisor also sanitizes broker/load free-text internally).
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/me/loads/ai-recommend",
+    driver,
+    ah(async (req, res) => {
+      const ctx = requireOwnerOperator(req);
+      if ("status" in ctx) return res.status(ctx.status).json({ message: ctx.message });
+      const { user, client } = ctx;
+
+      const available = storage.listLoadsForClientIds([user.linkedClientId], {
+        status: "available",
+        limit: 200,
+      });
+      // persist=true (matches cockpit): each scoreLoadForClient READS the lane
+      // avg then WRITES a lane observation, so a shared memoized resolver would
+      // hand back a stale pre-write value for a same-lane second load. Omit the
+      // resolver so reads reflect prior writes — identical ranking to cockpit.
+      const top = available.items
+        .map((load: Load) => scoreLoadForClient(client, load, true))
+        .filter((l): l is ScoredLoad => Boolean(l))
+        .sort((a, b) => b.dispatchScore - a.dispatchScore)
+        .slice(0, 5);
+
+      if (!top.length) {
+        return res.status(404).json({ message: "No scored loads available for your carrier" });
+      }
+
+      // Hourly burst cap — checked only after the cheap gates above, so a
+      // no-load request (which never reaches Claude) doesn't burn the budget.
+      const budget = ownerAiRateCheck(user.id);
+      if (!budget.allowed) {
+        return res.status(429).json({
+          message: "AI-анализ временно ограничен (слишком много запросов). Попробуйте позже.",
+          code: "ai_rate_limit",
+          retryAfterSec: budget.retryAfterSec,
+        });
+      }
+
+      // Persistent daily quota + purchased credits, scoped to the owner's
+      // carrier. GATE here (before the paid call) but CONSUME only after a
+      // usable result, so a failed advisor (no API key / fetch error / 5xx)
+      // never silently burns a free slot or a purchased credit.
+      const quotaStatus = storage.getAiQuotaStatus(user.id, undefined, user.linkedClientId);
+      if (quotaStatus.remainingToday <= 0 && quotaStatus.credits <= 0) {
+        return res.status(429).json({
+          message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
+          code: "ai_quota_exceeded",
+        });
+      }
+
+      const rec = await getAiRecommendation(client, top);
+      if (!rec) {
+        return res.status(503).json({ message: "AI advisor unavailable", code: "ai_unavailable" });
+      }
+
+      const quota = storage.consumeAiQuota(user.id, undefined, user.linkedClientId);
+      if (!quota.ok) {
+        // Lost the race against a concurrent request that drained the last unit.
+        return res.status(429).json({
+          message: "Дневной лимит AI-запросов исчерпан. Докупите запросы или попробуйте завтра.",
+          code: "ai_quota_exceeded",
+        });
+      }
+
+      storage.audit("me.ai_recommend", "client", user.linkedClientId, {
+        ownerUserId: user.id,
+        recommendedLoadId: rec.recommendedLoadId,
+        confidence: rec.confidence,
+        loadsConsidered: top.length,
+      });
+      return res.json(rec);
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // B.3  GET /api/me/broker-trust/:mc — aggregated broker trust score.
+  // Clones GET /api/broker-trust/:mc but MUST use shapeSignalPublic (the
+  // AUDIT-2026-06-19 H2 tenant-safe projection): the signals table is GLOBAL,
+  // so recentSignals from other tenants must never carry notes/clientId/
+  // reporter. The aggregate score/tier/breakdown are counts-only and safe.
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/me/broker-trust/:mc",
+    driver,
+    ah((req, res) => {
+      const ctx = requireOwnerOperator(req);
+      if ("status" in ctx) return res.status(ctx.status).json({ message: ctx.message });
+
+      const mc = String(req.params.mc ?? "");
+      const rows = storage.listBrokerTrustSignalsByMc(mc);
+      const signals: TrustSignalLike[] = rows.map((r) => ({
+        signalType: r.signal_type as string,
+      }));
+
+      const score = computeTrustScore(signals);
+      const breakdown = computeBreakdown(signals);
+      const positiveCount = rows.filter((r) => Boolean(r.positive)).length;
+
+      return res.json({
+        mc,
+        totalSignals: rows.length,
+        positiveCount,
+        negativeCount: rows.length - positiveCount,
+        score,
+        tier: trustTier(score),
+        breakdown,
+        // CROSS-TENANT: public projection only — never shapeSignal (H2).
+        recentSignals: rows.slice(0, 10).map(shapeSignalPublic),
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // B.4  GET /api/me/detention — detention opportunity across the owner's own
+  // loads. Wraps computeDetentionForLoad (pure — no DB writes). Iterates ONLY
+  // the owner's carrier loads (listLoadsForClientIds([linkedClientId])) — NEVER
+  // the unscoped storage.listLoads() the admin "upcoming" scan uses. For each
+  // load with check-ins we pass GPS pings (verified/unverified labels) and the
+  // per-client detention config. Totals are the PREVIEW figure (opportunity to
+  // chase), matching admin; owner view is read-only and never bills.
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/me/detention",
+    driver,
+    ah((req, res) => {
+      const ctx = requireOwnerOperator(req);
+      if ("status" in ctx) return res.status(ctx.status).json({ message: ctx.message });
+      const { user, client } = ctx;
+
+      const payload = client as unknown as {
+        detentionFreeHours?: number;
+        detentionRatePerHourCents?: number;
+      };
+      const freeHours = payload.detentionFreeHours ?? DEFAULT_FREE_HOURS;
+      const ratePerHourCents =
+        payload.detentionRatePerHourCents ?? DEFAULT_DETENTION_RATE_PER_HOUR_CENTS;
+      const now = new Date().toISOString();
+
+      // Owner's own carrier loads only. Both available + booked can have
+      // check-ins; scan the full carrier board (bounded to 200).
+      const carrierLoads = storage.listLoadsForClientIds([user.linkedClientId], { limit: 200 });
+
+      const rows: Array<{
+        loadId: string;
+        lane: string;
+        events: DetentionEvent[];
+        totalCents: number;
+      }> = [];
+
+      for (const load of carrierLoads.items) {
+        const checkins = storage.listCheckinsForLoad(load.id);
+        if (!checkins.length) continue;
+
+        const lc = load as Load & {
+          originLat?: number | null;
+          originLng?: number | null;
+          destinationLat?: number | null;
+          destinationLng?: number | null;
+          driverId?: string | null;
+        };
+
+        // GPS pings for THIS load's driver only, bounded to a 30-day window —
+        // used to mark events verified/unverified. Mirrors admin per-load.
+        const gpsPings: Array<{ lat: number; lng: number; capturedAt: string }> = [];
+        if (lc.driverId) {
+          const sinceIso = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+          const rawPings = storage.listLocationPings(lc.driverId, { sinceIso, limit: 5000 });
+          for (const p of rawPings) {
+            if (
+              typeof p.lat === "number" &&
+              typeof p.lng === "number" &&
+              typeof p.captured_at === "string"
+            ) {
+              gpsPings.push({ lat: p.lat, lng: p.lng, capturedAt: p.captured_at });
+            }
+          }
+        }
+
+        const events = computeDetentionForLoad({
+          load: {
+            id: load.id,
+            originLat: lc.originLat,
+            originLng: lc.originLng,
+            destinationLat: lc.destinationLat,
+            destinationLng: lc.destinationLng,
+          },
+          checkins,
+          gpsPings,
+          freeHours,
+          ratePerHourCents,
+          nowIso: now,
+        });
+        if (!events.length) continue;
+        rows.push({
+          loadId: load.id,
+          lane: `${load.originCity}, ${load.originState} → ${load.destinationCity}, ${load.destinationState}`,
+          events,
+          totalCents: totalDetentionCents(events),
+        });
+      }
+
+      rows.sort((a, b) => b.totalCents - a.totalCents);
+      return res.json({ rows, generatedAt: now });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // B.5  GET /api/me/ifta (+ /api/me/ifta.csv) — IFTA quarterly for the owner's
+  // OWN carrier. Same computation the admin route gates behind `admin`, but
+  // clientId comes from the SESSION (user.linkedClientId), NEVER a path param.
+  // buildIftaQuarterly internally filters drivers by linkedClientId and fuel by
+  // client, so there is no cross-tenant data once clientId is session-derived.
+  // -------------------------------------------------------------------------
+  app.get(
+    "/api/me/ifta",
+    driver,
+    ah((req, res) => {
+      const ctx = requireOwnerOperator(req);
+      if ("status" in ctx) return res.status(ctx.status).json({ message: ctx.message });
+      const { user } = ctx;
+
+      const q = parseOwnerIftaQuery(req);
+      if ("error" in q) return res.status(400).json({ message: q.error });
+      const report = buildIftaQuarterly(user.linkedClientId, q.year, q.quarter);
+      return res.json(report);
+    }),
+  );
+
+  app.get(
+    "/api/me/ifta.csv",
+    driver,
+    ah((req, res) => {
+      const ctx = requireOwnerOperator(req);
+      if ("status" in ctx) return res.status(ctx.status).json({ message: ctx.message });
+      const { user } = ctx;
+
+      const q = parseOwnerIftaQuery(req);
+      if ("error" in q) return res.status(400).json({ message: q.error });
+      const report = buildIftaQuarterly(user.linkedClientId, q.year, q.quarter);
+      const csv = renderIftaCsv(report);
+      const filename = `ifta_${user.linkedClientId}_${q.year}_Q${q.quarter}.csv`;
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(csv);
     }),
   );
 }

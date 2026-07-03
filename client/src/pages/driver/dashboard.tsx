@@ -13,6 +13,10 @@ import {
   Building2,
   UserCircle,
   PlusCircle,
+  LayoutGrid,
+  ShieldQuestion,
+  Timer,
+  FileSpreadsheet,
 } from "lucide-react";
 import type { DriverDashboard, DriverStatus, LoadFull, UserPublic } from "@shared/schema";
 import { apiJson, ApiError } from "@/lib/queryClient";
@@ -89,6 +93,7 @@ export default function DriverDashboardPage() {
       <PendingDocsCard docs={data.pendingDocs ?? []} />
       <ContextCard client={data.client} dispatcher={data.dispatcher} />
       {data.client?.persona === "owner_operator" && <SelfDispatchButton />}
+      {data.client?.persona === "owner_operator" && <OwnerToolsCard />}
       <QuickActions
         phone={data.dispatcher?.phone ?? undefined}
         currentLoadId={data.currentLoad?.id ?? null}
@@ -584,5 +589,50 @@ function SelfDispatchButton() {
         {t("driver.selfDispatch.createLoad")}
       </Button>
     </Link>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OwnerToolsCard — WAVE B. Entry point (dashboard card) into the owner-only
+// tools: scored board + AI advisor, broker-trust check, detention tracker, and
+// IFTA quarterly. Only rendered for owner-operators (same guard as
+// SelfDispatchButton), so hired drivers never see it. Links route inside /d.
+// ---------------------------------------------------------------------------
+function OwnerToolsCard() {
+  const { t } = useT();
+  const TOOLS = [
+    { href: "/owner/board", icon: LayoutGrid, label: t("driver.owner.tools.board"), desc: t("driver.owner.tools.boardDesc") },
+    { href: "/owner/broker-check", icon: ShieldQuestion, label: t("driver.owner.tools.broker"), desc: t("driver.owner.tools.brokerDesc") },
+    { href: "/owner/detention", icon: Timer, label: t("driver.owner.tools.detention"), desc: t("driver.owner.tools.detentionDesc") },
+    { href: "/owner/ifta", icon: FileSpreadsheet, label: t("driver.owner.tools.ifta"), desc: t("driver.owner.tools.iftaDesc") },
+  ] as const;
+  return (
+    <Card className="p-4">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {t("driver.owner.tools.title")}
+      </p>
+      <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+        {TOOLS.map((tool) => {
+          const Icon = tool.icon;
+          return (
+            <li key={tool.href}>
+              <Link
+                href={tool.href}
+                className="flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 transition-colors hover:bg-muted/40"
+              >
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                  <Icon className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{tool.label}</p>
+                  <p className="truncate text-[11px] text-muted-foreground">{tool.desc}</p>
+                </div>
+                <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
   );
 }
