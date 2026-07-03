@@ -74,6 +74,15 @@ export function registerAiDraftRoutes(app: Express): void {
         return res.status(429).json(QUOTA_EXHAUSTED);
       }
 
+      // Emergency kill-switch. getAiQuotaStatus above reflects only the per-user
+      // daily count, NOT the platform DISPATCHOS_AI_KILL lever — that is enforced
+      // in consumeAiQuota, which runs AFTER the paid model call. Check it here so
+      // flipping the kill-switch during a cost incident PREVENTS the call instead
+      // of paying for it and merely refusing to record the spend.
+      if (process.env.DISPATCHOS_AI_KILL === "1" || process.env.DISPATCHOS_AI_KILL === "true") {
+        return res.status(503).json({ message: "AI draft unavailable", code: "ai_unavailable" });
+      }
+
       const lane = storage.getLaneAvgPpm(load.originState, load.destinationState);
       const draft = await generateBrokerReplyDraft({
         originCity: load.originCity,
