@@ -28,11 +28,26 @@ and access to the repo + the Fly org.
 gh run list --workflow backup-cron.yml --limit 10
 
 # Download the artifact from the chosen run into ./restore/
-gh run download <RUN_ID> --name dispatchos-db-backup --dir restore/
-ls restore/          # → dispatchos-backup-YYYYMMDD.db
+gh run download <RUN_ID> --name dispatchos-db-backup-encrypted --dir restore/
+ls restore/          # → dispatchos-backup-YYYYMMDD.db.enc  (AES-256 encrypted)
 ```
 
-Sanity-check the file before touching prod:
+**Decrypt** — the artifact is AES-256-CBC / PBKDF2 (200k iterations) encrypted
+with the `BACKUP_ENC_PASSPHRASE` secret. You need that same passphrase (GitHub
+repo secret + the owner's password-manager copy). Cipher/iter MUST match
+`backup-cron.yml`:
+
+```bash
+read -rs BACKUP_ENC_PASSPHRASE            # paste the passphrase (not echoed)
+export BACKUP_ENC_PASSPHRASE
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+  -in restore/dispatchos-backup-YYYYMMDD.db.enc \
+  -out restore/dispatchos-backup-YYYYMMDD.db \
+  -pass env:BACKUP_ENC_PASSPHRASE
+unset BACKUP_ENC_PASSPHRASE
+```
+
+Sanity-check the decrypted file before touching prod:
 
 ```bash
 sqlite3 restore/dispatchos-backup-YYYYMMDD.db "PRAGMA integrity_check;"   # → ok

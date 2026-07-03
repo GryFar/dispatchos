@@ -1,9 +1,16 @@
 name: Daily DB Backup
 
 # Audit H5 — offsite, restore-grade DB backup. Pulls a CONSISTENT online
-# snapshot of the live SQLite file from /api/cron/backup and stores it as a
-# GitHub Actions artifact. This is the zero-config OFFSITE copy: free, needs no
-# S3/R2 credentials. (A future S3/R2 target is an owner option, not required.)
+# snapshot of the live SQLite file from /api/cron/backup, ENCRYPTS it
+# (AES-256-CBC, PBKDF2) with the BACKUP_ENC_PASSPHRASE secret, and stores the
+# ciphertext as a GitHub Actions artifact. This is the zero-config OFFSITE copy:
+# free, needs no S3/R2 credentials. (A future S3/R2 target is an owner option.)
+#
+# The snapshot holds plaintext TOTP secrets, tracking tokens, password hashes
+# and all customer PII, so it must NEVER be stored unencrypted where repo-read
+# access could download it — the encryption step below hard-fails if the
+# passphrase secret is unset rather than falling back to plaintext.
+# Restore (needs the same passphrase): docs/runbooks/RESTORE.md.
 #
 # Runs daily (07:00 UTC) and on manual dispatch — with real customers a weekly
 # cadence risked losing up to 7 days of bookings/invoices. The DB is tiny
@@ -43,10 +50,28 @@ jobs:
           fi
           echo "Saved $OUT ($(wc -c < "$OUT") bytes)."
 
-      - name: Upload backup artifact (offsite copy)
+      - name: Encrypt snapshot (never store plaintext PII offsite)
+        env:
+          BACKUP_ENC_PASSPHRASE: ${{ secrets.BACKUP_ENC_PASSPHRASE }}
+        run: |
+          if [ -z "$BACKUP_ENC_PASSPHRASE" ]; then
+            echo "::error::BACKUP_ENC_PASSPHRASE secret is not set — refusing to upload an UNENCRYPTED DB snapshot (it holds plaintext TOTP secrets, password hashes and all PII). Set it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          ENC="${BACKUP_FILE}.enc"
+          # AES-256-CBC + PBKDF2 (200k iterations). RESTORE.md decrypts with the
+          # SAME cipher/iter, so keep these in sync if ever changed.
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -in "$BACKUP_FILE" -out "$ENC" -pass env:BACKUP_ENC_PASSPHRASE
+          # Remove the plaintext so it can never be uploaded by accident.
+          shred -u "$BACKUP_FILE" 2>/dev/null || rm -f "$BACKUP_FILE"
+          echo "BACKUP_FILE=$ENC" >> "$GITHUB_ENV"
+          echo "Encrypted -> $ENC ($(wc -c < "$ENC") bytes); plaintext removed."
+
+      - name: Upload backup artifact (offsite copy, encrypted)
         uses: actions/upload-artifact@v4
         with:
-          name: dispatchos-db-backup
+          name: dispatchos-db-backup-encrypted
           path: ${{ env.BACKUP_FILE }}
           retention-days: 90
           if-no-files-found: error

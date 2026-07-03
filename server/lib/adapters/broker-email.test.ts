@@ -20,6 +20,10 @@ import { join } from "node:path";
 // Unique temp DB BEFORE importing storage (better-sqlite3 binds the file at
 // import time) — mirrors stripe-charge.test.ts. No shared/native rebuild.
 process.env.DISPATCHOS_DB_PATH = join(tmpdir(), `dispatchos-broker-email-${Date.now()}-${process.pid}.db`);
+// No AI in this adapter test: the no-limit poller path calls parseBrokerEmailWithAi,
+// which stays offline without a key. Delete it so the suite is deterministic and
+// never makes a real model call regardless of the ambient environment.
+delete process.env.ANTHROPIC_API_KEY;
 
 const { storage } = await import("../../storage");
 const { rxoEmailAdapter, echoEmailAdapter, genericEmailAdapter } = await import("./broker-email");
@@ -61,9 +65,20 @@ function seedEmail(from: string): string {
     from,
     to: "loads@dispatchos.co",
     subject: "Load offer",
-    body: "Pickup Dallas, TX -> Atlanta, GA. Rate $1200. 800 mi.",
+    // Body must parse to a COMPLETE load: fetchLoads now gates on parsed.matched
+    // (drops unparseable mail so it never becomes an empty $0 load), and the
+    // no-limit poller path AI-assists incomplete parses — a criticalComplete body
+    // keeps this sender-scoping test deterministic (zero model calls) and lets the
+    // accepted emails survive the gate.
+    body: "Origin: Dallas, TX\nDestination: Atlanta, GA\nRate: $1,200\nMiles: 800\nPickup: 2026-07-10",
     messageId: `<${rnd()}@test.local>`,
   });
+  return from;
+}
+
+// Seed an email with an explicit subject/body (for the parse-gate test below).
+function seedEmailWith(from: string, subject: string, body: string): string {
+  storage.saveEmailIngest({ from, to: "loads@dispatchos.co", subject, body, messageId: `<${rnd()}@test.local>` });
   return from;
 }
 
@@ -180,6 +195,59 @@ async function accepted(adapter: { fetchLoads: (r: LoadSourceRow, n?: number) =>
     "window: unrelated noise still filtered out",
     !out.some((r) => String(r.from) === noiseFrom),
   );
+}
+
+// ---------------------------------------------------------------------------
+// 6) Parse-gate (fix a): a valid-sender email whose body has NO usable load
+//    (no origin/dest) must be DROPPED by fetchLoads so the poller never mints an
+//    empty $0 load the scorer silently discards. No API key (deleted above) → no
+//    AI rescue, so the junk stays unmatched. A parseable offer is kept.
+// ---------------------------------------------------------------------------
+{
+  const parseable = seedEmailWith(
+    `ok-${rnd()}@rxo.com`,
+    "Load",
+    "Origin: Reno, NV\nDestination: Boise, ID\nRate: $1,500\nMiles: 420",
+  );
+  const junk = seedEmailWith(`junk-${rnd()}@rxo.com`, "Newsletter", "Thanks for reading — no loads here today.");
+  const row = srcRow("rxo_email");
+  const out = await rxoEmailAdapter.fetchLoads(row); // no limit → poller path, gate active
+  assert("gate: parseable RXO offer kept", out.some((r) => String(r.from) === parseable));
+  assert(
+    "gate: unparseable RXO email dropped (no empty $0 load)",
+    !out.some((r) => String(r.from) === junk),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 7) Задача-1 врезка: normalizeToLoad REUSES the parse fetchLoads attached
+//    (raw.__parsed) instead of re-parsing the raw body — so AI-recovered fields
+//    survive. The body here is deliberately unparseable: a re-parse would yield
+//    empty endpoints, so reading Reno→Boise proves __parsed was used.
+// ---------------------------------------------------------------------------
+{
+  const raw = {
+    ingestId: `ig_${rnd()}`,
+    from: "loadoffers@rxo.com",
+    subject: "no lane in subject",
+    body: "unparseable body — no field lines at all",
+    messageId: `<${rnd()}@test.local>`,
+    __parsed: {
+      matched: true,
+      origin: { city: "Reno", state: "NV" },
+      destination: { city: "Boise", state: "ID" },
+      rate: 1500,
+      miles: 420,
+      rawFields: {},
+    },
+  };
+  const norm = rxoEmailAdapter.normalizeToLoad(raw, srcRow("rxo_email"));
+  assert(
+    "врезка: normalizeToLoad reuses __parsed endpoints (no re-parse)",
+    norm.originCity === "Reno" && norm.destinationCity === "Boise",
+    `origin=${norm.originCity} dest=${norm.destinationCity}`,
+  );
+  assert("врезка: normalizeToLoad reuses __parsed rate", norm.rate === 1500, `rate=${norm.rate}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
