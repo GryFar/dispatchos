@@ -110,6 +110,24 @@ const sqlite = new Database(process.env.DISPATCHOS_DB_PATH || "dispatchos-unifie
 // are consumed (see consumeAiQuota). Haiku 4.5 ~ $0.003/call, so 50/day ~ $2/mo
 // worst case; the cap is mainly anti-abuse, not per-user cost.
 export const AI_DAILY_FREE_QUOTA = 50;
+
+// Platform-wide AI guards, independent of the per-user quota above — a backstop
+// for the "N self-minted accounts × 50 free calls each = unbounded Claude bill"
+// abuse vector. Both read env at CALL time, so setting a Fly secret (which
+// restarts the machine) takes effect without a code deploy — a restart-free
+// lever during a cost incident.
+//   DISPATCHOS_AI_KILL=1            → emergency stop: refuse ALL AI spend now.
+//   DISPATCHOS_AI_GLOBAL_DAILY_CAP  → max APPROVED AI calls/day across ALL users
+//                                     (default 10000 — generous vs launch
+//                                     volume, but caps a runaway).
+function aiKillSwitchOn(): boolean {
+  const v = process.env.DISPATCHOS_AI_KILL;
+  return v === "1" || v === "true";
+}
+function aiGlobalDailyCap(): number {
+  const n = Number(process.env.DISPATCHOS_AI_GLOBAL_DAILY_CAP);
+  return Number.isInteger(n) && n > 0 ? n : 10_000;
+}
 sqlite.pragma("journal_mode = WAL");
 // better-sqlite3 defaults to a 0ms busy timeout, so a writer hitting a
 // momentarily-locked DB (e.g. the 5-min load-sources poll upserting while a user
@@ -967,6 +985,12 @@ sqlite.exec(`
     day TEXT NOT NULL,
     count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, day)
+  );
+  -- Platform-wide (all-users) approved-AI-call counter, one row per UTC day.
+  -- Backs the DISPATCHOS_AI_GLOBAL_DAILY_CAP ceiling in consumeAiQuota.
+  CREATE TABLE IF NOT EXISTS ai_usage_global (
+    day TEXT PRIMARY KEY,
+    count INTEGER NOT NULL DEFAULT 0
   );
   -- AI credit-pack balances. Historically keyed on user_id alone (one bucket per
   -- user). VALUE-MISATTRIBUTION FIX: credits are now SCOPED to the carrier they
@@ -7682,6 +7706,26 @@ export const storage = {
   ): { ok: boolean; source: "free" | "credit" | null; remainingToday: number; credits: number } {
     const day = new Date().toISOString().slice(0, 10);
     const tx = sqlite.transaction((): { ok: boolean; source: "free" | "credit" | null; remainingToday: number; credits: number } => {
+      // Platform-wide guards BEFORE any per-user spend. Kill-switch = emergency
+      // stop; daily cap bounds AGGREGATE approved calls across all users so
+      // self-minted accounts can't run up an unbounded Claude bill.
+      if (aiKillSwitchOn()) {
+        return { ok: false, source: null, remainingToday: 0, credits: this.getAiCredits(userId) };
+      }
+      const gUsed =
+        (sqlite.prepare("SELECT count FROM ai_usage_global WHERE day = ?").get(day) as
+          | { count: number }
+          | undefined)?.count ?? 0;
+      if (gUsed >= aiGlobalDailyCap()) {
+        return { ok: false, source: null, remainingToday: 0, credits: this.getAiCredits(userId) };
+      }
+      // Optimistically count this call against the global ceiling; the
+      // no-free-slot-AND-no-credit path below REFUNDS it, so a maxed-out user
+      // can't burn the shared ceiling and lock everyone else out.
+      sqlite
+        .prepare("INSERT INTO ai_usage_global (day, count) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET count = count + 1")
+        .run(day);
+
       const row = sqlite
         .prepare("SELECT count FROM ai_usage WHERE user_id = ? AND day = ?")
         .get(userId, day) as { count: number } | undefined;
@@ -7718,6 +7762,9 @@ export const storage = {
       if (legacy.changes > 0) {
         return { ok: true, source: "credit", remainingToday: 0, credits: this.getAiCredits(userId) };
       }
+      // Not approved (no free slot, no credit) → refund the optimistic global
+      // increment so rejected attempts don't consume the shared daily ceiling.
+      sqlite.prepare("UPDATE ai_usage_global SET count = count - 1 WHERE day = ?").run(day);
       return { ok: false, source: null, remainingToday: 0, credits: 0 };
     });
     return tx();
