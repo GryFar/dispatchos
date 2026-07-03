@@ -24,7 +24,7 @@ import { useT } from "@/lib/i18n";
  * Cloudflare Email Worker → POST /api/inbound/email → storage.saveEmailIngest.
  *
  * Каждое письмо несёт raw поля (from / subject / body) + parsed результат
- * (`parsed.possibleLoad`, `parsed.extracted`). Админ видит на странице,
+ * пайплайна (`parsed.matched` + извлечённые поля). Админ видит на странице,
  * какие письма распарсились в груз, какие — нет, и может кликнуть в любое,
  * чтобы увидеть полный body + JSON parsed (полезно при расширении парсера
  * под новых брокеров).
@@ -37,6 +37,10 @@ interface EmailIngestItem {
   subject?: string;
   body?: string;
   parsed?: {
+    // The inbound pipeline (parseSylectusEmail / parseBrokerEmail) stores its
+    // result here, and its "is this a load" flag is `matched`. `possibleLoad`
+    // is the legacy inline-classifier field, kept as a fallback for older rows.
+    matched?: boolean;
     possibleLoad?: boolean;
     extracted?: Record<string, unknown>;
     [key: string]: unknown;
@@ -138,7 +142,11 @@ export default function EmailInboxPage() {
             </thead>
             <tbody>
               {data.items.map((item) => {
-                const parsedOk = item.parsed?.possibleLoad === true;
+                // The pipeline writes `parsed.matched`; older rows used
+                // `possibleLoad`. Read matched first, fall back to legacy — so
+                // worker emails stop showing a false "Not parsed" (fix b).
+                const parsedOk =
+                  item.parsed?.matched === true || item.parsed?.possibleLoad === true;
                 return (
                   <tr
                     key={item.id}
