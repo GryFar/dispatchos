@@ -6,6 +6,13 @@
 .DS_Store
 *.log
 
+# Secrets — never upload a local .env to the Fly remote builder (it goes as
+# build context and is cached in intermediate build-stage layers). Runtime
+# config comes from Fly secrets, not a baked .env.
+.env
+.env.*
+!.env.example
+
 # Node
 node_modules
 npm-debug.log
