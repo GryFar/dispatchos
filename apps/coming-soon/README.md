@@ -29,9 +29,10 @@ npx wrangler dev      # Runs locally on http://localhost:8787
 
 ## Deployment
 
-**Automatic** via Cloudflare Workers Builds (configured in CF Dashboard):
-- Push to `main` → CF runs `npm run build` → deploys `dist/worker.js`
-- Watch path: `apps/coming-soon/**`
+**Automatic** via GitHub Actions — `.github/workflows/deploy-worker.yml`:
+- Runs on **push to `develop`/`main`** with a `apps/coming-soon/**` path filter.
+- Does **not** run on pull requests (deploys belong on push, not on PRs).
+- Requires the `CLOUDFLARE_API_TOKEN` GitHub secret.
 
 **Manual** (fallback):
 ```bash
@@ -40,6 +41,18 @@ npm install
 wrangler login
 wrangler deploy
 ```
+
+### ⚠️ Cloudflare Workers Builds also deploys this Worker — and it reds-out PRs
+
+A second, **redundant** deployer exists: the Cloudflare **Workers Builds**
+GitHub integration (configured in the CF dashboard, not in this repo). It builds
+on *every* push including PR branches, its deploy fails on PRs, and it posts a
+red commit status **"Workers Builds: dispatchos-coming-soon"** that makes
+otherwise-green PRs look failed. It does not block merge (this private repo is
+on the free plan → no branch protection), just adds noise. See `.cf-builds` for
+the exact **owner** fix (dashboard-only): disconnect the CF Builds integration
+(preferred) or turn off its non-production-branch builds. The GitHub Actions
+workflow above is the real, PR-safe deployer.
 
 ## Environment
 
@@ -50,9 +63,12 @@ wrangler deploy
 
 ## Custom Domains
 
-Managed outside this folder (via API or Dashboard):
-- `dispatchos.co` → this Worker
-- `www.dispatchos.co` → this Worker
+**Retired from the apex.** `dispatchos.co` / `www.dispatchos.co` are now served
+by the real app on Fly.io (landing for anonymous, SPA for authed) — see the
+header in `wrangler.toml`. This Worker is intentionally kept **route-less** and
+`workers_dev = false`, so its deploys are inert. Do **not** re-add `[[routes]]`
+for the apex here or the next `wrangler deploy` would take the live product
+offline.
 
 ## API
 
@@ -65,5 +81,6 @@ Managed outside this folder (via API or Dashboard):
 ## Editing content
 
 1. Edit `static/index.html`, `static/styles.css`, or `static/app.js`
-2. Commit + push → CF Workers Builds auto-rebuilds and deploys (60-90 sec)
-3. Done. No manual deploy needed.
+2. Commit + push to `develop`/`main` → `deploy-worker.yml` rebuilds and deploys
+3. Done. No manual deploy needed. (Note: the Worker is retired from the apex, so
+   this only updates the inert Worker — the live landing is on Fly.io.)

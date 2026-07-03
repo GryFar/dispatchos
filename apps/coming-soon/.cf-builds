@@ -1,4 +1,35 @@
-# Cloudflare Workers Builds
+# Cloudflare Workers Builds — dispatchos-coming-soon
 # Connected: 2026-05-14
-# Triggers on push to main, watch path: apps/coming-soon/**
-# Auto-deploys to dispatchos.co and www.dispatchos.co
+#
+# This marker documents the Cloudflare "Workers Builds" GitHub integration that
+# builds/deploys this Worker. It is configured in the Cloudflare dashboard
+# (Worker -> Settings -> Builds), NOT in .github/workflows/* — nothing in this
+# repo controls its trigger.
+#
+# ---------------------------------------------------------------------------
+# KNOWN ISSUE (2026-07-03): Workers Builds reds-out otherwise-green PRs.
+# ---------------------------------------------------------------------------
+# Workers Builds is set to build on EVERY push, including PR branches. On PR
+# commits its deploy step fails and posts a failing commit status named
+#   "Workers Builds: dispatchos-coming-soon"   (app: cloudflare-workers-and-pages)
+# which shows as a red check on the PR. It does NOT block merge (this private
+# repo is on the free plan, so GitHub branch protection / rulesets are
+# unavailable), but it makes green PRs look failed.
+#
+# It is also REDUNDANT: the real deploy already runs on push to develop/main via
+# .github/workflows/deploy-worker.yml (which is correctly push-only, never on
+# PRs). So the Worker has two deployers; only the CF one runs on PRs and fails.
+#
+# OWNER FIX (dashboard-only — cannot be done from this repo or via `gh`):
+#   Preferred — remove the redundant + PR-noisy deployer entirely:
+#     Cloudflare dashboard -> Workers & Pages -> dispatchos-coming-soon ->
+#     Settings -> Builds -> DISCONNECT the GitHub Builds integration.
+#     (The GitHub Actions workflow deploy-worker.yml keeps deploying on push.)
+#   Alternative — keep CF Builds but stop it running on PRs:
+#     Same Builds settings -> turn OFF "Non-production branch builds"
+#     (a.k.a. build only the production branch), so PR/preview branches no longer
+#     trigger a build+status.
+#
+# NOTE: this Worker is RETIRED from the apex (see wrangler.toml header) — the
+# real dispatchos.co is served by Fly.io. The Worker is kept route-less/inert;
+# its CF deploy failing on PRs has no production impact either way.
