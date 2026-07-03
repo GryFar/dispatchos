@@ -11,7 +11,8 @@
 // no Telegram; the cron poller persists results.
 
 import { storage } from "../../storage";
-import { parseBrokerEmail } from "../parsers/broker-email";
+import { parseBrokerEmail, type BrokerEmailParsed } from "../parsers/broker-email";
+import { parseBrokerEmailWithAi } from "../parsers/broker-email-ai";
 import { geocodeCityState } from "../geo-coords";
 import type { Equipment } from "../../../shared/schema";
 import type {
@@ -99,6 +100,11 @@ export function makeBrokerEmailAdapter(opts: {
       // `limit` caps MATCHED offers for explicit callers (source test = 1);
       // the cron poller passes none and gets everything in the window.
       const cap = limit !== undefined ? Math.min(limit, 500) : Infinity;
+      // The cron poller (no limit) enriches each offer with the AI-assisted
+      // parse so wild formats (HTML tables, forward chains) still yield a load.
+      // The admin "test source" probe (limit set) stays regex-only, so a single
+      // click can never trigger a paid model call.
+      const useAi = limit === undefined;
 
       // Window-COMPLETE fetch: the per-source filters below run in memory, so
       // the DB scan must cover the whole lookback window. The old code fed a
@@ -123,7 +129,28 @@ export function makeBrokerEmailAdapter(opts: {
           if (!to.includes(inbox)) continue;
         }
         if (!senderMatches(String(payload?.from ?? ""), domains)) continue;
-        out.push({ ingestId: r.id, ...payload } as RawLoad);
+
+        // Parse ONCE here (regex + optional AI fallback) so we can (1) drop
+        // genuinely unparseable mail before the poller turns it into an empty
+        // $0 "load" the scorer silently discards, and (2) hand the finished
+        // parse to normalizeToLoad, which is sync and cannot await the AI path.
+        const parsed: BrokerEmailParsed = useAi
+          ? await parseBrokerEmailWithAi({
+              from: String(payload.from ?? ""),
+              subject: String(payload.subject ?? ""),
+              body: String(payload.body ?? ""),
+            })
+          : parseBrokerEmail({
+              from: String(payload.from ?? ""),
+              subject: String(payload.subject ?? ""),
+              body: String(payload.body ?? ""),
+            });
+        // fix(a): a mail with no usable origin/dest (+ no rate or miles) is not
+        // a real offer; skip it so it never becomes an empty $0 load. It remains
+        // in email_ingest for the admin inbox.
+        if (!parsed.matched) continue;
+
+        out.push({ ingestId: r.id, ...payload, __parsed: parsed } as RawLoad);
       }
       // The window scan is oldest-first, so a plain head-slice would hand
       // limited callers the STALEST matches — the admin "test source" probe
@@ -132,11 +159,17 @@ export function makeBrokerEmailAdapter(opts: {
     },
 
     normalizeToLoad(raw: RawLoad, row: LoadSourceRow): NormalizedLoad {
-      const parsed = parseBrokerEmail({
-        from: String(raw.from ?? ""),
-        subject: String(raw.subject ?? ""),
-        body: String(raw.body ?? ""),
-      });
+      // Prefer the parse fetchLoads already computed — it may carry AI-assisted
+      // fields this sync re-parse could not recover. Fall back to a fresh regex
+      // parse for any caller that builds a raw without going through fetchLoads
+      // (e.g. unit tests).
+      const parsed =
+        (raw as { __parsed?: BrokerEmailParsed }).__parsed ??
+        parseBrokerEmail({
+          from: String(raw.from ?? ""),
+          subject: String(raw.subject ?? ""),
+          body: String(raw.body ?? ""),
+        });
 
       // Geocode city/state offline so the scorer can compute a real deadhead.
       // Without this the load carried lat/lng=0,0 and ranked as nonsense.
