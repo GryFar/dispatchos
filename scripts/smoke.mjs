@@ -1638,6 +1638,12 @@ try {
   console.log("[OK] POST /api/loads accepts optional clientId + bookedAt");
 
   // -- preview ---------------------------------------------------------------
+  // Post-2026-07 fee restructure: the 3% success fee bills ONLY platform-sourced
+  // loads (source_id set by the ingest adapter) that were DELIVERED in-window.
+  // Loads created through POST /api/loads are self-entered (source_id stays
+  // NULL) and are therefore EXEMPT — so this preview must show grossBooked=0 and
+  // the flat fee only, even though four in-window booked loads exist. The rich
+  // sourced+delivered+cap coverage lives in the billing unit tests.
   const preview = await request("/api/admin/billing/preview", {
     method: "POST",
     body: { clientId: billingClient.id, weekStart: billingWeekStart, weekEnd: billingWeekEnd },
@@ -1645,31 +1651,24 @@ try {
   if (preview.id !== null || preview.status !== null || preview.generatedAt !== null) {
     throw new Error("billing preview must have id/status/generatedAt = null");
   }
-  if (preview.grossBooked !== 2050) {
-    throw new Error(`grossBooked should be 2050 (850 + 1200), got ${preview.grossBooked}`);
+  if (preview.grossBooked !== 0) {
+    throw new Error(`grossBooked should be 0 (self-entered loads are fee-exempt), got ${preview.grossBooked}`);
   }
   if (preview.flatFee !== 150) {
     throw new Error(`flatFee should be 150, got ${preview.flatFee}`);
   }
-  // 2050 * 0.03 = 61.5 — round-cents must NOT collapse trailing zero
-  if (Math.abs(preview.percentFee - 61.5) > 0.001) {
-    throw new Error(`percentFee should be 61.5 (2050 * 0.03), got ${preview.percentFee}`);
+  if (preview.percentFee !== 0) {
+    throw new Error(`percentFee should be 0 (no platform-sourced delivered loads), got ${preview.percentFee}`);
   }
-  if (Math.abs(preview.totalDue - 211.5) > 0.001) {
-    throw new Error(`totalDue should be 211.5 (150 + 61.5), got ${preview.totalDue}`);
+  if (Math.abs(preview.totalDue - 150) > 0.001) {
+    throw new Error(`totalDue should be 150 (flat only), got ${preview.totalDue}`);
   }
-  if (preview.breakdown.loadCount !== 2) {
-    throw new Error(`breakdown.loadCount should be 2, got ${preview.breakdown.loadCount}`);
+  if (preview.breakdown.loadCount !== 0) {
+    throw new Error(`breakdown.loadCount should be 0 (self-entered exempt), got ${preview.breakdown.loadCount}`);
   }
-  if (preview.breakdown.loads.length !== 2) {
-    throw new Error("breakdown.loads length mismatch");
-  }
-  if (!preview.breakdown.loads.every((l) => l.loadId && l.originCity && l.destinationCity)) {
-    throw new Error("breakdown.loads missing required fields");
-  }
-  console.log("[OK] POST /api/admin/billing/preview (math + breakdown + nulls)");
+  console.log("[OK] POST /api/admin/billing/preview (self-entered loads fee-exempt → flat only)");
 
-  // Preview for client with no bookings → flat only
+  // Preview for client with no bookings → flat only (same result as above now).
   const emptyPreview = await request("/api/admin/billing/preview", {
     method: "POST",
     body: { clientId: "max-van-03", weekStart: billingWeekStart, weekEnd: billingWeekEnd },
@@ -1731,8 +1730,10 @@ try {
   if (!invoiceDraft.id || invoiceDraft.status !== "draft" || !invoiceDraft.generatedAt) {
     throw new Error("generate must return persisted invoice with id + status=draft + generatedAt");
   }
-  if (Math.abs(invoiceDraft.totalDue - 211.5) > 0.001) {
-    throw new Error(`generated totalDue should be 211.5, got ${invoiceDraft.totalDue}`);
+  // Self-entered loads are fee-exempt → the manual admin invoice is the $150
+  // legacy flat only (the 3% component is 0 with no platform-sourced deliveries).
+  if (Math.abs(invoiceDraft.totalDue - 150) > 0.001) {
+    throw new Error(`generated totalDue should be 150 (flat only), got ${invoiceDraft.totalDue}`);
   }
   // Duplicate generate for same (client, weekStart) → 409 with existingInvoiceId
   let dupGenStatus = 0;
@@ -1871,9 +1872,10 @@ try {
   if (typeof stats.mrr.currentUsd !== "number" || typeof stats.mrr.activeClients !== "number") {
     throw new Error("mrr missing numeric currentUsd / activeClients");
   }
-  // We've created 2 invoices in P2 (one draft→paid for ivan, one sent for oleg).
-  // monthToDatePercentFee should be > 0 (61.5 + 61.5 = 123 for May 2026 if
-  // both invoices count; status='paid' and status='sent' both qualify).
+  // MRR is driven by active-subscription plan value, not by the 3% success fee
+  // (which is now $0 here — the P2 invoices are flat-fee only, since all loads
+  // were self-entered and thus fee-exempt). Seeded clients on paid plans keep
+  // currentUsd > 0.
   if (stats.mrr.currentUsd <= 0) {
     throw new Error(`MRR currentUsd should be > 0 with active billing; got ${stats.mrr.currentUsd}`);
   }

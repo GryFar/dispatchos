@@ -73,11 +73,11 @@ const TERMS_HTML = legalPage(
 <ul>
   <li><strong>Subscription.</strong> Paid plans are billed monthly in advance through Stripe at the price shown at checkout. Card details are handled by Stripe and never touch our servers.</li>
   <li><strong>Free trial.</strong> New accounts receive a 14-day free trial (one per carrier). When the trial ends, write access is suspended until a plan is purchased; your data remains readable and exportable.</li>
-  <li><strong>Success fee.</strong> A success fee of 3% of the gross rate applies to loads booked through the Service. Success fees for a calendar week are invoiced after the week closes and charged to the payment method on file.</li>
+  <li><strong>Success fee.</strong> A success fee of 3% of the gross rate applies to loads sourced through the platform's load feeds. It is billed weekly after a load is delivered, and is capped each calendar month at 2&times; your plan price. Loads you enter yourself (manual, imported, or self-dispatched) carry no success fee. Success fees are charged to the payment method on file after the billing week closes.</li>
   <li><strong>Seats.</strong> Driver seats beyond a plan's included count are billed per seat per month at the rate shown at purchase.</li>
   <li><strong>AI credits.</strong> Optional AI feature credits are one-time purchases and are non-refundable once consumed.</li>
   <li><strong>Changes.</strong> We may change prices with at least 30 days' notice; changes apply from your next billing cycle. Fees are exclusive of taxes, which are your responsibility where applicable.</li>
-  <li><strong>Cancellation and refunds.</strong> You may cancel any time from the billing portal; the subscription remains active until the end of the paid period. Except where required by law, payments already made (including success fees on booked loads) are non-refundable.</li>
+  <li><strong>Cancellation and refunds.</strong> You may cancel any time from the billing portal; the subscription remains active until the end of the paid period. Except where required by law, payments already made (including success fees on delivered platform-sourced loads) are non-refundable.</li>
   <li><strong>Non-payment.</strong> We may suspend the Service for accounts with overdue balances after notice.</li>
 </ul>
 

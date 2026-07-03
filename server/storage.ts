@@ -4615,6 +4615,14 @@ export const storage = {
     const clientIdCol = typeof anyLoad.clientId === "string" ? anyLoad.clientId : null;
     const bookedAtCol = typeof anyLoad.bookedAt === "string" ? anyLoad.bookedAt : null;
     const driverIdCol = typeof anyLoad.driverId === "string" ? anyLoad.driverId : null;
+    // Provenance mirror: source_id / source_external_id identify a
+    // platform-sourced load (see upsertLoadFromSource). Only set them when the
+    // caller supplies them — manual creates leave both NULL, which the billing
+    // selectors treat as "self-entered, exempt from the 3% success fee". Kept
+    // additive so the normal manual path (no sourceId) is unchanged.
+    const sourceIdCol = typeof anyLoad.sourceId === "string" ? anyLoad.sourceId : null;
+    const sourceExternalIdCol =
+      typeof anyLoad.sourceExternalId === "string" ? anyLoad.sourceExternalId : null;
     const anyExisting = existing as any;
     const brokerMc = (anyLoad.brokerMc ?? anyLoad.broker_mc ?? "") as string;
 
@@ -4627,17 +4635,33 @@ export const storage = {
       sqlite
         .prepare(
           `
-          INSERT INTO loads (id, payload, created_at, updated_at, client_id, booked_at, driver_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO loads (id, payload, created_at, updated_at, client_id, booked_at, driver_id, source_id, source_external_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
-            payload    = excluded.payload,
-            updated_at = excluded.updated_at,
-            client_id  = excluded.client_id,
-            booked_at  = excluded.booked_at,
-            driver_id  = excluded.driver_id
+            payload            = excluded.payload,
+            updated_at         = excluded.updated_at,
+            client_id          = excluded.client_id,
+            booked_at          = excluded.booked_at,
+            driver_id          = excluded.driver_id,
+            -- Provenance is set once at ingest and must never be cleared by a
+            -- later manual re-upsert that omits it (which would silently turn a
+            -- billable platform-sourced load into a "free self-entered" one).
+            -- COALESCE keeps the existing source id when the update supplies none.
+            source_id          = COALESCE(excluded.source_id, loads.source_id),
+            source_external_id = COALESCE(excluded.source_external_id, loads.source_external_id)
         `,
         )
-        .run(id, JSON.stringify(load), timestamp, timestamp, clientIdCol, bookedAtCol, driverIdCol);
+        .run(
+          id,
+          JSON.stringify(load),
+          timestamp,
+          timestamp,
+          clientIdCol,
+          bookedAtCol,
+          driverIdCol,
+          sourceIdCol,
+          sourceExternalIdCol,
+        );
 
       this.audit(existing ? "load.updated" : "load.created", "load", id, load);
 
@@ -4734,6 +4758,72 @@ export const storage = {
       )
       .all(clientId, weekStart, weekEnd) as Array<{ payload: string }>;
     return parsePayloads<Load>(rows);
+  },
+
+  /**
+   * Fee-restructure (2026-07): loads billed by the 3% success fee under the new
+   * policy — a load is billable IFF BOTH hold:
+   *   1. PROVENANCE: it was sourced through the platform (`source_id IS NOT
+   *      NULL`). Manual / CSV / self-dispatch loads leave source_id NULL and are
+   *      FREE — the carrier found and entered them themselves, so DispatchOS
+   *      earns no success fee.
+   *   2. DELIVERY-TRIGGERED: it was actually DELIVERED within the billed week —
+   *      `payload.$.deliveredAt` (an ISO timestamp stamped by markLoadDelivered)
+   *      falls in [weekStart, weekEnd] inclusive. A load booked in week 1 but
+   *      delivered in week 3 bills in week 3; a never-delivered or cancelled load
+   *      is never billed.
+   *
+   * Contrast with listBookedLoadsForClientWeek (kept intact for any legacy
+   * callers): that keys on booked_at and ignores provenance/delivery. This
+   * selector is what computeInvoiceForWeek now uses for the percent fee.
+   *
+   * `weekStart`/`weekEnd` are inclusive date-only strings ("YYYY-MM-DD").
+   * deliveredAt is a full ISO timestamp, so — exactly as the booked selector
+   * does for booked_at — the inclusive upper bound compares against the START of
+   * the day AFTER weekEnd, otherwise a load delivered on the last day (whose
+   * timestamp is lexically > the date-only weekEnd) would be silently dropped.
+   * Cancelled/canceled loads are excluded even if a deliveredAt lingers.
+   */
+  listDeliveredSourcedLoadsForClientWeek(
+    clientId: string,
+    weekStart: string,
+    weekEnd: string,
+  ): Load[] {
+    const rows = sqlite
+      .prepare(
+        `SELECT payload FROM loads
+         WHERE client_id = ? AND source_id IS NOT NULL
+           AND json_extract(payload, '$.deliveredAt') IS NOT NULL
+           AND json_extract(payload, '$.deliveredAt') >= ?
+           AND json_extract(payload, '$.deliveredAt') < date(?, '+1 day')
+           AND COALESCE(json_extract(payload, '$.status'), '') NOT IN ('cancelled', 'canceled')
+         ORDER BY json_extract(payload, '$.deliveredAt') ASC`,
+      )
+      .all(clientId, weekStart, weekEnd) as Array<{ payload: string }>;
+    return parsePayloads<Load>(rows);
+  },
+
+  /**
+   * Fee-restructure (2026-07): sum the percent (3% success) fee already billed
+   * to a client across every NON-VOID invoice whose week_start falls in the same
+   * calendar month as `monthAnchor` (a "YYYY-MM-DD" date; only its YYYY-MM is
+   * used). Drives the monthly cap = 2× plan price: the new week's fee is clamped
+   * so the running month total never exceeds the cap. Void invoices are excluded
+   * so a corrected/re-billed week doesn't permanently consume cap. Returns cents.
+   */
+  sumMonthPercentFeeCents(clientId: string, monthAnchor: string): number {
+    const monthPrefix = monthAnchor.slice(0, 7); // "YYYY-MM"
+    const row = sqlite
+      .prepare(
+        `SELECT COALESCE(SUM(percent_fee), 0) AS totalDollars
+         FROM invoices
+         WHERE client_id = ?
+           AND status != 'void'
+           AND substr(week_start, 1, 7) = ?`,
+      )
+      .get(clientId, monthPrefix) as { totalDollars: number };
+    // percent_fee is stored as a USD float; convert to canonical cents.
+    return Math.round((row.totalDollars || 0) * 100);
   },
 
   // -------------------------------------------------------------------------

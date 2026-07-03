@@ -38,6 +38,7 @@ export default function LandingPage() {
 
   // Scroll targets — refs instead of #anchors because we use hash routing.
   const featuresRef = useRef<HTMLDivElement | null>(null);
+  const pricingRef = useRef<HTMLDivElement | null>(null);
   const contactRef = useRef<HTMLDivElement | null>(null);
 
   // Contact-form modal state
@@ -117,6 +118,13 @@ export default function LandingPage() {
               className="hidden text-sm text-[#9aa3ba] transition-colors hover:text-white sm:block"
             >
               {t("landing.nav.features")}
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollTo(pricingRef)}
+              className="hidden text-sm text-[#9aa3ba] transition-colors hover:text-white sm:block"
+            >
+              {t("landing.nav.pricing")}
             </button>
             <button
               type="button"
@@ -236,6 +244,39 @@ export default function LandingPage() {
           </div>
         </section>
 
+        {/* Pricing */}
+        <section ref={pricingRef} className="mt-24 scroll-mt-8">
+          <div className="mb-8 text-center">
+            <h2 className="text-2xl font-bold tracking-tight text-white md:text-3xl">
+              {t("landing.pricing.heading")}
+            </h2>
+            <p className="mx-auto mt-2 max-w-2xl text-sm text-[#9aa3ba] md:text-base">
+              {t("landing.pricing.subtitle")}
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {PRICING_TIERS.map((tier) => (
+              <PricingCard
+                key={tier.tier}
+                tier={tier}
+                onStart={() => setLocation("/signup")}
+                onContact={() => setContactOpen(true)}
+              />
+            ))}
+          </div>
+
+          {/* Fee statement + human-dispatch comparison */}
+          <div className="mx-auto mt-6 max-w-3xl rounded-xl border border-[rgba(255,255,255,0.08)] bg-[#161c2e]/60 p-5 text-center">
+            <p className="text-sm leading-relaxed text-[#e8ecf5]">
+              {t("landing.pricing.fee")}
+            </p>
+            <p className="mt-2 text-xs text-[#9aa3ba]">
+              {t("landing.pricing.comparison")}
+            </p>
+          </div>
+        </section>
+
         {/* Newsletter + Contact */}
         <section ref={contactRef} className="mt-20 grid scroll-mt-8 gap-6 md:grid-cols-2">
           <SubscribeForm />
@@ -290,6 +331,89 @@ function TrustItem({
       <p className="text-[10px] font-medium uppercase tracking-wider text-[#6b7390]">{label}</p>
       <p className="mt-1 text-base font-semibold text-white">{value}</p>
       <p className="mt-0.5 text-xs text-[#9aa3ba]">{hint}</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pricing
+// ---------------------------------------------------------------------------
+
+/**
+ * Marketing pricing tiers. `monthlyUsd` mirrors server/lib/plans.ts
+ * (monthlyCents / 100) — keep them in sync when a plan price changes. Enterprise
+ * is a negotiated "from" price with a sales CTA instead of self-serve checkout.
+ * Highlight = the tier we visually feature (fleet_growth, the common fleet pick).
+ */
+interface PricingTier {
+  tier: string;
+  monthlyUsd: number;
+  /** true = negotiated "from" price + Contact-us CTA (no self-serve checkout). */
+  enterprise?: boolean;
+  highlight?: boolean;
+}
+
+const PRICING_TIERS: PricingTier[] = [
+  { tier: "oo_basic", monthlyUsd: 19 },
+  { tier: "oo_premium", monthlyUsd: 29 },
+  { tier: "fleet_starter", monthlyUsd: 49 },
+  { tier: "fleet_growth", monthlyUsd: 79, highlight: true },
+  { tier: "fleet_scale", monthlyUsd: 129 },
+  { tier: "enterprise", monthlyUsd: 299, enterprise: true },
+];
+
+function PricingCard({
+  tier,
+  onStart,
+  onContact,
+}: {
+  tier: PricingTier;
+  onStart: () => void;
+  onContact: () => void;
+}) {
+  const { t } = useT();
+  return (
+    <div
+      className={`flex flex-col rounded-xl border p-5 transition-all ${
+        tier.highlight
+          ? "border-[#f59e0b] bg-[rgba(245,158,11,0.06)] shadow-[0_0_28px_rgba(245,158,11,0.16)]"
+          : "border-[rgba(255,255,255,0.08)] bg-[#161c2e]/60 hover:border-[rgba(245,158,11,0.3)]"
+      }`}
+    >
+      <h3 className="text-sm font-semibold text-white">
+        {t(`landing.pricing.tier.${tier.tier}.name`)}
+      </h3>
+      <div className="mt-2 flex items-baseline gap-1">
+        {tier.enterprise && (
+          <span className="text-xs text-[#9aa3ba]">{t("landing.pricing.enterpriseFrom")}</span>
+        )}
+        <span className="text-3xl font-bold text-white">${tier.monthlyUsd}</span>
+        <span className="text-sm text-[#9aa3ba]">{t("landing.pricing.perMonth")}</span>
+      </div>
+      <p className="mt-3 flex-1 text-xs leading-relaxed text-[#9aa3ba]">
+        {t(`landing.pricing.tier.${tier.tier}.value`)}
+      </p>
+      {tier.enterprise ? (
+        <button
+          type="button"
+          onClick={onContact}
+          className="mt-4 inline-flex items-center justify-center gap-2 rounded-lg border border-[rgba(255,255,255,0.14)] bg-[#0f1424] px-4 py-2 text-sm font-semibold text-white transition-colors hover:border-[#f59e0b] hover:text-[#f59e0b]"
+        >
+          {t("landing.pricing.enterpriseCta")}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onStart}
+          className={`mt-4 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-all ${
+            tier.highlight
+              ? "bg-[#f59e0b] text-[#0a0e1a] hover:bg-[#fbbf24]"
+              : "border border-[rgba(245,158,11,0.4)] text-[#f59e0b] hover:bg-[rgba(245,158,11,0.08)]"
+          }`}
+        >
+          {t("landing.pricing.startCta")}
+        </button>
+      )}
     </div>
   );
 }

@@ -2,13 +2,13 @@
 // "Cancelled loads stay in grossBooked -> carrier billed 3% on revenue that
 // never happened").
 //
-// booked_at is the revenue-window key and is NEVER cleared on cancel, so
-// cancelling a load only stamps `status: "cancelled"` in the payload. The
-// window query (listBookedLoadsForClientWeek) has no status predicate, so a
-// booked-then-cancelled load used to flow into grossBookedCents and get charged
-// the 3% percent fee on revenue that never happened. computeInvoiceForWeek now
-// drops cancelled/canceled loads before summing. Delivered/completed loads stay
-// billable.
+// UPDATED for the 2026-07 fee restructure: the 3% success fee now bills only
+// PLATFORM-SOURCED loads (source_id NOT NULL) that were DELIVERED within the
+// week (payload.deliveredAt in window). The cancelled-load exclusion still
+// matters: a sourced+delivered load that is later cancelled must NOT be billed.
+// listDeliveredSourcedLoadsForClientWeek excludes cancelled/canceled at the
+// query layer and computeInvoiceForWeek keeps the defense-in-depth filter, so a
+// cancelled load contributes 0 even if a stale deliveredAt lingers.
 //
 // Run: npx tsx server/lib/billing-cancelled-load.test.ts
 
@@ -40,16 +40,32 @@ const { computeInvoiceForWeek, FLAT_FEE_CENTS } = await import("./billing");
 const WS = "2026-06-08";
 const WE = "2026-06-14";
 const BOOKED = "2026-06-10";
+const DELIVERED = "2026-06-11T18:30:00.000Z"; // inside [WS, WE]
 const CLIENT = "C_cancelled";
 
-// A normal booked load — billable.
-storage.upsertLoad({ ...baseLoad, id: "L_booked", rate: 1000, clientId: CLIENT, bookedAt: BOOKED } as any);
-// A booked-then-cancelled load — must NOT be billed (booked_at still set).
-storage.upsertLoad({ ...baseLoad, id: "L_cancelled", rate: 4000, clientId: CLIENT, bookedAt: BOOKED, status: "cancelled" } as any);
+// A paying client on fleet_scale ($129/mo → 2× cap $258) so the monthly cap
+// doesn't clamp the $90 fee under test.
+storage.upsertClient({ id: CLIENT, name: "Cancel Co", planTier: "fleet_scale", billingStatus: "active" } as any);
+
+// Every load is platform-sourced (sourceId set) AND delivered in-window — the
+// only axis under test here is the cancelled-status exclusion.
+let seq = 0;
+const mkSourced = (id: string, rate: number, extra: Record<string, unknown> = {}) =>
+  storage.upsertLoad({
+    ...baseLoad, id, rate, clientId: CLIENT, bookedAt: BOOKED,
+    sourceId: "src-test", sourceExternalId: `ext-${seq++}`,
+    deliveredAt: DELIVERED, status: "completed",
+    ...extra,
+  } as any);
+
+// A normal sourced+delivered load — billable.
+mkSourced("L_booked", 1000);
+// A delivered-then-cancelled load — must NOT be billed (deliveredAt still set).
+mkSourced("L_cancelled", 4000, { status: "cancelled" });
 // The American-spelled alias must also be excluded.
-storage.upsertLoad({ ...baseLoad, id: "L_canceled", rate: 9000, clientId: CLIENT, bookedAt: BOOKED, status: "canceled" } as any);
-// A delivered/completed load stays billable (revenue did happen).
-storage.upsertLoad({ ...baseLoad, id: "L_delivered", rate: 2000, clientId: CLIENT, bookedAt: BOOKED, status: "delivered" } as any);
+mkSourced("L_canceled", 9000, { status: "canceled" });
+// Another normal delivered load stays billable.
+mkSourced("L_delivered", 2000);
 
 const inv = computeInvoiceForWeek(CLIENT, WS, WE);
 

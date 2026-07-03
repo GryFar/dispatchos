@@ -70,7 +70,10 @@ const S = {
   seatsIncluded: (n: number | string) => `${n} driver seats included`,
   featSafety: "Carrier safety profile",
   featVetting: "Premium broker vetting",
-  featApi: "API access & webhooks",
+  // Fee disclosure shown on every plan card, near the price.
+  feeDisclosure:
+    "+ 3% success fee on platform-sourced loads, capped at 2× your plan price. Loads you enter yourself are always free.",
+  contactUs: "Contact us",
 };
 
 interface BillingStatus {
@@ -409,13 +412,27 @@ function BillingBody({
                   {p.features?.counterpartyVettingPremium && (
                     <PlanFeature text={S.featVetting} />
                   )}
-                  {p.features?.apiAccess && <PlanFeature text={S.featApi} />}
+                  {/* «API access & webhooks» and «SSO/SAML» bullets removed —
+                      those integrations aren't built yet; don't advertise them. */}
                 </ul>
-                {/* Not subscribed yet (trial/expired/canceled): every plan —
+                {/* Fee disclosure near the price — the 3% success fee only ever
+                    applies to platform-sourced loads and is capped monthly. */}
+                <p className="mt-3 text-[11px] leading-snug text-muted-foreground">
+                  {S.feeDisclosure}
+                </p>
+                {/* Enterprise is negotiated, not self-serve — route to sales
+                    instead of Checkout/Portal. Do NOT touch plans.ts flags. */}
+                {p.persona === "enterprise" ? (
+                  <Button asChild size="sm" className="mt-3 w-full" variant="outline">
+                    <a href="mailto:support@dispatchos.co?subject=Enterprise%20plan%20inquiry">
+                      {S.contactUs}
+                    </a>
+                  </Button>
+                ) : /* Not subscribed yet (trial/expired/canceled): every plan —
                     especially the already-chosen "Current" one — is buyable
                     via Checkout. Subscribed: plan changes go through the
-                    Customer Portal (server 409s a second Checkout). */}
-                {!subscribed ? (
+                    Customer Portal (server 409s a second Checkout). */
+                !subscribed ? (
                   <Button
                     size="sm"
                     className="mt-3 w-full"

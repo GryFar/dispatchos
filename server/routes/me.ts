@@ -1184,10 +1184,13 @@ export function registerMeRoutes(app: Express): void {
   app.post(
     "/api/me/loads",
     driver,
-    // Billing gate: a self-dispatched load is billable (3% success fee + flat),
-    // so an expired / past-due-over-grace carrier must not be able to create
-    // one. requireActiveBilling resolves the carrier from user.linkedClientId
-    // for drivers and 402s on expired/past_due-over-grace.
+    // Billing gate: self-dispatched loads carry NO 3% success fee (post-2026-07
+    // restructure, the fee applies only to platform-sourced loads — a
+    // self-entered load leaves source_id NULL and is free). This gate is about
+    // SUBSCRIPTION ACCESS, not the success fee: an expired / past-due-over-grace
+    // carrier has no active plan and must not use the service to create loads at
+    // all. requireActiveBilling resolves the carrier from user.linkedClientId for
+    // drivers and 402s on expired/past_due-over-grace.
     requireActiveBilling,
     ah(async (req, res) => {
       const user = getCurrentUser(req);
