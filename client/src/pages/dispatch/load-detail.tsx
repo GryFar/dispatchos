@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import {
@@ -18,6 +18,8 @@ import {
   Phone,
   Hash,
   Package,
+  Sparkles,
+  Copy,
 } from "lucide-react";
 import type {
   CheckinKind,
@@ -216,6 +218,10 @@ export default function DispatchLoadDetailPage() {
       {/* Broker feedback — one-tap trust signals (Killer #1 stage 4) */}
       <BrokerFeedbackCard brokerMc={data.brokerMc} loadId={data.id} />
 
+      {/* AI broker-reply draft (Task-3 UI): dispatcher generates a counter-offer
+          email for this load's broker. POST /api/ai/draft-broker-reply. */}
+      <BrokerReplyCard loadId={data.id} clientId={(data as { clientId?: string }).clientId} />
+
       {/* Driver assignment (always shown — load can have or not have a driver) */}
       <DriverAssignmentCard load={data} />
 
@@ -299,6 +305,152 @@ function StopBlock({
       </p>
       <p className="mt-0.5 text-xs text-muted-foreground">{formatDateFull(iso)}</p>
     </div>
+  );
+}
+
+// AI broker-reply draft. The dispatcher asks haiku for a short counter-offer
+// email for this load's broker (POST /api/ai/draft-broker-reply { loadId }).
+// Mirrors the cockpit CarrierAiPanel quota handling: a 429 with code
+// ai_quota_exceeded offers a per-carrier top-up; a 503 (ai_unavailable — no key
+// / model failure) shows an "unavailable" note instead of an error, since the
+// endpoint degrades to 503 rather than 500 by design.
+function BrokerReplyCard({ loadId, clientId }: { loadId: string; clientId?: string }) {
+  const { t } = useT();
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [state, setState] = useState<{
+    loading: boolean;
+    failed?: boolean;
+    unavailable?: boolean;
+    quotaExhausted?: boolean;
+    quotaMsg?: string;
+  }>({ loading: false });
+  const [buying, setBuying] = useState(false);
+
+  // Guard against setState after unmount while the slow LLM call is in flight.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  async function runDraft() {
+    setState({ loading: true });
+    try {
+      const r = await apiJson<{ draft: string }>("POST", "/api/ai/draft-broker-reply", { loadId });
+      if (!mountedRef.current) return;
+      setDraft(r.draft);
+      setState({ loading: false });
+      setOpen(true);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      // Close the dialog on a regenerate failure so the card-level note shows.
+      setOpen(false);
+      const code =
+        err instanceof ApiError && err.body && typeof err.body === "object" && "code" in err.body
+          ? (err.body as { code?: unknown }).code
+          : undefined;
+      const quotaExhausted = err instanceof ApiError && err.status === 429 && code === "ai_quota_exceeded";
+      const unavailable = err instanceof ApiError && err.status === 503;
+      setState({
+        loading: false,
+        failed: !quotaExhausted && !unavailable,
+        unavailable,
+        quotaExhausted,
+        quotaMsg: quotaExhausted && err instanceof ApiError ? err.message : undefined,
+      });
+    }
+  }
+
+  async function buyCredits() {
+    if (!clientId) return;
+    setBuying(true);
+    try {
+      const r = await apiJson<{ ok: boolean; pack: number }>(
+        "POST",
+        "/api/dispatch/ai-credits/purchase",
+        { clientId },
+      );
+      toast({ title: t("aiQuota.bought"), description: t("aiQuota.boughtDesc", { pack: r.pack }) });
+      if (mountedRef.current) setState((s) => ({ ...s, quotaExhausted: false, quotaMsg: undefined }));
+    } catch {
+      toast({ title: t("aiQuota.buyError"), variant: "destructive" });
+    } finally {
+      if (mountedRef.current) setBuying(false);
+    }
+  }
+
+  async function copyDraft() {
+    if (!draft) return;
+    try {
+      await navigator.clipboard.writeText(draft);
+      toast({ title: t("dispatch.load_detail.reply.copied") });
+    } catch {
+      /* clipboard blocked (permissions / insecure context) — leave the text visible to copy manually */
+    }
+  }
+
+  return (
+    <Card className="p-4">
+      <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <Sparkles className="h-3.5 w-3.5" /> {t("dispatch.load_detail.reply.title")}
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">{t("dispatch.load_detail.reply.hint")}</p>
+
+      <Button variant="outline" size="sm" className="mt-3" onClick={runDraft} disabled={state.loading}>
+        {state.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+        {t("dispatch.load_detail.reply.button")}
+      </Button>
+
+      {state.quotaExhausted && (
+        <div className="mt-3 space-y-2 rounded-md bg-rose-500/10 p-3 text-xs">
+          <p className="text-rose-600 dark:text-rose-400">
+            {state.quotaMsg ?? t("dispatch.load_detail.reply.error")}
+          </p>
+          {clientId && (
+            <Button variant="outline" size="sm" onClick={buyCredits} disabled={buying}>
+              {buying ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t("aiQuota.buy")}
+            </Button>
+          )}
+        </div>
+      )}
+      {state.unavailable && (
+        <p className="mt-3 text-xs text-muted-foreground">{t("dispatch.load_detail.reply.unavailable")}</p>
+      )}
+      {state.failed && (
+        <p className="mt-3 text-xs text-muted-foreground">{t("dispatch.load_detail.reply.error")}</p>
+      )}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("dispatch.load_detail.reply.dialog_title")}</DialogTitle>
+            <DialogDescription>{t("dispatch.load_detail.reply.hint")}</DialogDescription>
+          </DialogHeader>
+          <textarea
+            readOnly
+            value={draft ?? ""}
+            rows={10}
+            className="w-full resize-none rounded-md border border-border bg-muted/30 p-3 text-sm"
+          />
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={copyDraft} className="mr-auto">
+              <Copy className="h-4 w-4" />
+              {t("dispatch.load_detail.reply.copy")}
+            </Button>
+            <Button variant="outline" onClick={runDraft} disabled={state.loading}>
+              {state.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t("dispatch.load_detail.reply.regenerate")}
+            </Button>
+            <Button onClick={() => setOpen(false)}>{t("dispatch.load_detail.reply.close")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
   );
 }
 
