@@ -171,11 +171,46 @@ function pad(s, n) {
   return s.length >= n ? s.slice(0, n) : s + " ".repeat(n - s.length);
 }
 
+// Structural guard on the golden set — runs on EVERY invocation (even without a
+// key), so a malformed scenario (an acceptable id absent from the scenario's
+// loads, an empty acceptable set, a non-RegExp mention) is caught here instead
+// of surfacing as a mysterious ✗ mid-run or silently wasting a keyed call.
+function validateScenarios() {
+  const errs = [];
+  for (const s of SCENARIOS) {
+    if (!s.loads || s.loads.length === 0) {
+      errs.push(`"${s.name}": no loads`);
+      continue;
+    }
+    const ids = new Set(s.loads.map((l) => l.id));
+    const acc = s.golden?.acceptable ?? [];
+    if (acc.length === 0) errs.push(`"${s.name}": golden.acceptable is empty`);
+    for (const id of acc) {
+      if (id !== null && !ids.has(id)) {
+        errs.push(`"${s.name}": acceptable "${id}" is not one of this scenario's loads`);
+      }
+    }
+    for (const r of s.golden?.mentions ?? []) {
+      if (!(r instanceof RegExp)) errs.push(`"${s.name}": a golden.mentions entry is not a RegExp`);
+    }
+  }
+  return errs;
+}
+
 async function main() {
+  // Validate the goldens up front — a broken scenario fails loudly here (exit 1)
+  // rather than surfacing as a mysterious ✗ mid-run or wasting a keyed call.
+  const problems = validateScenarios();
+  if (problems.length > 0) {
+    console.error("ADVISOR EVAL — scenario definition errors:");
+    for (const p of problems) console.error(`  ✗ ${p}`);
+    process.exit(1);
+  }
+
   if (!process.env.ANTHROPIC_API_KEY) {
     console.log("─".repeat(72));
     console.log("ADVISOR EVAL — no ANTHROPIC_API_KEY set.");
-    console.log(`Scaffold OK: ${SCENARIOS.length} scenarios wired. The advisor returns`);
+    console.log(`Scaffold OK: ${SCENARIOS.length} scenarios wired + goldens validated. The advisor returns`);
     console.log("null without a key, so there is nothing to score. Set the key and re-run:");
     console.log("    ANTHROPIC_API_KEY=sk-... npx tsx scripts/eval-advisor.mjs");
     console.log("─".repeat(72));
