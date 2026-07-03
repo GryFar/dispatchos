@@ -23,6 +23,53 @@ const MAX_BODY_BYTES = 32 * 1024; // 32 KB persisted body
 const RATE_LIMIT_PER_HOUR = 30; // per sender address
 
 /**
+ * Decode a MIME part body per its Content-Transfer-Encoding. Real broker emails
+ * routinely arrive quoted-printable (`=3D`, soft `=\r\n` line breaks) or base64;
+ * without decoding, the persisted body is garbled and the server-side parser
+ * extracts no load fields — the offer is silently useless. 7bit/8bit/binary and
+ * unknown encodings pass through unchanged.
+ *
+ * @param {string} text
+ * @param {string|undefined} encoding
+ * @returns {string}
+ */
+export function decodeTransferEncoding(text, encoding) {
+  const enc = (encoding || "").trim().toLowerCase();
+  if (enc.includes("quoted-printable")) {
+    return text
+      .replace(/=\r?\n/g, "") // soft line breaks
+      .replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  }
+  if (enc.includes("base64")) {
+    try {
+      const bin = atob(text.replace(/\s+/g, ""));
+      const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+      return new TextDecoder("utf-8").decode(bytes);
+    } catch {
+      return text; // not valid base64 — keep the raw text
+    }
+  }
+  return text;
+}
+
+/**
+ * Classify an ingest POST outcome. A transient failure (origin unreachable,
+ * 5xx, or 401/403 secret-drift) must be RETRIED by the sending MTA rather than
+ * silently accepted — otherwise the load email is lost forever. A 4xx we caused
+ * (e.g. 400 malformed payload) is not retry-fixable, so we accept-and-log
+ * rather than loop a poison message through the queue.
+ *
+ * @param {number|null} status  HTTP status, or null if fetch threw (network)
+ * @returns {"ok"|"retry"|"accept"}
+ */
+export function classifyIngestOutcome(status) {
+  if (status === null) return "retry"; // network / origin unreachable
+  if (status >= 200 && status < 300) return "ok";
+  if (status >= 500 || status === 401 || status === 403) return "retry";
+  return "accept"; // other 4xx: our bug, not retry-fixable
+}
+
+/**
  * Inspect the Authentication-Results header CF/our forwarder adds.
  * We REJECT only on an explicit `spf=fail` or `dkim=fail`. Missing
  * results / softfail are allowed (forwarded mail often loses SPF).
@@ -148,13 +195,19 @@ export default {
       // mostly text/plain or simple HTML.
       let body = rawText;
       const headersEnd = rawText.indexOf("\r\n\r\n");
+      const contentType = message.headers.get("content-type") || "";
+      const isMultipart = contentType.toLowerCase().includes("multipart/");
       if (headersEnd !== -1) {
         body = rawText.slice(headersEnd + 4);
+        // Non-multipart: decode the whole body per the top-level transfer encoding.
+        if (!isMultipart) {
+          body = decodeTransferEncoding(body, message.headers.get("content-transfer-encoding"));
+        }
       }
 
-      // If this is a multipart message, pull the text/plain part if present.
-      const contentType = message.headers.get("content-type") || "";
-      if (contentType.toLowerCase().includes("multipart/")) {
+      // If this is a multipart message, pull the text/plain part if present and
+      // decode it per THAT part's own Content-Transfer-Encoding.
+      if (isMultipart) {
         const boundaryMatch = contentType.match(/boundary="?([^";]+)"?/i);
         if (boundaryMatch) {
           const boundary = "--" + boundaryMatch[1];
@@ -163,7 +216,9 @@ export default {
             if (/Content-Type:\s*text\/plain/i.test(part)) {
               const innerEnd = part.indexOf("\r\n\r\n");
               if (innerEnd !== -1) {
-                body = part.slice(innerEnd + 4).trim();
+                const partHeaders = part.slice(0, innerEnd);
+                const cte = (partHeaders.match(/Content-Transfer-Encoding:\s*([^\r\n]+)/i) || [])[1];
+                body = decodeTransferEncoding(part.slice(innerEnd + 4).trim(), cte);
                 break;
               }
             }
@@ -185,25 +240,44 @@ export default {
         receivedAt: dateHeader || new Date().toUTCString(),
       };
 
-      const res = await fetch(env.INGEST_URL, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-inbound-secret": env.DISPATCHOS_INBOUND_SECRET,
-        },
-        body: JSON.stringify(payload),
-      });
+      let res;
+      try {
+        res = await fetch(env.INGEST_URL, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-inbound-secret": env.DISPATCHOS_INBOUND_SECRET,
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (netErr) {
+        // Origin unreachable — transient. Throw so CF returns a temporary
+        // failure and the sending MTA retries, instead of completing email()
+        // (which tells the MTA "delivered" and loses the load offer forever).
+        const e = new Error(`[inbound-email] ingest unreachable: ${netErr && netErr.message}`);
+        e.__inboundRetry = true;
+        throw e;
+      }
 
       if (!res.ok) {
-        // Surface the body so we see it in the Worker logs / CF dashboard
         const errBody = await res.text().catch(() => "");
-        console.error(
-          `[inbound-email] POST failed: ${res.status} ${errBody.slice(0, 300)}`,
-        );
-        // Don't reject the email — that would bounce it. Let it through silently
-        // and rely on logs / Sentry for visibility.
+        console.error(`[inbound-email] POST failed: ${res.status} ${errBody.slice(0, 300)}`);
+        if (classifyIngestOutcome(res.status) === "retry") {
+          // Recoverable (app 5xx / DISPATCHOS_INBOUND_SECRET drift → 401/403).
+          // Throw → CF temporary failure → MTA retries, so the mail is never
+          // silently lost while we fix the app or the secret.
+          const e = new Error(`[inbound-email] ingest ${res.status} — signalling retry`);
+          e.__inboundRetry = true;
+          throw e;
+        }
+        // Other 4xx (a payload WE malformed): not retry-fixable — accept and
+        // rely on the loud log above so we don't loop a poison message.
       }
     } catch (err) {
+      // A deliberate transient signal must PROPAGATE so CF returns a temporary
+      // failure and the sender MTA retries — otherwise the mail is lost. Genuine
+      // parse/logic bugs stay swallowed (retrying can't fix a malformed message).
+      if (err && err.__inboundRetry) throw err;
       console.error("[inbound-email] worker threw:", err);
     }
   },
