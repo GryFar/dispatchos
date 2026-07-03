@@ -249,11 +249,47 @@ export async function chargeInvoiceViaStripe(
   const percentFeeCents = dollarsToCents(invoice.percentFee);
 
   try {
-    // Flat platform fee — always present.
+    // Create the invoice FIRST (empty, auto_advance:false so Stripe can't try to
+    // collect an empty draft before the items attach), then bind ONLY this
+    // week's fee items to THAT invoice, then finalize. The old flow created the
+    // flat+3% items as customer-level PENDING items and swept them with
+    // pending_invoice_items_behavior:"include" — so a transient invoices.create
+    // failure (or a concurrent admin generate + weekly cron on the same client)
+    // left orphaned pending items that the NEXT invoice's include-sweep pulled
+    // in, charging the carrier twice / onto the wrong week. Binding items to
+    // created.id (exactly like chargeAiCreditPack below) removes the sweep, so
+    // an item can only ever land on its own invoice. The dos_inv_<id>* keys are
+    // unchanged, so an in-24h retry still collapses onto the same objects.
+    const created = await stripe.invoices.create(
+      {
+        customer,
+        collection_method: "charge_automatically",
+        auto_advance: false,
+        metadata: {
+          dispatchosInvoiceId: invoice.id,
+          clientId: invoice.clientId,
+          weekStart: invoice.weekStart,
+        },
+      },
+      { idempotencyKey: `dos_inv_${invoice.id}` },
+    );
+
+    if (!created.id) return { ok: false, reason: "stripe_no_invoice_id" };
+
+    // Persist the Stripe invoice id on the DispatchOS row IMMEDIATELY, before the
+    // items/finalize. If a later step throws, the catch leaves the row
+    // chargeable; without this stamp a retry >24h later — after the idempotency
+    // keys have expired — would mint a fresh invoice and double-charge the
+    // carrier. Stamping the id here makes the route-level guard (refuse when
+    // stripeInvoiceId is set) see the in-flight charge and refuse the re-charge.
+    storage.setInvoiceStripeId(invoice.id, created.id);
+
+    // Flat platform fee — bound to THIS invoice (not a customer-level pending item).
     if (flatFeeCents > 0) {
       await stripe.invoiceItems.create(
         {
           customer,
+          invoice: created.id,
           amount: flatFeeCents,
           currency: "usd",
           description: `DispatchOS platform fee — week of ${invoice.weekStart}`,
@@ -267,6 +303,7 @@ export async function chargeInvoiceViaStripe(
       await stripe.invoiceItems.create(
         {
           customer,
+          invoice: created.id,
           amount: percentFeeCents,
           currency: "usd",
           description: `DispatchOS 3% success fee — week of ${invoice.weekStart}`,
@@ -275,37 +312,12 @@ export async function chargeInvoiceViaStripe(
       );
     }
 
-    const created = await stripe.invoices.create(
-      {
-        customer,
-        collection_method: "charge_automatically",
-        auto_advance: true,
-        // Sweep the pending invoice items we just created onto this invoice.
-        pending_invoice_items_behavior: "include",
-        metadata: {
-          dispatchosInvoiceId: invoice.id,
-          clientId: invoice.clientId,
-          weekStart: invoice.weekStart,
-        },
-      },
-      { idempotencyKey: `dos_inv_${invoice.id}` },
+    // Finalize so Stripe collects now against the default payment method.
+    await stripe.invoices.finalizeInvoice(
+      created.id,
+      { auto_advance: true },
+      { idempotencyKey: `dos_inv_${invoice.id}_fin` },
     );
-
-    if (!created.id) return { ok: false, reason: "stripe_no_invoice_id" };
-
-    // Persist the Stripe invoice id on the DispatchOS row IMMEDIATELY, before
-    // finalize. If invoices.create succeeded (the draft exists and, with
-    // auto_advance:true, Stripe will auto-finalize it ~1h later regardless) but
-    // finalizeInvoice below throws, the catch leaves the row chargeable. Without
-    // this stamp a retry >24h later — after the idempotency keys have expired —
-    // would mint a fresh invoice and double-charge the carrier. Stamping the id
-    // here makes the route-level guard (refuse when stripeInvoiceId is set) see
-    // the in-flight charge and refuse the re-charge.
-    storage.setInvoiceStripeId(invoice.id, created.id);
-
-    // Finalize so Stripe attempts collection now (auto_advance handles the
-    // charge against the default payment method).
-    await stripe.invoices.finalizeInvoice(created.id);
 
     return { ok: true, stripeInvoiceId: created.id };
   } catch (err) {
