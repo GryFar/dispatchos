@@ -15,6 +15,9 @@ import { storage, backfillBrokerTrustSignals, closeDatabase } from "./storage";
 import { SqliteSessionStore } from "./lib/session-store";
 
 const app = express();
+// Don't advertise the framework — Express sends "X-Powered-By: Express" on
+// every response by default, handing an attacker a free stack-fingerprint.
+app.disable("x-powered-by");
 const isVdsMode = process.env.DISPATCHOS_DEPLOYMENT_MODE === "vds";
 const isProdLike =
   process.env.NODE_ENV === "production" ||

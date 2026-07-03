@@ -101,6 +101,15 @@ export async function generateAndChargeInvoiceForClient(input: {
   const calc = computeInvoiceForWeek(input.clientId, input.weekStart, input.weekEnd, {
     flatFeeCents: input.flatFeeCents,
   });
+  // Monthly-cap disclosure: when the 3% was clamped by the 2×-plan-price cap,
+  // record it on the invoice (customer-visible line note) and in the audit log.
+  const capNote = calc.capApplied
+    ? `Success fee capped at 2× plan price for this month: 3% would be ` +
+      `$${(calc.percentFeeUncappedCents / 100).toFixed(2)}, ` +
+      `charged $${(calc.percentFeeCents / 100).toFixed(2)} ` +
+      `(monthly cap $${(calc.monthlyCapCents / 100).toFixed(2)}, ` +
+      `already billed $${(calc.monthAlreadyBilledCents / 100).toFixed(2)}).`
+    : undefined;
   // The findOverlappingInvoice pre-check above is best-effort and TOCTOU-racy
   // (a concurrent generate can slip between the check and this insert). The
   // partial UNIQUE(client_id, week_start) WHERE status != 'void' index is the
@@ -116,6 +125,7 @@ export async function generateAndChargeInvoiceForClient(input: {
       percentFee: calc.percentFee,
       grossBooked: calc.grossBooked,
       status: input.status,
+      notes: capNote,
     });
   } catch (err) {
     if (isUniqueWeekViolation(err)) {
@@ -145,6 +155,13 @@ export async function generateAndChargeInvoiceForClient(input: {
       weekStart: invoice.weekStart,
       weekEnd: invoice.weekEnd,
       totalDue: invoice.totalDue,
+      // Monthly-cap telemetry (2026-07): always logged so the clamp is auditable
+      // even when it did not bite this week.
+      percentFeeCents: calc.percentFeeCents,
+      percentFeeUncappedCents: calc.percentFeeUncappedCents,
+      monthlyCapCents: calc.monthlyCapCents,
+      monthAlreadyBilledCents: calc.monthAlreadyBilledCents,
+      capApplied: calc.capApplied,
       ...actorMeta,
     },
   );
@@ -274,12 +291,20 @@ export async function runWeeklyBillingForAllClients(
       continue;
     }
     try {
-      // No booked loads in the window → 3% of nothing. Don't create a $0
-      // ledger row per idle client per week; skip before any insert.
+      // No delivered platform-sourced loads in the window → 3% of nothing.
+      // Don't create a $0 ledger row per idle client per week; skip before any
+      // insert. The cron flat fee is 0, so when the monthly cap is already
+      // exhausted the whole invoice would be $0 too — skip that as well (same
+      // "no $0 ledger rows / no $0 Stripe charge" philosophy).
       const calc = computeInvoiceForWeek(client.id, weekStart, weekEnd, { flatFeeCents: 0 });
       if (calc.grossBookedCents === 0) {
         summary.skipped += 1;
         summary.results.push({ clientId: client.id, outcome: "skipped", reason: "no_booked_loads" });
+        continue;
+      }
+      if (calc.totalDueCents === 0) {
+        summary.skipped += 1;
+        summary.results.push({ clientId: client.id, outcome: "skipped", reason: "monthly_cap_exhausted" });
         continue;
       }
 

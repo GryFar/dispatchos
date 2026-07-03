@@ -376,16 +376,25 @@ export default function BillingStripePage() {
                       <span>{t("admin.billingStripe.premiumBrokerVetting")}</span>
                     </li>
                   )}
-                  {p.features?.apiAccess && (
-                    <li className="flex items-start gap-1.5">
-                      <Sparkles className="mt-0.5 h-3 w-3 flex-shrink-0 text-amber-500" />
-                      <span>{t("admin.billingStripe.apiAccessWebhooks")}</span>
-                    </li>
-                  )}
+                  {/* «API access + webhooks» and «SSO / SAML» bullets removed —
+                      not built yet; don't advertise them (plans.ts untouched). */}
                 </ul>
-                {/* Mirror of billing.tsx: Checkout while not subscribed
-                    (incl. the "Current" trial plan), portal once live. */}
-                {!subscribed ? (
+                {/* Fee disclosure near the price — the 3% success fee applies
+                    only to platform-sourced loads and is capped monthly. */}
+                <p className="mt-3 text-[11px] leading-snug text-muted-foreground">
+                  {t("admin.billingStripe.feeDisclosure")}
+                </p>
+                {/* Enterprise is negotiated, not self-serve — route to sales
+                    instead of Checkout/Portal. */}
+                {p.persona === "enterprise" ? (
+                  <Button asChild size="sm" className="mt-3 w-full" variant="outline">
+                    <a href="mailto:support@dispatchos.co?subject=Enterprise%20plan%20inquiry">
+                      {t("admin.billingStripe.contactUs")}
+                    </a>
+                  </Button>
+                ) : /* Mirror of billing.tsx: Checkout while not subscribed
+                    (incl. the "Current" trial plan), portal once live. */
+                !subscribed ? (
                   <Button
                     size="sm"
                     className="mt-3 w-full"

@@ -169,6 +169,27 @@ function fakeStripe(statuses: Record<string, string> = {}) {
   assert("happy: two invoice items (flat + pct)", calls.invoiceItems.length === 2, String(calls.invoiceItems.length));
   assert("happy: flat item is 15000 cents", calls.invoiceItems.some((i) => i.amount === 15000));
   assert("happy: pct item is 1234 cents", calls.invoiceItems.some((i) => i.amount === 1234));
+  // Regression (super-audit 2026-07-02, HIGH double-charge): the fee items must
+  // be BOUND to this invoice (item.invoice === the created invoice id), NOT left
+  // as customer-level pending items swept in via pending_invoice_items_behavior.
+  // The old sweep pulled orphaned pending items (from a transient earlier
+  // failure or a concurrent admin+cron run) onto the next invoice = double
+  // charge. These three asserts FAIL on the pre-fix code.
+  assert(
+    "happy: every fee item is bound to the created invoice (no pending sweep)",
+    calls.invoiceItems.length > 0 && calls.invoiceItems.every((i) => i.invoice === calls.invoices[0]?.id),
+    JSON.stringify(calls.invoiceItems.map((i) => i.invoice)),
+  );
+  assert(
+    "happy: invoice does NOT use pending_invoice_items_behavior:include",
+    calls.invoices[0]?.pending_invoice_items_behavior === undefined,
+    String(calls.invoices[0]?.pending_invoice_items_behavior),
+  );
+  assert(
+    "happy: invoice created auto_advance:false (explicit finalize collects)",
+    calls.invoices[0]?.auto_advance === false,
+    String(calls.invoices[0]?.auto_advance),
+  );
   assert("happy: invoice charge_automatically", calls.invoices[0]?.collection_method === "charge_automatically");
   assert(
     "happy: invoice carries dispatchosInvoiceId metadata",

@@ -4,15 +4,20 @@
 // ===========================================================================
 //
 // Pins the launch-critical properties of runWeeklyBillingForAllClients:
-//   1. Only 'active'/'past_due' clients with booked loads in the last CLOSED
-//      week get an invoice, and the CRON invoice is 3% ONLY (flat fee 0 —
-//      self-serve pricing is "subscription + 3%", the $150 flat is the manual
-//      admin route's legacy managed-dispatch model).
+//   1. Only 'active'/'past_due' clients with DELIVERED PLATFORM-SOURCED loads in
+//      the last CLOSED week get an invoice, and the CRON invoice is 3% ONLY
+//      (flat fee 0 — self-serve pricing is "subscription + 3%", the $150 flat is
+//      the manual admin route's legacy managed-dispatch model).
 //   2. Re-running never creates a second invoice — a still-draft, never-charged
 //      invoice is RETRIED (charge only), anything else is skipped.
-//   3. trial / expired / canceled / zero-booked clients are never invoiced —
+//   3. trial / expired / canceled / zero-billable clients are never invoiced —
 //      a trialing customer with a card on file must NOT be charged during the
 //      advertised free trial.
+//
+// UPDATED for the 2026-07 fee restructure: loads are now created platform-
+// sourced (sourceId set) AND delivered in-window (deliveredAt), which is what
+// listDeliveredSourcedLoadsForClientWeek/computeInvoiceForWeek bill. Manual
+// (self-entered) loads leave source_id NULL and are exempt.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -62,8 +67,10 @@ test("weekly run — 3%-only for active clients, retry on re-run, trial/canceled
   const clientD = `bruncli-d-${rnd()}`; // TRIAL with a booked load — never billed
   const clientE = `bruncli-e-${rnd()}`; // active, idle week — no $0 invoice
 
+  // Paying plan (fleet_scale, $129/mo → 2× cap $258) so the monthly cap never
+  // clamps the small fees under test here.
   const mkClient = (id: string, billingStatus: string) =>
-    storage.upsertClient({ id, name: `Run Co ${id}`, billingStatus } as Parameters<
+    storage.upsertClient({ id, name: `Run Co ${id}`, billingStatus, planTier: "fleet_scale" } as Parameters<
       typeof storage.upsertClient
     >[0]);
   mkClient(clientA, "active");
@@ -72,11 +79,19 @@ test("weekly run — 3%-only for active clients, retry on re-run, trial/canceled
   mkClient(clientD, "trial");
   mkClient(clientE, "active");
 
+  // Loads are platform-sourced AND delivered in-window — the billable shape.
+  // deliveredAt lands mid-week (weekStart + a few hours) so it's inside the
+  // closed week the cron bills.
+  const deliveredAt = `${weekStart}T18:00:00.000Z`;
   const mkLoad = (clientId: string, i: number, rate: number, at = bookedAt) =>
     storage.upsertLoad({
       id: `brun-load-${clientId}-${i}`,
       clientId,
       bookedAt: at,
+      deliveredAt,
+      status: "completed",
+      sourceId: "src-test",
+      sourceExternalId: `ext-${clientId}-${i}`,
       rate,
       brokerMc: "MC-1",
       brokerName: "B",
@@ -147,13 +162,17 @@ test("weekly run — DISPATCHOS_WEEKLY_FLAT_FEE_CENTS env knob restores a flat f
   // main test above.
   const { weekStart } = lastClosedBillingWeek(1);
   const clientF = `bruncli-f-${Math.random().toString(36).slice(2, 10)}`;
-  storage.upsertClient({ id: clientF, name: "Run Co F", billingStatus: "active" } as Parameters<
+  storage.upsertClient({ id: clientF, name: "Run Co F", billingStatus: "active", planTier: "fleet_scale" } as Parameters<
     typeof storage.upsertClient
   >[0]);
   storage.upsertLoad({
     id: `brun-load-${clientF}-1`,
     clientId: clientF,
     bookedAt: `${weekStart}T12:00:00.000Z`,
+    deliveredAt: `${weekStart}T18:00:00.000Z`,
+    status: "completed",
+    sourceId: "src-test",
+    sourceExternalId: `ext-${clientF}-1`,
     rate: 1000,
     brokerMc: "MC-1",
     brokerName: "B",

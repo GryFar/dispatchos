@@ -49,8 +49,14 @@ const { computeInvoiceForWeek, FLAT_FEE_CENTS } = await import("./billing");
 const WS = "2026-06-08";
 const WE = "2026-06-14";
 const BOOKED = "2026-06-10";
-storage.upsertLoad({ ...baseLoad, id: "L_pos", rate: 1000, clientId: "C_neg", bookedAt: BOOKED } as any);
-storage.upsertLoad({ ...baseLoad, id: "L_neg", rate: -5000, clientId: "C_neg", bookedAt: BOOKED } as any);
+const DELIVERED = "2026-06-11T12:00:00.000Z"; // inside [WS, WE]
+// Post-2026-07 the fee bills only platform-sourced (sourceId) loads delivered
+// in-window; give both loads that provenance + a paying client so the negative-
+// rate flooring — not the source/delivery filter or the monthly cap — is what's
+// under test.
+storage.upsertClient({ id: "C_neg", name: "Neg Co", planTier: "oo_premium", billingStatus: "active" } as any);
+storage.upsertLoad({ ...baseLoad, id: "L_pos", rate: 1000, clientId: "C_neg", bookedAt: BOOKED, sourceId: "src-test", sourceExternalId: "ext-pos", deliveredAt: DELIVERED, status: "completed" } as any);
+storage.upsertLoad({ ...baseLoad, id: "L_neg", rate: -5000, clientId: "C_neg", bookedAt: BOOKED, sourceId: "src-test", sourceExternalId: "ext-neg", deliveredAt: DELIVERED, status: "completed" } as any);
 
 const inv = computeInvoiceForWeek("C_neg", WS, WE);
 assert("gross floors the -$5000 load (only +$1000 counts)",

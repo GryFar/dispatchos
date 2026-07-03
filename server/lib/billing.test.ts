@@ -103,13 +103,26 @@ test("invoice gross is the exact integer sum of per-load cents (fails on float-s
   );
   assert.notEqual(oldFloatSumCents, EXPECTED_GROSS_CENTS, "inputs no longer diverge; pick new rates");
 
-  // Exercise the real invoice path end-to-end through storage.
+  // Exercise the real invoice path end-to-end through storage. Post-2026-07 the
+  // fee bills only platform-sourced (sourceId) loads DELIVERED in-window, so
+  // stamp both on every load; the drift property (integer-exact gross sum) is
+  // orthogonal to the source/delivery filter.
   const clientId = `bill-drift-${Math.random().toString(36).slice(2, 10)}`;
+  // A paying client with a plan whose 2× cap ($598 for enterprise) is still far
+  // below the uncapped $300k fee here — so we assert the UNCAPPED fee for the
+  // drift check and the CAPPED fee separately below.
+  storage.upsertClient({
+    id: clientId, name: "Drift Co", planTier: "enterprise", billingStatus: "active",
+  } as Parameters<typeof storage.upsertClient>[0]);
   for (let i = 0; i < COUNT; i++) {
     storage.upsertLoad({
       id: `load-drift-${clientId}-${i}`,
       clientId,
       bookedAt: "2026-06-10T12:00:00.000Z",
+      deliveredAt: "2026-06-11T12:00:00.000Z", // inside the billed week
+      status: "completed",
+      sourceId: "src-test",
+      sourceExternalId: `ext-drift-${i}`,
       rate: RATE,
       brokerMc: "MC-1",
       brokerName: "B",
@@ -123,6 +136,12 @@ test("invoice gross is the exact integer sum of per-load cents (fails on float-s
   assert.equal(inv.grossBookedCents, EXPECTED_GROSS_CENTS);
   assert.equal(inv.grossBooked, centsToDollars(EXPECTED_GROSS_CENTS));
   // 3% in basis points on the exact gross: 10_000_000 × 300 / 10_000 = 300_000¢.
-  assert.equal(inv.percentFeeCents, 300_000);
-  assert.equal(inv.totalDueCents, FLAT_FEE_CENTS + 300_000);
+  // This is the UNCAPPED fee — the drift property lives here, before clamping.
+  assert.equal(inv.percentFeeUncappedCents, 300_000);
+  // The monthly cap = 2 × enterprise $299 = $598 = 59_800¢, well below $3000, so
+  // the charged fee clamps to the cap and the flag is set.
+  assert.equal(inv.monthlyCapCents, 59_800);
+  assert.equal(inv.percentFeeCents, 59_800);
+  assert.equal(inv.capApplied, true);
+  assert.equal(inv.totalDueCents, FLAT_FEE_CENTS + 59_800);
 });

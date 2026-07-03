@@ -50,6 +50,7 @@ const ru: Dict = {
 
   // Landing — header
   "landing.nav.features": "Возможности",
+  "landing.nav.pricing": "Тарифы",
   "landing.nav.contact": "Связаться",
   "landing.nav.toHome": "На начало страницы",
 
@@ -92,7 +93,31 @@ const ru: Dict = {
   "landing.trust.montgomery.hint": "отчёт для брокерской проверки перевозчика",
   "landing.trust.small.label": "Для малых перевозчиков",
   "landing.trust.small.value": "1–50 грузовиков",
-  "landing.trust.small.hint": "фиксированные тарифы; доп. места водителей — от $8/мес на Fleet",
+  "landing.trust.small.hint": "прозрачные тарифы + 3% комиссии за успех; доп. места водителей — от $8/мес на Fleet",
+
+  // Landing — тарифы
+  "landing.pricing.heading": "Простые и прозрачные тарифы",
+  "landing.pricing.subtitle":
+    "Выберите тариф по размеру автопарка. В каждом — 14 дней бесплатно, карта для старта не нужна.",
+  "landing.pricing.perMonth": "/мес",
+  "landing.pricing.tier.oo_basic.name": "Owner-Operator Basic",
+  "landing.pricing.tier.oo_basic.value": "Один грузовик, один MC. Входящие грузы, скоринг брокеров, GPS.",
+  "landing.pricing.tier.oo_premium.name": "Owner-Operator Premium",
+  "landing.pricing.tier.oo_premium.value": "Плюс профиль безопасности перевозчика и премиум-проверка брокеров.",
+  "landing.pricing.tier.fleet_starter.name": "Fleet Starter",
+  "landing.pricing.tier.fleet_starter.value": "2–5 грузовиков. 5 мест водителей, 1 диспетчер, 2 MC.",
+  "landing.pricing.tier.fleet_growth.name": "Fleet Growth",
+  "landing.pricing.tier.fleet_growth.value": "6–20 грузовиков. 20 мест водителей, 2 диспетчера, 5 MC.",
+  "landing.pricing.tier.fleet_scale.name": "Fleet Scale",
+  "landing.pricing.tier.fleet_scale.value": "21–50 грузовиков. 50 мест водителей, приоритетная обработка.",
+  "landing.pricing.tier.enterprise.name": "Enterprise",
+  "landing.pricing.tier.enterprise.value": "50+ грузовиков. Безлимит мест и MC, цена по договорённости.",
+  "landing.pricing.enterpriseFrom": "от",
+  "landing.pricing.fee":
+    "+ 3% комиссии за успех по грузам с платформенных источников, не более 2× цены вашего тарифа в месяц. Грузы, которые вы вносите сами, всегда бесплатны.",
+  "landing.pricing.comparison": "Диспетчеры-люди берут 5–10% от суммы фрахта.",
+  "landing.pricing.startCta": "Начать бесплатно",
+  "landing.pricing.enterpriseCta": "Связаться с нами",
 
   // Landing — subscribe form
   "landing.subscribe.title": "Подписаться на рассылку",
@@ -792,6 +817,8 @@ const ru: Dict = {
   "onboarding.plan.subtitle":
     "Первые {days} дней — бесплатно на любом тарифе. Без карты на старте. Отменить можно в любой момент.",
   "onboarding.plan.perMonth": "/мес",
+  "onboarding.plan.feeDisclosure":
+    "+ 3% комиссии за успех по грузам с платформенных источников, не более 2× цены вашего тарифа в месяц. Грузы, которые вы вносите сами, всегда бесплатны.",
   "onboarding.plan.driverSeats.unlimited": "Безлимит мест для водителей",
   "onboarding.plan.driverSeats.count": "{count} мест(а) для водителей",
   "onboarding.plan.driverSeats.additional": " (+${price}/мес за доп.)",
@@ -1857,6 +1884,9 @@ const ru: Dict = {
   "admin.billingStripe.downgrade": "Понизить",
   "admin.billingStripe.subscribe": "Подписаться",
   "admin.billingStripe.changeInPortal": "Сменить план в биллинг-портале",
+  "admin.billingStripe.feeDisclosure":
+    "+ 3% комиссии за успех по грузам с платформенных источников, не более 2× цены тарифа в месяц. Грузы, которые вы вносите сами, всегда бесплатны.",
+  "admin.billingStripe.contactUs": "Связаться с нами",
   "admin.billingStripe.statusTrial": "Триал",
   "admin.billingStripe.statusActive": "Активна",
   "admin.billingStripe.statusPastDue": "Просрочена",
@@ -2033,6 +2063,7 @@ const en: Dict = {
 
   // Landing — header
   "landing.nav.features": "Features",
+  "landing.nav.pricing": "Pricing",
   "landing.nav.contact": "Contact",
   "landing.nav.toHome": "Back to top",
 
@@ -2075,7 +2106,31 @@ const en: Dict = {
   "landing.trust.montgomery.hint": "broker-ready carrier vetting report",
   "landing.trust.small.label": "Built for small fleets",
   "landing.trust.small.value": "1–50 trucks",
-  "landing.trust.small.hint": "flat plans; extra driver seats from $8/mo on Fleet",
+  "landing.trust.small.hint": "transparent plans + 3% success fee; extra driver seats from $8/mo on Fleet",
+
+  // Landing — pricing
+  "landing.pricing.heading": "Simple, transparent pricing",
+  "landing.pricing.subtitle":
+    "Pick a plan by fleet size. Every plan includes a 14-day free trial — no card required to start.",
+  "landing.pricing.perMonth": "/mo",
+  "landing.pricing.tier.oo_basic.name": "Owner-Operator Basic",
+  "landing.pricing.tier.oo_basic.value": "One truck, one MC. Inbound loads, broker scoring, GPS.",
+  "landing.pricing.tier.oo_premium.name": "Owner-Operator Premium",
+  "landing.pricing.tier.oo_premium.value": "Adds carrier safety profile + premium broker vetting.",
+  "landing.pricing.tier.fleet_starter.name": "Fleet Starter",
+  "landing.pricing.tier.fleet_starter.value": "2–5 trucks. 5 driver seats, 1 dispatcher, 2 MCs.",
+  "landing.pricing.tier.fleet_growth.name": "Fleet Growth",
+  "landing.pricing.tier.fleet_growth.value": "6–20 trucks. 20 driver seats, 2 dispatchers, 5 MCs.",
+  "landing.pricing.tier.fleet_scale.name": "Fleet Scale",
+  "landing.pricing.tier.fleet_scale.value": "21–50 trucks. 50 driver seats, priority processing.",
+  "landing.pricing.tier.enterprise.name": "Enterprise",
+  "landing.pricing.tier.enterprise.value": "50+ trucks. Unlimited seats and MCs, negotiated pricing.",
+  "landing.pricing.enterpriseFrom": "from",
+  "landing.pricing.fee":
+    "+ 3% success fee on platform-sourced loads, capped at 2× your plan price. Loads you enter yourself are always free.",
+  "landing.pricing.comparison": "Human dispatch services charge 5–10% of gross.",
+  "landing.pricing.startCta": "Start free trial",
+  "landing.pricing.enterpriseCta": "Contact us",
 
   // Landing — subscribe form
   "landing.subscribe.title": "Subscribe to the newsletter",
@@ -2775,6 +2830,8 @@ const en: Dict = {
   "onboarding.plan.subtitle":
     "First {days} days are free on any plan. No card up front. Cancel anytime.",
   "onboarding.plan.perMonth": "/mo",
+  "onboarding.plan.feeDisclosure":
+    "+ 3% success fee on platform-sourced loads, capped at 2× your plan price. Loads you enter yourself are always free.",
   "onboarding.plan.driverSeats.unlimited": "Unlimited driver seats",
   "onboarding.plan.driverSeats.count": "{count} driver seat(s)",
   "onboarding.plan.driverSeats.additional": " (+${price}/mo per add'l)",
@@ -3840,6 +3897,9 @@ const en: Dict = {
   "admin.billingStripe.downgrade": "Downgrade",
   "admin.billingStripe.subscribe": "Subscribe",
   "admin.billingStripe.changeInPortal": "Change plan in billing portal",
+  "admin.billingStripe.feeDisclosure":
+    "+ 3% success fee on platform-sourced loads, capped at 2× your plan price. Loads you enter yourself are always free.",
+  "admin.billingStripe.contactUs": "Contact us",
   "admin.billingStripe.statusTrial": "Trial",
   "admin.billingStripe.statusActive": "Active",
   "admin.billingStripe.statusPastDue": "Past due",
@@ -4017,6 +4077,7 @@ const es: Dict = {
   "common.error": "Error",
   "common.success": "Listo",
   "landing.nav.features": "Funciones",
+  "landing.nav.pricing": "Precios",
   "landing.nav.contact": "Contacto",
   "landing.nav.toHome": "Volver arriba",
   "landing.hero.badge": "En producción con transportistas reales",
@@ -4046,7 +4107,31 @@ const es: Dict = {
   "landing.trust.montgomery.hint": "informe de verificación del transportista para brokers",
   "landing.trust.small.label": "Hecho para flotas pequeñas",
   "landing.trust.small.value": "1–50 camiones",
-  "landing.trust.small.hint": "planes fijos; asientos de conductor extra desde $8/mes en Fleet",
+  "landing.trust.small.hint": "planes transparentes + 3% de comisión por éxito; asientos de conductor extra desde $8/mes en Fleet",
+
+  // Landing — precios
+  "landing.pricing.heading": "Precios simples y transparentes",
+  "landing.pricing.subtitle":
+    "Elige un plan según el tamaño de tu flota. Todos incluyen 14 días de prueba gratis, sin tarjeta para empezar.",
+  "landing.pricing.perMonth": "/mes",
+  "landing.pricing.tier.oo_basic.name": "Owner-Operator Basic",
+  "landing.pricing.tier.oo_basic.value": "Un camión, un MC. Cargas entrantes, evaluación de brokers, GPS.",
+  "landing.pricing.tier.oo_premium.name": "Owner-Operator Premium",
+  "landing.pricing.tier.oo_premium.value": "Añade perfil de seguridad del transportista y evaluación premium de brokers.",
+  "landing.pricing.tier.fleet_starter.name": "Fleet Starter",
+  "landing.pricing.tier.fleet_starter.value": "2–5 camiones. 5 asientos de conductor, 1 despachador, 2 MC.",
+  "landing.pricing.tier.fleet_growth.name": "Fleet Growth",
+  "landing.pricing.tier.fleet_growth.value": "6–20 camiones. 20 asientos de conductor, 2 despachadores, 5 MC.",
+  "landing.pricing.tier.fleet_scale.name": "Fleet Scale",
+  "landing.pricing.tier.fleet_scale.value": "21–50 camiones. 50 asientos de conductor, procesamiento prioritario.",
+  "landing.pricing.tier.enterprise.name": "Enterprise",
+  "landing.pricing.tier.enterprise.value": "50+ camiones. Asientos y MC ilimitados, precio negociado.",
+  "landing.pricing.enterpriseFrom": "desde",
+  "landing.pricing.fee":
+    "+ 3% de comisión por éxito en cargas provenientes de la plataforma, con un tope mensual de 2× el precio de tu plan. Las cargas que ingresas tú mismo son siempre gratuitas.",
+  "landing.pricing.comparison": "Los servicios de despacho humano cobran entre 5% y 10% del bruto.",
+  "landing.pricing.startCta": "Empezar prueba gratis",
+  "landing.pricing.enterpriseCta": "Contáctanos",
   "landing.subscribe.title": "Suscríbete al boletín",
   "landing.subscribe.subtitle": "Novedades del producto y señales del sector. Sin spam.",
   "landing.subscribe.placeholder": "tu@empresa.com",
@@ -4689,6 +4774,8 @@ const es: Dict = {
   "onboarding.plan.subtitle":
     "Los primeros {days} días son gratis en cualquier plan. Sin tarjeta al inicio. Cancela cuando quieras.",
   "onboarding.plan.perMonth": "/mes",
+  "onboarding.plan.feeDisclosure":
+    "+ 3% de comisión por éxito en cargas provenientes de la plataforma, con un tope mensual de 2× el precio de tu plan. Las cargas que ingresas tú mismo son siempre gratuitas.",
   "onboarding.plan.driverSeats.unlimited": "Puestos de conductor ilimitados",
   "onboarding.plan.driverSeats.count": "{count} puesto(s) de conductor",
   "onboarding.plan.driverSeats.additional": " (+${price}/mes por adicional)",
@@ -5757,6 +5844,9 @@ const es: Dict = {
   "admin.billingStripe.downgrade": "Bajar de nivel",
   "admin.billingStripe.subscribe": "Suscribirse",
   "admin.billingStripe.changeInPortal": "Cambiar de plan en el portal de facturación",
+  "admin.billingStripe.feeDisclosure":
+    "+ 3% de comisión por éxito en cargas provenientes de la plataforma, con un tope mensual de 2× el precio de tu plan. Las cargas que ingresas tú mismo son siempre gratuitas.",
+  "admin.billingStripe.contactUs": "Contáctanos",
   "admin.billingStripe.statusTrial": "Prueba",
   "admin.billingStripe.statusActive": "Activa",
   "admin.billingStripe.statusPastDue": "Vencida",
@@ -5931,6 +6021,7 @@ const fr: Dict = {
   "common.error": "Erreur",
   "common.success": "Terminé",
   "landing.nav.features": "Fonctionnalités",
+  "landing.nav.pricing": "Tarifs",
   "landing.nav.contact": "Contact",
   "landing.nav.toHome": "Retour en haut",
   "landing.hero.badge": "En production avec de vrais transporteurs",
@@ -5960,7 +6051,31 @@ const fr: Dict = {
   "landing.trust.montgomery.hint": "rapport de vérification du transporteur pour les courtiers",
   "landing.trust.small.label": "Conçu pour les petites flottes",
   "landing.trust.small.value": "1–50 camions",
-  "landing.trust.small.hint": "forfaits fixes ; sièges conducteur en plus dès 8 $/mois sur Fleet",
+  "landing.trust.small.hint": "forfaits transparents + 3% de commission de succès ; sièges conducteur en plus dès 8 $/mois sur Fleet",
+
+  // Landing — tarifs
+  "landing.pricing.heading": "Une tarification simple et transparente",
+  "landing.pricing.subtitle":
+    "Choisissez un forfait selon la taille de votre flotte. Tous incluent 14 jours d'essai gratuit, sans carte pour commencer.",
+  "landing.pricing.perMonth": "/mois",
+  "landing.pricing.tier.oo_basic.name": "Owner-Operator Basic",
+  "landing.pricing.tier.oo_basic.value": "Un camion, un MC. Chargements entrants, notation des courtiers, GPS.",
+  "landing.pricing.tier.oo_premium.name": "Owner-Operator Premium",
+  "landing.pricing.tier.oo_premium.value": "Ajoute le profil de sécurité transporteur et la vérification premium des courtiers.",
+  "landing.pricing.tier.fleet_starter.name": "Fleet Starter",
+  "landing.pricing.tier.fleet_starter.value": "2–5 camions. 5 sièges conducteur, 1 répartiteur, 2 MC.",
+  "landing.pricing.tier.fleet_growth.name": "Fleet Growth",
+  "landing.pricing.tier.fleet_growth.value": "6–20 camions. 20 sièges conducteur, 2 répartiteurs, 5 MC.",
+  "landing.pricing.tier.fleet_scale.name": "Fleet Scale",
+  "landing.pricing.tier.fleet_scale.value": "21–50 camions. 50 sièges conducteur, traitement prioritaire.",
+  "landing.pricing.tier.enterprise.name": "Enterprise",
+  "landing.pricing.tier.enterprise.value": "50+ camions. Sièges et MC illimités, tarif négocié.",
+  "landing.pricing.enterpriseFrom": "à partir de",
+  "landing.pricing.fee":
+    "+ 3% de commission de succès sur les chargements issus de la plateforme, plafonnée à 2× le prix de votre forfait par mois. Les chargements que vous saisissez vous-même sont toujours gratuits.",
+  "landing.pricing.comparison": "Les services de répartition humaine facturent 5 à 10% du brut.",
+  "landing.pricing.startCta": "Démarrer l'essai gratuit",
+  "landing.pricing.enterpriseCta": "Nous contacter",
   "landing.subscribe.title": "Abonnez-vous à la newsletter",
   "landing.subscribe.subtitle": "Nouveautés produit et signaux du secteur. Sans spam.",
   "landing.subscribe.placeholder": "vous@entreprise.com",
@@ -6603,6 +6718,8 @@ const fr: Dict = {
   "onboarding.plan.subtitle":
     "Les {days} premiers jours sont gratuits sur tous les forfaits. Pas de carte au départ. Annulez à tout moment.",
   "onboarding.plan.perMonth": "/mois",
+  "onboarding.plan.feeDisclosure":
+    "+ 3% de commission de succès sur les chargements issus de la plateforme, plafonnée à 2× le prix de votre forfait par mois. Les chargements que vous saisissez vous-même sont toujours gratuits.",
   "onboarding.plan.driverSeats.unlimited": "Sièges chauffeur illimités",
   "onboarding.plan.driverSeats.count": "{count} siège(s) chauffeur",
   "onboarding.plan.driverSeats.additional": " (+{price} $/mois par suppl.)",
@@ -7671,6 +7788,9 @@ const fr: Dict = {
   "admin.billingStripe.downgrade": "Rétrograder",
   "admin.billingStripe.subscribe": "S'abonner",
   "admin.billingStripe.changeInPortal": "Changer de plan dans le portail de facturation",
+  "admin.billingStripe.feeDisclosure":
+    "+ 3% de commission de succès sur les chargements issus de la plateforme, plafonnée à 2× le prix de votre forfait par mois. Les chargements que vous saisissez vous-même sont toujours gratuits.",
+  "admin.billingStripe.contactUs": "Nous contacter",
   "admin.billingStripe.statusTrial": "Essai",
   "admin.billingStripe.statusActive": "Active",
   "admin.billingStripe.statusPastDue": "En retard",

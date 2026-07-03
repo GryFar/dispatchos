@@ -1,16 +1,26 @@
 // Billing week-boundary integration test (temp DB).
 // Run: npx tsx server/lib/billing-week-boundary.test.ts
 //
-// Regression for a real money bug: booked_at is a full ISO timestamp but the
-// invoice week bounds are date-only strings. A naive `booked_at <= weekEnd`
-// dropped every load booked ON the last day of the week (because
+// Regression for a real money bug: the billing trigger timestamp
+// (payload.deliveredAt, post-2026-07 restructure) is a full ISO timestamp but
+// the invoice week bounds are date-only strings. A naive `deliveredAt <=
+// weekEnd` drops every load delivered ON the last day of the week (because
 // "2026-06-14T15:30Z" > "2026-06-14" lexically), silently undercharging.
-// The week is inclusive on both ends; this pins that.
+// The week is inclusive on both ends; this pins that against the new
+// listDeliveredSourcedLoadsForClientWeek selector. All loads are platform-
+// sourced (sourceId set) so provenance doesn't confound the boundary check.
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-process.env.DISPATCHOS_DB_PATH = join(tmpdir(), "dispatchos-billing-week-test.db");
+// Unique per-run DB path: this test now writes platform-sourced loads, which
+// carry a UNIQUE(source_id, source_external_id) index. A fixed path let a prior
+// run's rows collide on re-insert (SQLITE_CONSTRAINT_UNIQUE); the timestamp
+// isolates each run, matching the sibling billing tests.
+process.env.DISPATCHOS_DB_PATH = join(
+  tmpdir(),
+  `dispatchos-billing-week-test-${Date.now()}-${process.pid}.db`,
+);
 const { storage } = await import("../storage");
 const { computeInvoiceForWeek } = await import("./billing");
 
@@ -31,11 +41,22 @@ const clientId = `bill-client-${rnd()}`;
 const WEEK_START = "2026-06-08";
 const WEEK_END = "2026-06-14";
 
-function mkLoad(bookedAt: string, rate: number) {
+// A paying client whose 2× cap ($258 for fleet_scale) comfortably exceeds the
+// $90 fee under test, so the monthly cap never confounds the boundary assertions.
+storage.upsertClient({
+  id: clientId, name: "Boundary Co", planTier: "fleet_scale", billingStatus: "active",
+} as Parameters<typeof storage.upsertClient>[0]);
+
+let seq = 0;
+function mkLoad(deliveredAt: string, rate: number) {
   storage.upsertLoad({
     id: `load-bw-${rnd()}`,
     clientId,
-    bookedAt,
+    bookedAt: "2026-06-01T12:00:00.000Z", // booked earlier; billing keys on delivery
+    deliveredAt,
+    status: "completed",
+    sourceId: "src-test",
+    sourceExternalId: `ext-bw-${seq++}`,
     rate,
     brokerMc: "MC-1",
     brokerName: "B",
