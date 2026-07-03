@@ -104,4 +104,68 @@ test("default cap is generous (does not bite normal usage)", () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// getAiQuotaStatus is the PRE-CHECK callers (ai-recommend / advisor / broker
+// drafts) use to decide whether to call the paid model at all. Before the fix
+// it ignored the platform gates, so a killed/capped platform still let those
+// callers fire the model (the guard only bit inside consumeAiQuota, AFTER the
+// spend). These pin that getAiQuotaStatus now reports NO capacity when the
+// platform is blocked — the shape every caller reads as "quota exhausted".
+// ---------------------------------------------------------------------------
+test("getAiQuotaStatus: kill-switch reports no capacity (remaining=0 AND credits=0)", () => {
+  const u = mkUser();
+  storage.addAiCredits(u, 5); // has both free quota AND credits normally
+  const before = storage.getAiQuotaStatus(u);
+  assert.ok(before.remainingToday > 0 && before.credits > 0, `baseline should show capacity: ${JSON.stringify(before)}`);
+  process.env.DISPATCHOS_AI_KILL = "1";
+  try {
+    const s = storage.getAiQuotaStatus(u);
+    assert.equal(s.remainingToday, 0, "kill: remainingToday must be 0");
+    assert.equal(s.credits, 0, "kill: credits must be 0 (so callers gate the same as quota-exhausted)");
+    // Callers gate on `remainingToday <= 0 && credits <= 0` → blocked.
+    assert.ok(s.remainingToday <= 0 && s.credits <= 0, "kill: caller-gate predicate must be true");
+  } finally {
+    delete process.env.DISPATCHOS_AI_KILL;
+  }
+  // Lever released → capacity is reported again (credits intact, nothing spent).
+  const after = storage.getAiQuotaStatus(u);
+  assert.ok(after.remainingToday > 0 && after.credits === 5, `post-kill status restored: ${JSON.stringify(after)}`);
+});
+
+test("getAiQuotaStatus: global cap reached reports no capacity", () => {
+  resetGlobalCounter();
+  process.env.DISPATCHOS_AI_GLOBAL_DAILY_CAP = "2";
+  try {
+    const u = mkUser();
+    storage.addAiCredits(u, 5);
+    // Under the ceiling: status shows capacity.
+    const under = storage.getAiQuotaStatus(u);
+    assert.ok(under.remainingToday > 0 && under.credits > 0, `under cap should show capacity: ${JSON.stringify(under)}`);
+    // Burn the shared ceiling to its cap with two approved calls by OTHER users.
+    assert.equal(storage.consumeAiQuota(mkUser()).ok, true, "fill 1");
+    assert.equal(storage.consumeAiQuota(mkUser()).ok, true, "fill 2");
+    // Ceiling reached → pre-check reports blocked even though THIS user still has
+    // free quota + 5 credits.
+    const capped = storage.getAiQuotaStatus(u);
+    assert.equal(capped.remainingToday, 0, "cap: remainingToday must be 0");
+    assert.equal(capped.credits, 0, "cap: credits must be 0");
+  } finally {
+    delete process.env.DISPATCHOS_AI_GLOBAL_DAILY_CAP;
+  }
+});
+
+test("getAiQuotaStatus: kill unset + cap not reached → unchanged (control)", () => {
+  resetGlobalCounter();
+  delete process.env.DISPATCHOS_AI_KILL;
+  delete process.env.DISPATCHOS_AI_GLOBAL_DAILY_CAP;
+  const u = mkUser();
+  storage.addAiCredits(u, 3);
+  const s = storage.getAiQuotaStatus(u);
+  // Byte-identical to pre-fix behaviour: full free tier + the true credit total.
+  assert.equal(s.usedToday, 0, "control: usedToday");
+  assert.equal(s.dailyFree, 50, "control: dailyFree");
+  assert.equal(s.remainingToday, 50, "control: full free tier");
+  assert.equal(s.credits, 3, "control: true credit total");
+});
+
 console.log("ai-global-cap: all tests passed");
