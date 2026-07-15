@@ -1,0 +1,69 @@
+# Fly.io app config — DispatchOS PRODUCTION deployment
+#
+# This is the paying-customer environment, kept SEPARATE from the demo app so
+# demo traffic/test carriers never touch real billing data (and vice versa).
+# `develop` deploys to dispatchos-demo (fly.toml); `main` deploys HERE
+# (dispatchos-prod, this file) via .github/workflows/deploy.yml.
+#
+# Region: iad (US East, Ashburn VA) — same as demo.
+#
+# Persistent volume: /data holds SQLite DB + uploads + drive folder. This is a
+# DISTINCT volume from demo's (dispatchos_prod_data, not dispatchos_data) so the
+# two apps never share a database. Created once with:
+#   flyctl volumes create dispatchos_prod_data --app dispatchos-prod --region iad --size 3
+#
+# Public URL: https://dispatchos-prod.fly.dev
+# Custom domain: dispatchos.co  (point the CNAME here — see
+#   docs/runbooks/prod-demo-split.md for the full one-time cutover).
+
+app = "dispatchos-prod"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  DISPATCHOS_DEPLOYMENT_MODE = "vds"
+  DISPATCHOS_TRUST_PROXY = "2"
+  DISPATCHOS_RATE_LIMIT_PER_MINUTE = "240"
+
+# Persistent SQLite + uploads on a Fly volume mounted at /data.
+# NOTE: source is dispatchos_prod_data — a DIFFERENT volume from the demo app,
+# so production has its own isolated database.
+[[mounts]]
+  source = "dispatchos_prod_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"      # extra machines may still scale down
+  auto_start_machines = true       # auto-wake on first request
+  # Keep 1 machine always on — prod must never cold-start away inbound
+  # webhooks (Stripe) or cron calls (weekly billing).
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 200
+    soft_limit = 100
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+# Restart policy — restart on crash, exponential backoff
+[deploy]
+  strategy = "rolling"

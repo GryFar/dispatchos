@@ -49,17 +49,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set target Fly app
+      - name: Set target Fly app + config
         id: app
         run: |
           if [ -n "${{ github.event.inputs.app }}" ]; then
+            # Manual override: deploy the named app with the default (demo) config.
             echo "name=${{ github.event.inputs.app }}" >> "$GITHUB_OUTPUT"
+            echo "config=fly.toml" >> "$GITHUB_OUTPUT"
+            echo "health=https://demo.dispatchos.co/api/health" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.ref_name }}" = "main" ]; then
-            # Reserved for future prod — until we create dispatchos-prod, fall
-            # back to demo so manual main pushes still work.
-            echo "name=dispatchos-demo" >> "$GITHUB_OUTPUT"
+            # Production: main → dispatchos-prod (a SEPARATE app with its own
+            # volume/DB, so demo traffic never touches real billing data).
+            # PREREQ: the dispatchos-prod app + its dispatchos_prod_data volume +
+            # its secrets must exist BEFORE the first main deploy — otherwise this
+            # step fails red. One-time cutover: docs/runbooks/prod-demo-split.md.
+            echo "name=dispatchos-prod" >> "$GITHUB_OUTPUT"
+            echo "config=fly.prod.toml" >> "$GITHUB_OUTPUT"
+            echo "health=https://dispatchos.co/api/health" >> "$GITHUB_OUTPUT"
           else
+            # Demo/staging: develop (and every other branch) → dispatchos-demo.
             echo "name=dispatchos-demo" >> "$GITHUB_OUTPUT"
+            echo "config=fly.toml" >> "$GITHUB_OUTPUT"
+            echo "health=https://demo.dispatchos.co/api/health" >> "$GITHUB_OUTPUT"
           fi
 
       # Audit V3-17 — pin to a release tag instead of @master so a compromise
@@ -70,7 +81,7 @@ jobs:
       - name: Deploy to ${{ steps.app.outputs.name }}
         # --build-arg DISPATCHOS_RELEASE tags Sentry events with the deployed
         # commit (server/instrument.ts reads it via the Dockerfile ARG).
-        run: flyctl deploy --remote-only --app "${{ steps.app.outputs.name }}" --build-arg DISPATCHOS_RELEASE="${{ github.sha }}"
+        run: flyctl deploy --remote-only --config "${{ steps.app.outputs.config }}" --app "${{ steps.app.outputs.name }}" --build-arg DISPATCHOS_RELEASE="${{ github.sha }}"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -79,7 +90,7 @@ jobs:
           # Wait up to 90s for the new release to be reachable
           for i in 1 2 3 4 5 6 7 8 9; do
             sleep 10
-            CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" https://demo.dispatchos.co/api/health || echo "000")
+            CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" "${{ steps.app.outputs.health }}" || echo "000")
             if [ "$CODE" = "200" ]; then
               echo "Health OK after attempt $i"
               cat /tmp/health.json
