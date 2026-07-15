@@ -41,6 +41,13 @@ eq("Washington DC (inside MD bbox) -> DC", lookupState(38.90, -77.04), "DC");
 // A Maryland point well outside DC's box still resolves to MD.
 eq("Baltimore MD -> MD", lookupState(39.29, -76.61), "MD");
 
+// Canada (Phase 1): IFTA covers US + Canada. Interior province points (clear of
+// the US border, which is intentionally approximate — see the module header)
+// resolve to the province.
+eq("Winnipeg MB", lookupState(49.90, -97.14), "MB");
+eq("Edmonton AB", lookupState(53.55, -113.49), "AB");
+eq("Halifax NS", lookupState(44.65, -63.58), "NS");
+
 // ---------------------------------------------------------------------------
 // renderIftaCsv — structure + numbers + unattributed footer
 // ---------------------------------------------------------------------------
