@@ -34,6 +34,12 @@ const STATE_CENTROID: Readonly<Record<string, LatLng>> = Object.freeze({
   TX: { lat: 31.5, lng: -99.3 }, UT: { lat: 39.3, lng: -111.7 }, VT: { lat: 44.1, lng: -72.7 },
   VA: { lat: 37.5, lng: -78.9 }, WA: { lat: 47.4, lng: -120.5 }, WV: { lat: 38.6, lng: -80.6 },
   WI: { lat: 44.6, lng: -89.9 }, WY: { lat: 43.0, lng: -107.5 }, DC: { lat: 38.9, lng: -77.0 },
+  // Canada — province/territory centroids (freight-weighted toward the populated south).
+  AB: { lat: 52.5, lng: -114.5 }, BC: { lat: 51.0, lng: -122.5 }, MB: { lat: 51.0, lng: -98.7 },
+  NB: { lat: 46.5, lng: -66.5 }, NL: { lat: 48.5, lng: -56.0 }, NS: { lat: 45.0, lng: -63.0 },
+  NT: { lat: 64.5, lng: -119.0 }, NU: { lat: 66.0, lng: -85.0 }, ON: { lat: 44.5, lng: -79.5 },
+  PE: { lat: 46.4, lng: -63.2 }, QC: { lat: 46.5, lng: -72.5 }, SK: { lat: 52.0, lng: -106.0 },
+  YT: { lat: 63.0, lng: -135.0 },
 });
 
 // Major US freight metros (key = "city|ST", lowercased city) → lat,lng.
@@ -63,6 +69,17 @@ const CITY_COORDS: Readonly<Record<string, LatLng>> = Object.freeze({
   "philadelphia|PA": { lat: 39.95, lng: -75.17 }, "pittsburgh|PA": { lat: 40.44, lng: -79.99 },
   "harrisburg|PA": { lat: 40.27, lng: -76.88 }, "boston|MA": { lat: 42.36, lng: -71.06 },
   "louisville|KY": { lat: 38.25, lng: -85.76 }, "birmingham|AL": { lat: 33.52, lng: -86.80 },
+  // Canada — major freight / auto metros (Windsor = a key car-hauler corridor).
+  "toronto|ON": { lat: 43.65, lng: -79.38 }, "mississauga|ON": { lat: 43.59, lng: -79.64 },
+  "brampton|ON": { lat: 43.68, lng: -79.76 }, "hamilton|ON": { lat: 43.26, lng: -79.87 },
+  "windsor|ON": { lat: 42.31, lng: -83.04 }, "ottawa|ON": { lat: 45.42, lng: -75.70 },
+  "london|ON": { lat: 42.98, lng: -81.25 }, "montreal|QC": { lat: 45.50, lng: -73.57 },
+  "quebec city|QC": { lat: 46.81, lng: -71.21 }, "quebec|QC": { lat: 46.81, lng: -71.21 },
+  "vancouver|BC": { lat: 49.28, lng: -123.12 }, "surrey|BC": { lat: 49.19, lng: -122.85 },
+  "calgary|AB": { lat: 51.05, lng: -114.07 }, "edmonton|AB": { lat: 53.55, lng: -113.49 },
+  "winnipeg|MB": { lat: 49.90, lng: -97.14 }, "saskatoon|SK": { lat: 52.13, lng: -106.67 },
+  "regina|SK": { lat: 50.45, lng: -104.62 }, "halifax|NS": { lat: 44.65, lng: -63.58 },
+  "moncton|NB": { lat: 46.09, lng: -64.77 },
 });
 
 // Full state name (lowercased) → USPS code. Email-parsed lanes sometimes carry
@@ -80,6 +97,12 @@ const STATE_NAME_TO_CODE: Readonly<Record<string, string>> = Object.freeze({
   "south dakota": "SD", tennessee: "TN", texas: "TX", utah: "UT", vermont: "VT",
   virginia: "VA", washington: "WA", "west virginia": "WV", wisconsin: "WI", wyoming: "WY",
   "district of columbia": "DC",
+  // Canada — provinces + territories.
+  alberta: "AB", "british columbia": "BC", manitoba: "MB", "new brunswick": "NB",
+  "newfoundland and labrador": "NL", newfoundland: "NL", "nova scotia": "NS",
+  "northwest territories": "NT", nunavut: "NU", ontario: "ON",
+  "prince edward island": "PE", quebec: "QC", "québec": "QC", saskatchewan: "SK",
+  yukon: "YT",
 });
 
 // Resolve a raw state token to its USPS code. Accepts a 2-letter code as-is, or

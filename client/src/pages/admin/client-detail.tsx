@@ -31,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { JURISDICTION_CODES } from "@shared/jurisdictions";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
@@ -61,14 +62,6 @@ const MPG_DEFAULTS: Record<Equipment, number> = {
   hotshot_flatbed: 12.0,
   sprinter_van: 14.0,
 };
-
-const US_STATES = [
-  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
-  "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
-  "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
-  "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
-  "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-];
 
 type TabKey = "profile" | "location" | "stats" | "fuel" | "ifta" | "safety" | "clearinghouse";
 
@@ -729,7 +722,7 @@ function ProfileTab({ client }: { client: Client }) {
               {t("admin.clientDetail.avoidStates", { count: form.avoidStates.length })}
             </Label>
             <div className="grid grid-cols-5 gap-1 sm:grid-cols-10">
-              {US_STATES.map((st) => (
+              {JURISDICTION_CODES.map((st) => (
                 <button
                   key={st}
                   type="button"

@@ -26,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { JurisdictionOptions } from "@/components/JurisdictionOptions";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Command,
@@ -50,13 +51,6 @@ import type { AdapterMeta } from "./load-sources";
  * Credentials sent as plaintext; backend encrypts (AES-256-GCM). 503 if the
  * keyring env (DISPATCHOS_KEYRING_PRIMARY) isn't set.
  */
-
-const US_STATES = [
-  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
-  "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
-  "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT",
-  "VA","WA","WV","WI","WY",
-];
 
 // What config + credential fields each adapter needs. Mirrors the backend
 // adapter contract (server/lib/adapters/*). Stub adapters are listed so the
@@ -418,11 +412,7 @@ export default function LoadSourceNewPage() {
                           <SelectValue placeholder={t("admin.loadSourceNew.statePlaceholder")} />
                         </SelectTrigger>
                         <SelectContent className="max-h-64">
-                          {US_STATES.map((st) => (
-                            <SelectItem key={st} value={st}>
-                              {st}
-                            </SelectItem>
-                          ))}
+                          <JurisdictionOptions />
                         </SelectContent>
                       </Select>
                     ) : (
