@@ -40,6 +40,7 @@ interface CockpitCarrier {
   id: string;
   name: string;
   mc: string;
+  country: "US" | "CA" | null;
   equipment: string;
   status: string | null;          // empty | loaded | ... from currentLocation
   locationCity: string | null;
@@ -137,6 +138,7 @@ export function registerCockpitRoutes(app: Express): void {
           id: summary.id,
           name: summary.name,
           mc: client?.mc ?? "",
+          country: client?.country ?? null,
           equipment: client?.equipment ?? "",
           status: loc?.status ?? null,
           locationCity: loc?.city ?? null,

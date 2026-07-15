@@ -649,7 +649,7 @@ function CompanyStep({
         {/* Canada support: country toggle (US default). Drives MC↔NSC labeling
             below and is sent in the onboarding data → client.country. */}
         <div className="space-y-1.5">
-          <Label className="text-xs text-[#9aa3ba]">Country</Label>
+          <Label className="text-xs text-[#9aa3ba]">{t("onboarding.company.country.label")}</Label>
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
@@ -660,7 +660,7 @@ function CompanyStep({
                   : "border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-[#9aa3ba]"
               }`}
             >
-              🇺🇸 United States
+              🇺🇸 {t("onboarding.company.country.us")}
             </button>
             <button
               type="button"
@@ -671,7 +671,7 @@ function CompanyStep({
                   : "border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-[#9aa3ba]"
               }`}
             >
-              🇨🇦 Canada
+              🇨🇦 {t("onboarding.company.country.ca")}
             </button>
           </div>
         </div>
@@ -693,7 +693,7 @@ function CompanyStep({
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label className="text-xs text-[#9aa3ba]">
-            {country === "CA" ? "NSC / Carrier # *" : t("onboarding.company.mc.label")}
+            {country === "CA" ? t("onboarding.company.nsc.label") : t("onboarding.company.mc.label")}
           </Label>
             <Input
               value={mc}
@@ -710,7 +710,7 @@ function CompanyStep({
               ) : (
                 <span>
                   {country === "CA"
-                    ? "Canadian carrier — enter your NSC #. The US SAFER lookup won't find it; that's expected."
+                    ? t("onboarding.company.nsc.hint")
                     : t("onboarding.company.mc.hint")}
                 </span>
               )}
