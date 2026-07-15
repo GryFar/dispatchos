@@ -73,6 +73,20 @@ export function formatMc(mc: string | null | undefined): string {
   return `MC-${digits}`;
 }
 
+/** Carrier identity for display: "MC-123456" (US) or "NSC-123456" (Canada).
+ *  Strips to digits and re-prefixes by country, so it renders correctly no
+ *  matter which prefix is stored. Use for a CARRIER's own id; broker MCs are
+ *  always US and keep formatMc. */
+export function formatCarrierId(
+  id: string | null | undefined,
+  country?: "US" | "CA" | null,
+): string {
+  if (!id) return "—";
+  const digits = id.replace(/\D/g, "");
+  if (!digits) return id;
+  return `${country === "CA" ? "NSC" : "MC"}-${digits}`;
+}
+
 /** "1,234 mi" */
 export function formatMiles(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—";

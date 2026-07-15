@@ -56,6 +56,15 @@ export const clientSchema = z.object({
   mpg: z.number(),
   fuelPrice: z.number(),
   fixedCostPerMile: z.number(),
+  // Localization (Canada support). Additive/nullish so every existing carrier —
+  // which has no `country` key — reads as the US default. No migration: clients
+  // live in a JSON payload column, so an absent key is simply undefined.
+  // `.nullish()` (not `.optional()`) per the json_set('null') guardrail: a field
+  // that may be null in storage must accept null, not only undefined, or a legacy
+  // row would fail validation on read. Consumers MUST default: `client.country ?? "US"`.
+  // Drives: NSC-vs-MC labeling at onboarding, and hiding US-only FMCSA panels.
+  // (currency/units intentionally deferred — display stays USD/imperial for now.)
+  country: z.enum(["US", "CA"]).nullish(),
   preferredLanes: z.array(z.string()),
   avoidStates: z.array(z.string()),
   currentLocation: driverLocationSchema,

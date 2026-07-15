@@ -4462,6 +4462,7 @@ export const storage = {
       persona: "owner_operator" | "fleet" | "enterprise";
       companyName?: string;
       planTier?: string;
+      country?: "US" | "CA";
     },
   ): Client | { skipped: "already_linked" | "user_not_found" | "no_mc" } {
     const user = this.getUserById(userId);
@@ -4503,6 +4504,9 @@ export const storage = {
           availableAt: nowIso,
         },
         persona: input.persona,
+        // Canada support: carrier country (US default). Absent input = US, so every
+        // existing US onboarding path is byte-for-byte unchanged.
+        country: input.country ?? "US",
         ownerUserId: userId, // the onboarding user IS the account owner
         planTier,
         billingStatus: "trial",
