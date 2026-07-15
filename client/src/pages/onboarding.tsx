@@ -95,6 +95,9 @@ export default function OnboardingPage() {
   const [persona, setPersona] = useState<Persona | null>(null);
   const [companyName, setCompanyName] = useState("");
   const [mc, setMc] = useState("");
+  // Canada support: carrier country (default US). Flows into the onboarding data
+  // bag → provisionCarrier → client.country, and flips MC↔NSC labeling below.
+  const [country, setCountry] = useState<"US" | "CA">("US");
   const [dot, setDot] = useState("");
   const [fleetSize, setFleetSize] = useState<string>("");
   const [planTier, setPlanTier] = useState<string>("");
@@ -145,6 +148,7 @@ export default function OnboardingPage() {
     if (typeof d.dot === "string") setDot(d.dot);
     if (typeof d.fleetSize === "string") setFleetSize(d.fleetSize);
     if (typeof d.planTier === "string") setPlanTier(d.planTier);
+    if (d.country === "CA" || d.country === "US") setCountry(d.country as "US" | "CA");
   }, [progressQ.data, user, setLocation]);
 
   // Pricing catalogue — public endpoint, no auth needed.
@@ -171,6 +175,7 @@ export default function OnboardingPage() {
     if (dot) dataPatch.dot = dot;
     if (fleetSize) dataPatch.fleetSize = fleetSize;
     if (planTier) dataPatch.planTier = planTier;
+    dataPatch.country = country;
 
     const next = step + 1;
     const isFinal = next === STEP_KEYS.length - 1;
@@ -320,6 +325,8 @@ export default function OnboardingPage() {
                 setCompanyName={setCompanyName}
                 mc={mc}
                 setMc={setMc}
+                country={country}
+                setCountry={setCountry}
                 dot={dot}
                 setDot={setDot}
                 fleetSize={fleetSize}
@@ -589,6 +596,8 @@ function CompanyStep({
   setCompanyName,
   mc,
   setMc,
+  country,
+  setCountry,
   dot,
   setDot,
   fleetSize,
@@ -601,6 +610,8 @@ function CompanyStep({
   setCompanyName: (s: string) => void;
   mc: string;
   setMc: (s: string) => void;
+  country: "US" | "CA";
+  setCountry: (c: "US" | "CA") => void;
   dot: string;
   setDot: (s: string) => void;
   fleetSize: string;
@@ -635,6 +646,35 @@ function CompanyStep({
       <p className="text-[#9aa3ba]">{t("onboarding.company.subtitle")}</p>
 
       <div className="space-y-4 rounded-xl border border-[rgba(255,255,255,0.08)] bg-[#161c2e]/40 p-5">
+        {/* Canada support: country toggle (US default). Drives MC↔NSC labeling
+            below and is sent in the onboarding data → client.country. */}
+        <div className="space-y-1.5">
+          <Label className="text-xs text-[#9aa3ba]">Country</Label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setCountry("US")}
+              className={`h-10 rounded-md border text-sm ${
+                country === "US"
+                  ? "border-[#4f8cff] bg-[#4f8cff]/15 text-white"
+                  : "border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-[#9aa3ba]"
+              }`}
+            >
+              🇺🇸 United States
+            </button>
+            <button
+              type="button"
+              onClick={() => setCountry("CA")}
+              className={`h-10 rounded-md border text-sm ${
+                country === "CA"
+                  ? "border-[#4f8cff] bg-[#4f8cff]/15 text-white"
+                  : "border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-[#9aa3ba]"
+              }`}
+            >
+              🇨🇦 Canada
+            </button>
+          </div>
+        </div>
         <div className="space-y-1.5">
           <Label className="text-xs text-[#9aa3ba]">{t("onboarding.company.name.label")}</Label>
           <Input
@@ -652,11 +692,13 @@ function CompanyStep({
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label className="text-xs text-[#9aa3ba]">{t("onboarding.company.mc.label")}</Label>
+            <Label className="text-xs text-[#9aa3ba]">
+            {country === "CA" ? "NSC / Carrier # *" : t("onboarding.company.mc.label")}
+          </Label>
             <Input
               value={mc}
               onChange={(e) => setMc(e.target.value.toUpperCase())}
-              placeholder="MC-123456"
+              placeholder={country === "CA" ? "NSC-1234567" : "MC-123456"}
               className="border-[rgba(255,255,255,0.14)] bg-[#0a0e1a] text-white placeholder:text-[#6b7390]"
             />
             <p className="flex items-center gap-1.5 text-[10px] text-[#6b7390]">
@@ -666,7 +708,11 @@ function CompanyStep({
                   <span>{t("onboarding.company.mc.checking")}</span>
                 </>
               ) : (
-                <span>{t("onboarding.company.mc.hint")}</span>
+                <span>
+                  {country === "CA"
+                    ? "Canadian carrier — enter your NSC #. The US SAFER lookup won't find it; that's expected."
+                    : t("onboarding.company.mc.hint")}
+                </span>
               )}
             </p>
           </div>
@@ -682,8 +728,12 @@ function CompanyStep({
           </div>
         </div>
 
-        {/* SAFER feedback panels — stacked, hardest signal first. */}
-        <McLookupFeedback result={mcLookup} loading={mcLoading} mc={mc} />
+        {/* SAFER feedback panels — stacked, hardest signal first. US-only: a
+            Canadian NSC isn't in FMCSA, so skip the SAFER panel for CA and rely
+            on the field hint instead. */}
+        {country !== "CA" && (
+          <McLookupFeedback result={mcLookup} loading={mcLoading} mc={mc} />
+        )}
 
         {isFleet && (
           <div className="space-y-1.5">
