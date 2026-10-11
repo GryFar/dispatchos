@@ -22,6 +22,11 @@ on:
     - cron: "0 12 * * 1"
   workflow_dispatch:
 
+# Least privilege: this workflow only needs to read the repo. Nothing here uses
+# GITHUB_TOKEN to write (no pushes, issues, PR comments, packages or releases).
+permissions:
+  contents: read
+
 concurrency:
   group: billing-cron
   cancel-in-progress: false

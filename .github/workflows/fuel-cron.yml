@@ -12,6 +12,11 @@ on:
     - cron: "0 9 * * 3"      # Wed 09:00 UTC
   workflow_dispatch:           # manual trigger for testing
 
+# Least privilege: this workflow only needs to read the repo. Nothing here uses
+# GITHUB_TOKEN to write (no pushes, issues, PR comments, packages or releases).
+permissions:
+  contents: read
+
 concurrency:
   group: fuel-refresh
   cancel-in-progress: false
