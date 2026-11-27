@@ -140,7 +140,7 @@ export function registerCronRoutes(app: Express): void {
   //
   // For each active load_sources row whose last_polled_at is older than its
   // poll_interval_min: authenticate → fetchLoads → normalize → upsert.
-  // New rows fire a TG alert (handled by Vlad's existing notify path or
+  // New rows fire a TG alert (handled by the existing notify path or
   // future smart-matching push). Failures auto-pause after 3 in a row.
   // -------------------------------------------------------------------------
   app.post("/api/cron/run-load-sources", async (req: Request, res: Response) => {
@@ -451,7 +451,7 @@ export function registerCronRoutes(app: Express): void {
   // For each point, scrape nearby diesel prices and persist as
   // source="gasbuddy" fuel_price_observations. GasBuddy is bot-protected, so
   // any point may yield 0 rows (blocked / JS-rendered); that's expected and
-  // non-fatal. Nikita wires the EIA fallback on top.
+  // non-fatal. The owner wires the EIA fallback on top.
   //
   // Auth: X-Cron-Secret. Response: { ok, points, totalObserved, perPoint[] }
   // -------------------------------------------------------------------------

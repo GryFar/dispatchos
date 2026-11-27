@@ -1,4 +1,4 @@
-// Admin CRUD for load_sources. Companion to /admin/load-sources UI Vlad is
+// Admin CRUD for load_sources. Companion to the /admin/load-sources UI being
 // building. All endpoints are role-gated by the caller (registerAdminLoadSourcesRoutes).
 //
 // We never return plaintext credentials. UI displays `hasCredentials: bool`;

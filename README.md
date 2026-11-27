@@ -1,10 +1,10 @@
 # DispatchOS
 
-Dispatcher service platform for hot shot and car hauler owner-operators. Florida LLC. Team in Florida + Odessa + Canada. Native Ukrainian, Russian, English.
+Dispatcher service platform for hot shot and car hauler owner-operators. US LLC. Distributed team. Native Ukrainian, Russian, English.
 
 ## Status
 
-**Phase 2 — Admin Portal** (in progress, owned by Vlad)
+**Phase 2 — Admin Portal** (in progress)
 
 See [`docs/architecture/migration-plan.md`](docs/architecture/migration-plan.md) for the 6-phase plan.
 
@@ -35,7 +35,7 @@ When `dispatcher` and `driver` portals are added (Phase 5), they live as routes 
 
 | Area | Owner |
 |---|---|
-| `client/`, `server/`, `shared/` | **Vlad** (Snapakdominator) |
+| `client/`, `server/`, `shared/` | Backend dev |
 | `client/src/pages/dispatch/*` (future) | Computer |
 | `client/src/pages/me/*` (future, driver) | Computer |
 | `apps/coming-soon/` | Computer (auto-deploys via CF Workers Builds) |
@@ -49,8 +49,8 @@ When `dispatcher` and `driver` portals are added (Phase 5), they live as routes 
 
 ## Communication
 
-- Telegram: `DispatchOSDev` chat
-- Computer-bot: `@DispatchOS_Computer_Bot` (tag `Перплексити`)
+- Team Telegram chat (private)
+- Computer agent (see CONTRIBUTING.md)
 - Issues: GitHub Issues with `area:*` and `phase:*` labels
 
 ## Live

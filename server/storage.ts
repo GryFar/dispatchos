@@ -128,6 +128,25 @@ function aiGlobalDailyCap(): number {
   const n = Number(process.env.DISPATCHOS_AI_GLOBAL_DAILY_CAP);
   return Number.isInteger(n) && n > 0 ? n : 10_000;
 }
+// Single source of truth for the two PLATFORM-wide gates (kill-switch + global
+// daily ceiling), so the PRE-CHECK in getAiQuotaStatus and the at-spend guard in
+// consumeAiQuota can never drift. Returns the reason a paid AI call must be
+// refused platform-wide RIGHT NOW, or null when the platform allows the call
+// (per-user quota is still checked separately by each caller).
+//   "kill" → DISPATCHOS_AI_KILL is set (emergency stop)
+//   "cap"  → today's approved-call count has reached DISPATCHOS_AI_GLOBAL_DAILY_CAP
+// Reads env + the shared counter at CALL time (no caching) so a Fly-secret flip
+// takes effect without a redeploy — a restart-free lever during a cost incident.
+function aiPlatformBlockReason(): "kill" | "cap" | null {
+  if (aiKillSwitchOn()) return "kill";
+  const day = new Date().toISOString().slice(0, 10);
+  const gUsed =
+    (sqlite.prepare("SELECT count FROM ai_usage_global WHERE day = ?").get(day) as
+      | { count: number }
+      | undefined)?.count ?? 0;
+  if (gUsed >= aiGlobalDailyCap()) return "cap";
+  return null;
+}
 sqlite.pragma("journal_mode = WAL");
 // better-sqlite3 defaults to a 0ms busy timeout, so a writer hitting a
 // momentarily-locked DB (e.g. the 5-min load-sources poll upserting while a user
@@ -395,8 +414,8 @@ sqlite.exec("CREATE INDEX IF NOT EXISTS loads_client_booked_idx ON loads(client_
 //                                     values across role changes (cheap, see §2
 //                                     of the Phase 4 handoff Q3 confirmation).
 //
-// Same PRAGMA pattern as ensureLoadBookingColumns: existing DBs (Vlad's
-// dev DB has an admin row already) get ALTERed without dropping data; fresh
+// Same PRAGMA pattern as ensureLoadBookingColumns: existing DBs (a
+// dev DB with an admin row already) get ALTERed without dropping data; fresh
 // DBs would already have the columns from CREATE TABLE — but since CREATE
 // TABLE above is locked to the Phase 1 shape, the ALTER path is the source
 // of truth and runs even on a freshly-created DB. CREATE INDEX must come
@@ -1662,7 +1681,7 @@ export interface PasswordResetTokenRow {
 }
 
 // Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
-// with how Vlad's admin layer expects to read these.
+// with how the admin layer expects to read these.
 function rowToLoadSource(row: any) {
   return {
     id: row.id as string,
@@ -1827,7 +1846,7 @@ export const storage = {
   // До этого софт-удалённый юзер мог вернуться в session-lookup, TG-bot или
   // login-flow — фактически «un-delete» через бэкдор. listUsers уже был ОК.
   //
-  // 2026-05-27 hotfix (Vlad smoke regression): admin inspection paths need
+  // 2026-05-27 hotfix (smoke regression): admin inspection paths need
   // to see soft-deleted users (audit trail, post-delete UI confirmation).
   // Use `getUserByIdIncludingDeleted` for those. Default `getUserById`
   // STAYS strict — anything auth-adjacent must keep going through it.
@@ -2239,8 +2258,8 @@ export const storage = {
     const timestamp = now();
     const email = input.email.toLowerCase();
     // Phase 4 P0: driver_status column has a DEFAULT, but we set it explicitly
-    // on creation so the value is predictable in tests and audits (Vlad's
-    // request in the Q3 follow-up). For non-driver roles the value is dead
+    // on creation so the value is predictable in tests and audits (per the
+    // backend dev's request in the Q3 follow-up). For non-driver roles the value is dead
     // (toUserPublic skips it).
     sqlite
       .prepare(
@@ -2699,7 +2718,7 @@ export const storage = {
   /** fix/totp-onboarding-verify — stamp totp_confirmed_at for a user who
    *  just entered a valid 6-digit code for the first time.
    *
-   *  Single-use guard (hardening, Nikita's 🟡): the UPDATE is keyed on
+   *  Single-use guard (hardening, owner's 🟡): the UPDATE is keyed on
    *  totp_confirmed_at IS NULL, so only the FIRST confirmation lands. A replayed
    *  pending-confirmation token (which is otherwise a stateless 10-min HMAC)
    *  therefore can't re-run this — firstConfirm is false on any repeat, even
@@ -4443,6 +4462,7 @@ export const storage = {
       persona: "owner_operator" | "fleet" | "enterprise";
       companyName?: string;
       planTier?: string;
+      country?: "US" | "CA";
     },
   ): Client | { skipped: "already_linked" | "user_not_found" | "no_mc" } {
     const user = this.getUserById(userId);
@@ -4484,6 +4504,9 @@ export const storage = {
           availableAt: nowIso,
         },
         persona: input.persona,
+        // Canada support: carrier country (US default). Absent input = US, so every
+        // existing US onboarding path is byte-for-byte unchanged.
+        country: input.country ?? "US",
         ownerUserId: userId, // the onboarding user IS the account owner
         planTier,
         billingStatus: "trial",
@@ -7708,15 +7731,10 @@ export const storage = {
     const tx = sqlite.transaction((): { ok: boolean; source: "free" | "credit" | null; remainingToday: number; credits: number } => {
       // Platform-wide guards BEFORE any per-user spend. Kill-switch = emergency
       // stop; daily cap bounds AGGREGATE approved calls across all users so
-      // self-minted accounts can't run up an unbounded Claude bill.
-      if (aiKillSwitchOn()) {
-        return { ok: false, source: null, remainingToday: 0, credits: this.getAiCredits(userId) };
-      }
-      const gUsed =
-        (sqlite.prepare("SELECT count FROM ai_usage_global WHERE day = ?").get(day) as
-          | { count: number }
-          | undefined)?.count ?? 0;
-      if (gUsed >= aiGlobalDailyCap()) {
+      // self-minted accounts can't run up an unbounded Claude bill. Both live in
+      // aiPlatformBlockReason() — the SAME source getAiQuotaStatus pre-checks, so
+      // the two gates cannot drift.
+      if (aiPlatformBlockReason() !== null) {
         return { ok: false, source: null, remainingToday: 0, credits: this.getAiCredits(userId) };
       }
       // Optimistically count this call against the global ceiling; the
@@ -7876,6 +7894,19 @@ export const storage = {
       .prepare("SELECT count FROM ai_usage WHERE user_id = ? AND day = ?")
       .get(userId, day) as { count: number } | undefined;
     const used = row?.count ?? 0;
+    // PLATFORM PRE-CHECK (centralizes the kill-switch + global-cap gate that
+    // otherwise lives only in consumeAiQuota, which runs AFTER the paid model
+    // call): callers use this status to decide whether to invoke Claude at all
+    // (ai-recommend / dispatch advisor / broker-reply drafts all gate on
+    // remainingToday<=0 && credits<=0). When the platform is killed or globally
+    // capped, report NO capacity — remainingToday:0 AND credits:0 — so every one
+    // of those callers takes its EXISTING blocked branch and never fires the
+    // model. Same shape as always (no new fields); usedToday/dailyFree stay
+    // truthful for the badge. With the kill unset and cap not reached this is
+    // byte-identical to the pre-existing behaviour.
+    if (aiPlatformBlockReason() !== null) {
+      return { usedToday: used, dailyFree, remainingToday: 0, credits: 0 };
+    }
     return {
       usedToday: used,
       dailyFree,

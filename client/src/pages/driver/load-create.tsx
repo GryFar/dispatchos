@@ -31,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { JurisdictionOptions } from "@/components/JurisdictionOptions";
 import { useT } from "@/lib/i18n";
 
 // ---------------------------------------------------------------------------
@@ -42,14 +43,6 @@ const EQUIPMENT_OPTIONS: { value: Equipment; label: string }[] = [
   { value: "open_car_hauler", label: "Open Car Hauler" },
   { value: "hotshot_flatbed", label: "Hotshot Flatbed" },
   { value: "sprinter_van", label: "Sprinter Van" },
-];
-
-const US_STATES = [
-  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA",
-  "HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
-  "MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
-  "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC",
-  "SD","TN","TX","UT","VT","VA","WA","WV","WI","WY",
 ];
 
 // ---------------------------------------------------------------------------
@@ -211,9 +204,7 @@ export default function DriverLoadCreatePage() {
                   <SelectValue placeholder="Select state" />
                 </SelectTrigger>
                 <SelectContent>
-                  {US_STATES.map((st) => (
-                    <SelectItem key={st} value={st}>{st}</SelectItem>
-                  ))}
+                  <JurisdictionOptions />
                 </SelectContent>
               </Select>
             </div>
@@ -244,9 +235,7 @@ export default function DriverLoadCreatePage() {
                   <SelectValue placeholder="Select state" />
                 </SelectTrigger>
                 <SelectContent>
-                  {US_STATES.map((st) => (
-                    <SelectItem key={st} value={st}>{st}</SelectItem>
-                  ))}
+                  <JurisdictionOptions />
                 </SelectContent>
               </Select>
             </div>

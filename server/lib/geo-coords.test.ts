@@ -114,5 +114,24 @@ assert(
 assert("null city + unknown state → null", geocodeCityState(null, "ZZ") === null);
 assert("blank everything → null", geocodeCityState("", "") === null);
 
+// ---------------------------------------------------------------------------
+// Canada (Phase 1): provinces + major CA metros must resolve, not fall to (0,0).
+// ---------------------------------------------------------------------------
+const toronto = geocodeCityState("Toronto", "ON");
+assert("Toronto, ON → ~43.65,-79.38", !!toronto && near(toronto.lat, 43.65) && near(toronto.lng, -79.38), JSON.stringify(toronto));
+const windsor = geocodeCityState("Windsor", "ON");
+assert("Windsor, ON → ~42.31,-83.04 (auto corridor)", !!windsor && near(windsor.lat, 42.31) && near(windsor.lng, -83.04), JSON.stringify(windsor));
+const montreal = geocodeCityState("Montreal", "QC");
+assert("Montreal, QC → ~45.50,-73.57", !!montreal && near(montreal.lat, 45.50) && near(montreal.lng, -73.57), JSON.stringify(montreal));
+// province code lowercase normalizes to the same hit
+const torLower = geocodeCityState("toronto", "on");
+assert("'toronto','on' → same Toronto hit", !!torLower && !!toronto && torLower.lat === toronto.lat && torLower.lng === toronto.lng);
+// unknown CA city in a known province → province centroid (NOT null / 0,0)
+const someOn = geocodeCityState("Tinyville", "ON");
+assert("unknown ON city → ON centroid (not null/0,0)", !!someOn && near(someOn.lat, 44.5) && near(someOn.lng, -79.5), JSON.stringify(someOn));
+// spelled-out province name resolves via STATE_NAME_TO_CODE
+const byName = geocodeCityState("Somewhere", "Ontario");
+assert("province name 'Ontario' → ON centroid", !!byName && near(byName.lat, 44.5) && near(byName.lng, -79.5), JSON.stringify(byName));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

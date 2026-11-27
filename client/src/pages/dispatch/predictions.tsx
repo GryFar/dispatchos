@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { JurisdictionOptions } from "@/components/JurisdictionOptions";
 import {
   Dialog,
   DialogContent,
@@ -306,13 +307,6 @@ function WatchCard({
   );
 }
 
-const US_STATES = [
-  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
-  "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
-  "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT",
-  "VA","WA","WV","WI","WY",
-];
-
 const EQUIPMENT_OPTIONS = [
   "enclosed_car_hauler",
   "open_car_hauler",
@@ -385,11 +379,7 @@ function AddWatchDialog({
                   <SelectValue placeholder="—" />
                 </SelectTrigger>
                 <SelectContent className="max-h-60">
-                  {US_STATES.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {s}
-                    </SelectItem>
-                  ))}
+                  <JurisdictionOptions />
                 </SelectContent>
               </Select>
             </div>
@@ -400,11 +390,7 @@ function AddWatchDialog({
                   <SelectValue placeholder="—" />
                 </SelectTrigger>
                 <SelectContent className="max-h-60">
-                  {US_STATES.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {s}
-                    </SelectItem>
-                  ))}
+                  <JurisdictionOptions />
                 </SelectContent>
               </Select>
             </div>

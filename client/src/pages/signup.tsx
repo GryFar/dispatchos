@@ -29,7 +29,7 @@ import { AuthShell } from "./login";
  *
  * URL params: ?code=DOS-XXXX-... — пред-заполнение поля инвайт-кода (из admin-сгенерированной ссылки)
  *
- * 2026-05-27 hotfix: i18n-ified after Vlad's RU/EN coverage report.
+ * 2026-05-27 hotfix: i18n-ified after the RU/EN coverage report.
  */
 
 const buildSchema = (t: (key: string) => string) =>

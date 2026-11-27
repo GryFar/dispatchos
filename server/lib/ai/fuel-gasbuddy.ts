@@ -13,7 +13,7 @@
 // module is written defensively — Chrome UA, throttle, cache, and a clean null/
 // empty fallback on any block — but it is BEST-EFFORT, not a guarantee. For
 // production reliability you likely need a headless browser (playwright) or a
-// paid fuel API. Nikita is layering an EIA fallback on top; this is the
+// paid fuel API. The owner is layering an EIA fallback on top; this is the
 // opportunistic crowdsource-grade source, not the source of truth.
 
 import { fetchWithTimeout } from "../fetch-timeout";
@@ -184,7 +184,7 @@ function parseGasBuddyHtml(html: string, fallbackLat: number, fallbackLng: numbe
       stationName: name,
       stationBrand: name ? normalizeBrand(name) : null,
       // Without per-station geocoding in the initial HTML we attribute the
-      // query coordinate; Nikita can geocode via place lookup downstream.
+      // query coordinate; the caller can geocode via place lookup downstream.
       stationLat: fallbackLat,
       stationLng: fallbackLng,
       address,

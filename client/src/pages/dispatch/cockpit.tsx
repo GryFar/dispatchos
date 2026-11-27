@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import type { Load } from "@shared/schema";
 import { apiJson, ApiError } from "@/lib/queryClient";
-import { formatMoney, formatMiles, formatMc } from "@/lib/format";
+import { formatMoney, formatMiles, formatCarrierId } from "@/lib/format";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/dispatch/StatusBadge";
@@ -34,6 +34,7 @@ interface CockpitCarrier {
   id: string;
   name: string;
   mc: string;
+  country?: "US" | "CA" | null;
   equipment: string;
   status: string | null;
   locationCity: string | null;
@@ -223,7 +224,7 @@ function CarrierCard({ carrier }: { carrier: CockpitCarrier }) {
           </p>
           <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
             {carrier.driverName ? `${carrier.name} - ` : ""}
-            <span className="font-mono">{formatMc(carrier.mc)}</span>
+            <span className="font-mono">{formatCarrierId(carrier.mc, carrier.country)}</span>
           </p>
         </div>
         <StatusBadge variant={statusVariant(carrier.status)} className="shrink-0">

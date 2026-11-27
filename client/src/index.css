@@ -388,7 +388,7 @@
 /* ===========================================================================
  * Phase 4 — driver/dispatcher portal theme override (orange accent).
  *
- * Per Vlad's Q1 answer (Phase 4 P0 kickoff): admin portal stays on the green
+ * Per the backend dev's Q1 answer (Phase 4 P0 kickoff): admin portal stays on the green
  * Phase 2 palette in this PR. Driver shell wraps its tree in
  *   <div className="dark theme-orange">
  * which inherits all .dark tokens above and selectively overrides the brand

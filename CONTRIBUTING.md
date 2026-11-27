@@ -2,13 +2,15 @@
 
 ## Team
 
-| Member | Telegram | GitHub | Area | TZ |
-|---|---|---|---|---|
-| Founder | @addictwests | GryFar | PM, Phase 5 portals | US ET (FL) |
-| Vlad | @valaskes | Snapakdominator | Backend, Admin portal | Odessa, UA |
-| Gena | @tikemyson228 | (TBD) | Design / QA | Canada |
-| Claude (Vlad's) | — | — | Vlad's code agent | — |
-| Computer | @DispatchOS_Computer_Bot | — | This agent | — |
+| Role | Area |
+|---|---|
+| Founder / PM | Product decisions, Phase 5 portals |
+| Backend dev | Backend, Admin portal |
+| Design / QA | Design, QA |
+| Code agent | AI pair for the backend dev |
+| Computer | This agent |
+
+_Contacts (Telegram / GitHub handles) live in the team chat, not in this repo._
 
 ## Branch Strategy
 
@@ -42,7 +44,7 @@ If you change it:
 
 ## Coordination with Computer
 
-Computer (`@DispatchOS_Computer_Bot` / tag `Перплексити`) reads the chat. Tag him for:
-- `@Перплексити прогони smoke на phase1` — run smoke against a backend
-- `@Перплексити проверь contract` — diff schema.ts vs real endpoint responses
-- `@Перплексити собери клиента` — generate TS client from OpenAPI
+The Computer agent reads the team chat. Tag it for:
+- `прогони smoke на phase1` — run smoke against a backend
+- `проверь contract` — diff schema.ts vs real endpoint responses
+- `собери клиента` — generate TS client from OpenAPI

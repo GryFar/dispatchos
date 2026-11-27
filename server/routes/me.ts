@@ -723,7 +723,7 @@ export function registerMeRoutes(app: Express): void {
   // Only drivers have a status. We deliberately 400 (not 403) on admin or
   // dispatcher hitting this — requireRole('driver') already 403s for those
   // roles, but if Phase 5 ever loosens the gate (e.g. an "act-as" admin
-  // tool), this defensive check stays correct. Vlad confirmed in the Q-thread
+  // tool), this defensive check stays correct. Confirmed in the Q-thread
   // follow-up: explicit 400 > silent ignore.
   // -------------------------------------------------------------------------
   app.post(

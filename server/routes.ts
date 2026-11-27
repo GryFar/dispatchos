@@ -41,6 +41,7 @@ import {
 import { localDriveRoot, storage, uploadsRoot } from "./storage";
 import { registerLegalRoutes } from "./static";
 import { assertSafeOutboundUrl } from "./lib/url-guard";
+import { normalizeNsc } from "./lib/nsc";
 import { fetchWithTimeout } from "./lib/fetch-timeout";
 import { sanitizePathSegment, isWithinDir } from "./lib/safe-path";
 import { upload } from "./upload";
@@ -1807,11 +1808,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (progress?.completedAt && !user.linkedClientId) {
       const persona = (progress.data as { persona?: unknown })?.persona;
       if (persona === "owner_operator" || persona === "fleet" || persona === "enterprise") {
-        const d = progress.data as { companyName?: string; planTier?: string };
+        const d = progress.data as { companyName?: string; planTier?: string; country?: unknown };
         const result = storage.provisionCarrierFromOnboarding(user.id, {
           persona,
           companyName: d.companyName,
           planTier: d.planTier,
+          // Canada support: same whitelist as the completion path above.
+          country: d.country === "CA" ? "CA" : "US",
         });
         if ("id" in result) {
           storage.audit("onboarding.carrier_self_healed", "user", user.id, {
@@ -1851,8 +1854,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // held by a different account blocks the save — stops a single carrier
     // from spinning up unlimited free trials under the same MC.
     const incomingMc = (body.data as { mc?: unknown } | undefined)?.mc;
+    // Canada support: an NSC carrier claims in its OWN registry namespace
+    // ("NSC-<digits>", see server/lib/nsc.ts) so it can never collide with a US
+    // MC of the same digits under the per-key uniqueness gate (V4-011).
+    const isCaCarrier = (body.data as { country?: unknown } | undefined)?.country === "CA";
     if (typeof incomingMc === "string" && incomingMc.trim()) {
-      const normalized = normalizeMc(incomingMc);
+      const normalized = isCaCarrier ? normalizeNsc(incomingMc) : normalizeMc(incomingMc);
 
       // Hard reject: if FMCSA is configured and reports this docket has no
       // active operating authority, block the save even for a free MC — a
@@ -1860,7 +1867,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // trial. Graceful: no key / FMCSA down / docket not found => skip the
       // check (the uniqueness claim below still applies).
       const fmcsaKey = getIntegrationValue("fmcsa", "FMCSA_WEB_KEY") ?? process.env.FMCSA_WEBKEY;
-      if (fmcsaKey) {
+      // FMCSA/SAFER is US-only; a Canadian NSC will never resolve there, so skip
+      // the authority hard-reject for CA carriers. The uniqueness claim below
+      // still runs in the NSC namespace.
+      if (!isCaCarrier && fmcsaKey) {
         const carrier = await fetchByMc(normalized, { webKey: fmcsaKey });
         if (
           carrier &&
@@ -1960,7 +1970,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Provision the carrier. If it fails, do NOT mark onboarding complete.
       if (!user.linkedClientId) {
-        const d = (body.data ?? {}) as { companyName?: string; planTier?: string };
+        const d = (body.data ?? {}) as { companyName?: string; planTier?: string; country?: unknown };
         // Anti mass-assignment: data is an unvalidated bag (updateOnboardingProgressSchema
         // types it as z.record(string, unknown)). A self-serve owner-operator could
         // POST planTier:'enterprise' and get the full enterprise entitlement free.
@@ -1988,6 +1998,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           persona: dPersona,
           companyName: d.companyName,
           planTier: safeTier,
+          // Canada support: whitelist country from the unvalidated data bag —
+          // only "CA" flips it; anything else falls back to US.
+          country: d.country === "CA" ? "CA" : "US",
         });
         if (!("id" in result) && result.skipped !== "already_linked") {
           storage.audit("onboarding.provision_failed", "user", user.id, {

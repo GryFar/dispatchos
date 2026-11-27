@@ -18,6 +18,7 @@ import {
 import type { Client, Equipment } from "@shared/schema";
 import { formatClientDisplay } from "@shared/format-client";
 import { apiJson } from "@/lib/queryClient";
+import { formatCarrierId } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { JURISDICTION_CODES } from "@shared/jurisdictions";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
@@ -61,14 +63,6 @@ const MPG_DEFAULTS: Record<Equipment, number> = {
   hotshot_flatbed: 12.0,
   sprinter_van: 14.0,
 };
-
-const US_STATES = [
-  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
-  "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
-  "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
-  "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
-  "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-];
 
 type TabKey = "profile" | "location" | "stats" | "fuel" | "ifta" | "safety" | "clearinghouse";
 
@@ -145,7 +139,7 @@ export default function ClientDetailPage() {
               {formatClientDisplay(client as any)}
             </h1>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              MC {client.mc} ·{" "}
+              {formatCarrierId(client.mc, client.country)} ·{" "}
               {EQUIPMENT_OPTIONS.find((e) => e.value === client.equipment)?.label ?? client.equipment}
             </p>
           </div>
@@ -166,12 +160,19 @@ export default function ClientDetailPage() {
         <TabButton active={tab === "ifta"} onClick={() => setTab("ifta")}>
           IFTA
         </TabButton>
-        <TabButton active={tab === "safety"} onClick={() => setTab("safety")}>
-          Safety
-        </TabButton>
-        <TabButton active={tab === "clearinghouse"} onClick={() => setTab("clearinghouse")}>
-          D&A
-        </TabButton>
+        {/* Safety + D&A are US-only FMCSA panels (SAFER safety rating + the Drug &
+            Alcohol Clearinghouse). A Canadian carrier has no US MC docket, so both
+            are permanently empty for them — hide rather than show blank tabs. */}
+        {client.country !== "CA" && (
+          <>
+            <TabButton active={tab === "safety"} onClick={() => setTab("safety")}>
+              Safety
+            </TabButton>
+            <TabButton active={tab === "clearinghouse"} onClick={() => setTab("clearinghouse")}>
+              D&A
+            </TabButton>
+          </>
+        )}
         <TabButton active={tab === "stats"} onClick={() => setTab("stats")}>
           {t("admin.clientDetail.tabStats")}
         </TabButton>
@@ -181,8 +182,8 @@ export default function ClientDetailPage() {
       {tab === "location" && <LocationTab client={client} />}
       {tab === "fuel" && <FuelTab client={client} />}
       {tab === "ifta" && <IftaTab client={client} />}
-      {tab === "safety" && <SafetyTab client={client} />}
-      {tab === "clearinghouse" && <ClearinghouseTab client={client} />}
+      {tab === "safety" && client.country !== "CA" && <SafetyTab client={client} />}
+      {tab === "clearinghouse" && client.country !== "CA" && <ClearinghouseTab client={client} />}
       {tab === "stats" && <StatsTab client={client} />}
     </div>
   );
@@ -225,6 +226,9 @@ function ProfileTab({ client }: { client: Client }) {
   // local form state (uncontrolled через React state — react-hook-form для такой
   // мульти-секционной формы избыточен)
   const [form, setForm] = useState({
+    // Canada support: carrier country (US default). Drives NSC-vs-MC labeling
+    // and hides US-only FMCSA panels. Persists via PATCH /api/admin/clients/:id.
+    country: (client.country ?? "US") as "US" | "CA",
     name: client.name,
     // Henry QA Bug #6+7 — contact person fields
     contactPersonName: (client as any).contactPersonName ?? "",
@@ -275,6 +279,7 @@ function ProfileTab({ client }: { client: Client }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     setForm({
+      country: (client.country ?? "US") as "US" | "CA",
       name: client.name,
       // Henry QA Bug #6+7 — contact person fields
       contactPersonName: (client as any).contactPersonName ?? "",
@@ -381,6 +386,7 @@ function ProfileTab({ client }: { client: Client }) {
     }
 
     const patch: Partial<Client> = {
+      country: form.country,
       name: form.name,
       // Henry QA Bug #6+7 — contact person: send empty string as undefined to clear.
       ...({} as any),
@@ -480,8 +486,25 @@ function ProfileTab({ client }: { client: Client }) {
           <Field label={t("admin.clientDetail.companyNameLabel")}>
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
-          <Field label="MC#">
+          <Field label={form.country === "CA" ? "NSC#" : "MC#"}>
             <Input value={form.mc} onChange={(e) => setForm({ ...form, mc: e.target.value })} />
+          </Field>
+          {/* Canada support: country drives NSC-vs-MC labeling above and hides
+              the US-only FMCSA tabs (Safety / D&A). US is the default for every
+              existing carrier; changing to Canada persists via the profile PATCH. */}
+          <Field label="Country">
+            <Select
+              value={form.country}
+              onValueChange={(v) => setForm({ ...form, country: v as "US" | "CA" })}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="US">United States</SelectItem>
+                <SelectItem value="CA">Canada</SelectItem>
+              </SelectContent>
+            </Select>
           </Field>
           <Field label={t("admin.clientDetail.primaryEquipment")}>
             <Select
@@ -729,7 +752,7 @@ function ProfileTab({ client }: { client: Client }) {
               {t("admin.clientDetail.avoidStates", { count: form.avoidStates.length })}
             </Label>
             <div className="grid grid-cols-5 gap-1 sm:grid-cols-10">
-              {US_STATES.map((st) => (
+              {JURISDICTION_CODES.map((st) => (
                 <button
                   key={st}
                   type="button"

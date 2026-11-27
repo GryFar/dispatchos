@@ -30,7 +30,7 @@
 
 import { storage } from "../storage";
 
-/** US state bounding boxes (approximate, contiguous 48 + AK + HI). */
+/** US state + Canadian province/territory bounding boxes (approximate). */
 const US_STATE_BBOX: Record<string, [number, number, number, number]> = {
   // [minLat, maxLat, minLng, maxLng]
   AL: [30.14, 35.01, -88.47, -84.89],
@@ -84,6 +84,25 @@ const US_STATE_BBOX: Record<string, [number, number, number, number]> = {
   WI: [42.49, 47.30, -92.89, -86.25],
   WY: [40.99, 45.01, -111.06, -104.05],
   DC: [38.79, 38.99, -77.12, -76.91],
+  // Canada — provinces + territories. IFTA covers US + Canada, so a US carrier
+  // running into Canada must report province miles. NOTE: these boxes overlap the
+  // US border-state boxes; lookupState returns the SMALLEST-area match, so a point
+  // in the immediate border strip (e.g. Windsor ON, across the river from Detroit)
+  // can attribute to the US state — acceptable for the MVP bbox approach (the
+  // carrier signs/adjusts the quarterly return; point-in-polygon is the real fix).
+  AB: [48.99, 60.00, -120.00, -110.00],
+  BC: [48.30, 60.00, -139.06, -114.05],
+  MB: [48.99, 60.00, -102.00, -89.00],
+  NB: [44.60, 48.07, -69.05, -63.77],
+  NL: [46.60, 60.40, -67.80, -52.60],
+  NS: [43.42, 47.03, -66.40, -59.75],
+  NT: [60.00, 78.80, -136.50, -102.00],
+  NU: [51.60, 83.10, -120.00, -61.00],
+  ON: [41.66, 56.86, -95.16, -74.34],
+  PE: [45.95, 47.06, -64.42, -61.97],
+  QC: [44.99, 62.59, -79.76, -57.10],
+  SK: [48.99, 60.00, -110.00, -101.36],
+  YT: [60.00, 69.65, -141.00, -123.80],
 };
 
 /**

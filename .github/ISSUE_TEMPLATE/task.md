@@ -23,4 +23,4 @@ labels: task
 <!-- What blocks this? What does this unblock? -->
 
 ## Owner
-<!-- @GryFar / @vlad-handle / etc -->
+<!-- GitHub handle of the area owner -->

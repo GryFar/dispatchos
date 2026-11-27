@@ -1,4 +1,4 @@
-# Phase 3 — Prompt для Claude (Влад)
+# Phase 3 — Prompt для Claude (backend)
 
 **Скопируй этот промт в Claude / Cursor когда сядешь делать driver + dispatcher porals.**
 
@@ -113,10 +113,10 @@ All endpoints REQUIRE `req.user.role IN ('dispatcher', 'admin')` AND `enforceTen
 1. Create a feature branch `phase3-driver-portal` from `develop`.
 2. Build driver portal first (3.1), open PR for review.
 3. After merge, branch `phase3-dispatcher-portal` from `develop`, build 3.2.
-4. Merge to `develop` after each PR review by Никита.
+4. Merge to `develop` after each PR review by the owner.
 5. When both are stable on `develop`, branch `release/v1.4.0` → merge to `main` → tag.
 
-When in doubt, ask in the project Telegram chat tagging @addictwests. Don't guess on product decisions.
+When in doubt, ask in the project Telegram chat tagging the founder. Don't guess on product decisions.
 
 ---
 

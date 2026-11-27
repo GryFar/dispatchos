@@ -998,7 +998,7 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<{
       if (!client) return { handled: false, clientId };
       // Stamp the actual failure date so requireActiveBilling can compute the
       // 7-day grace from THIS event, not from trialEndsAt (which could be months
-      // earlier for a long-active carrier — Nikita's 🟡). Only stamp on the FIRST
+      // earlier for a long-active carrier — owner's 🟡). Only stamp on the FIRST
       // failure of a past_due streak: if already past_due, keep the original date
       // so retries don't keep resetting the grace clock.
       const alreadyPastDue =

@@ -226,7 +226,7 @@ app.use("/api", (req, res, next) => {
 //
 // Fix: limiters are ON by default. Office NAT problem is solved via an
 // IP allow-list (DISPATCHOS_RATE_LIMIT_TRUSTED_IPS) rather than disabling
-// the whole protection. Trusted IPs (the team's office, Vlad's home,
+// the whole protection. Trusted IPs (the team's office, a dev's home,
 // etc.) are listed in env, comma-separated; their requests skip both
 // limiters but still go through every other security check.
 //

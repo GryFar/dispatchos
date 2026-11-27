@@ -68,19 +68,22 @@ export function registerAiDraftRoutes(app: Express): void {
         return res.status(404).json({ message: "Load not found" });
       }
 
-      // Quota gate BEFORE the (paid) call, scoped to the load's carrier.
+      // Emergency kill-switch FIRST, so a killed platform surfaces this route's
+      // specific 503 ai_unavailable (its established contract) rather than the
+      // generic quota 429 below. getAiQuotaStatus now ALSO consults the platform
+      // levers centrally (kill + global cap), so either gate prevents the paid
+      // call — but the explicit check here keeps the kill response distinct.
+      if (process.env.DISPATCHOS_AI_KILL === "1" || process.env.DISPATCHOS_AI_KILL === "true") {
+        return res.status(503).json({ message: "AI draft unavailable", code: "ai_unavailable" });
+      }
+
+      // Quota gate BEFORE the (paid) call, scoped to the load's carrier. This
+      // also enforces the platform global-cap centrally (getAiQuotaStatus reports
+      // no capacity when the daily ceiling is reached), so a capped platform 429s
+      // here without calling the model.
       const quota = storage.getAiQuotaStatus(me.id, undefined, clientId);
       if (quota.remainingToday <= 0 && quota.credits <= 0) {
         return res.status(429).json(QUOTA_EXHAUSTED);
-      }
-
-      // Emergency kill-switch. getAiQuotaStatus above reflects only the per-user
-      // daily count, NOT the platform DISPATCHOS_AI_KILL lever — that is enforced
-      // in consumeAiQuota, which runs AFTER the paid model call. Check it here so
-      // flipping the kill-switch during a cost incident PREVENTS the call instead
-      // of paying for it and merely refusing to record the spend.
-      if (process.env.DISPATCHOS_AI_KILL === "1" || process.env.DISPATCHOS_AI_KILL === "true") {
-        return res.status(503).json({ message: "AI draft unavailable", code: "ai_unavailable" });
       }
 
       const lane = storage.getLaneAvgPpm(load.originState, load.destinationState);
