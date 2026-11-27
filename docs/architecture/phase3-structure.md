@@ -1,6 +1,6 @@
 # Phase 3 — Driver & Dispatcher Portals: Structure Brief
 
-**Готовится к созвону Никита ↔ Влад.**
+**Готовится к созвону owner ↔ backend dev.**
 Цель документа: зафиксировать структуру до начала вёрстки чтобы не переделывать.
 База: [`role-matrix.md`](./role-matrix.md) — роли, permissions, endpoints уже определены.
 
@@ -198,4 +198,4 @@ POST  /api/dispatch/leads/:id/approve — генерит invite и шлёт emai
 
 ---
 
-*Документ для синхронизации Никита ↔ Влад. Правки приветствуются — рисуйте wireframes / ставьте комменты прямо в файл.*
+*Документ для синхронизации owner ↔ backend dev. Правки приветствуются — рисуйте wireframes / ставьте комменты прямо в файл.*

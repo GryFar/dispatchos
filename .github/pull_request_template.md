@@ -26,4 +26,4 @@
 - [ ] Updated relevant `README.md`(s)
 
 ## Reviewer
-<!-- @GryFar / @vlad-handle / etc -->
+<!-- GitHub handle of the area owner -->

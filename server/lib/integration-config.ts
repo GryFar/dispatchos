@@ -109,7 +109,7 @@ export function invalidateIntegrationConfigCache(
 
 /**
  * Source discriminator for the admin UI — lets the page show
- * "from database (set by Никита 5 min ago)" vs "from Fly secret".
+ * "from database (set by an admin 5 min ago)" vs "from Fly secret".
  */
 export function getIntegrationValueSource(
   integrationKey: string,

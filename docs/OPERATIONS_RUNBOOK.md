@@ -1,8 +1,8 @@
 # DispatchOS Operations Runbook
 
-**Aудитория:** разработчики DispatchOS (в первую очередь Влад).
+**Aудитория:** разработчики DispatchOS.
 **Цель:** убрать любые блокеры — каждый «как сделать X» здесь, не в TG.
-**Поддерживается:** Никита + AI ассистент. PR'ы welcome.
+**Поддерживается:** владелец продукта + AI ассистент. PR'ы welcome.
 
 ---
 
@@ -16,7 +16,7 @@
 | Fly app | `dispatchos-demo` |
 | Default branch | `develop` (auto-deploy при push) |
 | Live tracker | [Issue #48](https://github.com/GryFar/dispatchos/issues/48) |
-| Markdown docs | `/docs/` + workspace y Никиты |
+| Markdown docs | `/docs/` + приватный workspace владельца |
 
 ---
 
@@ -135,7 +135,7 @@ flyctl secrets set DISPATCHOS_RATE_LIMIT=on DISPATCHOS_AUTH_RATE_LIMIT=on -a dis
 4. Если код неверный → **401 + `{message: "Invalid 2FA token", code: "totp_invalid"}`**
 5. Audit лог пишет `auth.login_failed` с `reason: "totp_required" | "bad_totp"`
 
-**TOTP replay protection (#75):** `lastUsedTotpCounter` хранится в `users` таблице. Counter monotonically increases. Re-using старый код → reject. **В smoke**: для re-login в том же временном окне инкрементируй counter руками (`counter + 1`) — это уже сделано в Владовом smoke.mjs fix.
+**TOTP replay protection (#75):** `lastUsedTotpCounter` хранится в `users` таблице. Counter monotonically increases. Re-using старый код → reject. **В smoke**: для re-login в том же временном окне инкрементируй counter руками (`counter + 1`) — это уже сделано в smoke.mjs fix.
 
 **TOTP window:** ±1 step (30s). До Audit High #12 было ±2.
 
@@ -153,13 +153,13 @@ npm run smoke
 npm run smoke -- --keep-db
 ```
 
-### 5.2 Известные требования (полные после Владова фикса)
+### 5.2 Известные требования (полные после фикса)
 
 - `DISPATCHOS_SESSION_SECRET` в env (не дефолтный)
 - `COOKIE_SECURE=false` (нет TLS на localhost)
 - `Origin` header в каждом запросе (CSRF guard #90 SameSite=Strict + Origin check)
 - Для re-login в том же временном окне: TOTP counter+1 (Audit High #11 replay)
-- Порядок инициализации БД: `ensureDriverDocumentsColumns()` ПОСЛЕ `CREATE TABLE` (фикс в Владовом PR)
+- Порядок инициализации БД: `ensureDriverDocumentsColumns()` ПОСЛЕ `CREATE TABLE` (фикс в PR backend-разработчика)
 - **Admin GET удалённого user'а** (smoke.mjs:766-768) возвращает row с `deletedAt` — это работает после #103
 
 ### 5.3 Что smoke покрывает (high-level)
@@ -181,7 +181,7 @@ npm run smoke -- --keep-db
 | `CSRF token mismatch` или 403 на mutate | Нет Origin header в fetch | Добавь `Origin: http://localhost:5000` |
 | `Invalid 2FA token` на re-login | TOTP replay (counter не увеличен) | Counter+1 в smoke.mjs |
 | Admin GET deleted user → 404 | Запустил smoke на older `develop` без #103 | `git pull --ff-only origin develop` |
-| `no such table: driver_documents` | DB init order | Уже починено Владом в его PR |
+| `no such table: driver_documents` | DB init order | Уже починено в PR backend-разработчика |
 | Rate-limit 429 на 50+ запросов | Случайно включил `DISPATCHOS_RATE_LIMIT=on` | Убери из env |
 
 ---
@@ -254,11 +254,11 @@ flyctl deploy --image registry.fly.io/dispatchos-demo:deployment-XXXXX --app dis
 
 | Раунд | Total | Critical | High | Medium/Low |
 |---|---|---|---|---|
-| **v1** | 51 | 7/7 done | 13/13 done (включая GPS #13 и billing off-by-one #14 от Влада) | back-fill идёт |
+| **v1** | 51 | 7/7 done | 13/13 done (включая GPS #13 и billing off-by-one #14 от backend-разработчика) | back-fill идёт |
 | **v2** | 47 | 4/4 done (#82) | 7/13 quick wins (#85) | 6 Medium/Low в backlog |
 | **v3** | 47 | 5/5 done (#90) | 2/13 done (#92 + #102) | V3-7, V3-9..V3-19 в backlog |
 
-Файлы: `DispatchOS_Bug_Audit_2026-05-26.md`, `DispatchOS_Bug_Audit_v2_2026-05-26.md`, `DispatchOS_Security_Audit_v3_2026-05-26.md` в workspace Никиты — спроси если нужно.
+Файлы: `DispatchOS_Bug_Audit_2026-05-26.md`, `DispatchOS_Bug_Audit_v2_2026-05-26.md`, `DispatchOS_Security_Audit_v3_2026-05-26.md` в приватном workspace владельца — спроси если нужно.
 
 ---
 
@@ -266,7 +266,7 @@ flyctl deploy --image registry.fly.io/dispatchos-demo:deployment-XXXXX --app dis
 
 Из handoff документа в порядке полезности:
 
-1. **Anti-fraud trial защита** — ✅ Влад начал (`feat/anti-fraud-mc-unique`)
+1. **Anti-fraud trial защита** — ✅ начато backend-разработчиком (`feat/anti-fraud-mc-unique`)
 2. **FMCSA SAFER autofill в wizard step 2** — комбинируй с #1
 3. **Counterparty Vetting MVP** — broker пробив, design в `DispatchOS_Counterparty_Vetting_Design.md`
 4. **i18n extension** — admin/dispatch/driver shells + TG bot + email templates
@@ -292,10 +292,10 @@ flyctl deploy --image registry.fly.io/dispatchos-demo:deployment-XXXXX --app dis
 
 ## 11. Trouble: Computer Bot не отвечает
 
-AI ассистент (этот runbook писал он) тэгается через `@DispatchOS_Computer_Bot`. Если не отвечает 30+ минут:
-1. Никита спит / занят — у него в кошельке кредиты на бота кончились
+AI ассистент (этот runbook писал он) тэгается в командном чате. Если не отвечает 30+ минут:
+1. Владелец спит / занят — у него кончились кредиты на бота
 2. Сделай сам по runbook'у, заметь в #48 что разрулил
-3. Утром Никита напишет
+3. Утром владелец напишет
 
 ---
 

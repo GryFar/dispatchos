@@ -1,7 +1,7 @@
 // Billing past_due grace-period test (temp DB).
 // Run: npx tsx server/lib/billing-grace.test.ts
 //
-// Nikita: grace was computed from trialEndsAt (could be months before the
+// Owner report: grace was computed from trialEndsAt (could be months before the
 // actual failed payment), instantly read-only-ing a long-active carrier. Now
 // requireActiveBilling prefers pastDueSince (stamped by the Stripe webhook).
 

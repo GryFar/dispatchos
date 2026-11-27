@@ -414,8 +414,8 @@ sqlite.exec("CREATE INDEX IF NOT EXISTS loads_client_booked_idx ON loads(client_
 //                                     values across role changes (cheap, see §2
 //                                     of the Phase 4 handoff Q3 confirmation).
 //
-// Same PRAGMA pattern as ensureLoadBookingColumns: existing DBs (Vlad's
-// dev DB has an admin row already) get ALTERed without dropping data; fresh
+// Same PRAGMA pattern as ensureLoadBookingColumns: existing DBs (a
+// dev DB with an admin row already) get ALTERed without dropping data; fresh
 // DBs would already have the columns from CREATE TABLE — but since CREATE
 // TABLE above is locked to the Phase 1 shape, the ALTER path is the source
 // of truth and runs even on a freshly-created DB. CREATE INDEX must come
@@ -1681,7 +1681,7 @@ export interface PasswordResetTokenRow {
 }
 
 // Phase 6 load_sources row mapper. Keep snake_case → camelCase consistent
-// with how Vlad's admin layer expects to read these.
+// with how the admin layer expects to read these.
 function rowToLoadSource(row: any) {
   return {
     id: row.id as string,
@@ -1846,7 +1846,7 @@ export const storage = {
   // До этого софт-удалённый юзер мог вернуться в session-lookup, TG-bot или
   // login-flow — фактически «un-delete» через бэкдор. listUsers уже был ОК.
   //
-  // 2026-05-27 hotfix (Vlad smoke regression): admin inspection paths need
+  // 2026-05-27 hotfix (smoke regression): admin inspection paths need
   // to see soft-deleted users (audit trail, post-delete UI confirmation).
   // Use `getUserByIdIncludingDeleted` for those. Default `getUserById`
   // STAYS strict — anything auth-adjacent must keep going through it.
@@ -2258,8 +2258,8 @@ export const storage = {
     const timestamp = now();
     const email = input.email.toLowerCase();
     // Phase 4 P0: driver_status column has a DEFAULT, but we set it explicitly
-    // on creation so the value is predictable in tests and audits (Vlad's
-    // request in the Q3 follow-up). For non-driver roles the value is dead
+    // on creation so the value is predictable in tests and audits (per the
+    // backend dev's request in the Q3 follow-up). For non-driver roles the value is dead
     // (toUserPublic skips it).
     sqlite
       .prepare(
@@ -2718,7 +2718,7 @@ export const storage = {
   /** fix/totp-onboarding-verify — stamp totp_confirmed_at for a user who
    *  just entered a valid 6-digit code for the first time.
    *
-   *  Single-use guard (hardening, Nikita's 🟡): the UPDATE is keyed on
+   *  Single-use guard (hardening, owner's 🟡): the UPDATE is keyed on
    *  totp_confirmed_at IS NULL, so only the FIRST confirmation lands. A replayed
    *  pending-confirmation token (which is otherwise a stateless 10-min HMAC)
    *  therefore can't re-run this — firstConfirm is false on any repeat, even

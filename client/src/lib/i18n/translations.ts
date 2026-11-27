@@ -145,7 +145,7 @@ const ru: Dict = {
   "landing.contact.modalTitle": "Связаться с DispatchOS",
   "landing.contact.modalSubtitle": "Заполните форму — мы свяжемся в течение рабочего дня.",
   "landing.contact.nameLabel": "Имя",
-  "landing.contact.namePlaceholder": "Никита",
+  "landing.contact.namePlaceholder": "Иван",
   "landing.contact.emailLabel": "Email *",
   "landing.contact.noteLabel": "Сообщение",
   "landing.contact.notePlaceholder2": "Расскажите про вашу команду и текущую TMS / процесс",

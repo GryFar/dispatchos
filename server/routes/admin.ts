@@ -411,7 +411,7 @@ export function registerAdminRoutes(app: Express): void {
     "/api/admin/users/:id",
     admin,
     ah((req, res) => {
-      // 2026-05-27 (Vlad smoke regression) — admin must be able to inspect
+      // 2026-05-27 (smoke regression) — admin must be able to inspect
       // soft-deleted users (audit trail, post-delete confirmation). Use the
       // including-deleted variant; toUserPublic exposes deletedAt to the
       // client so the admin UI can show a «Удалён» badge.
@@ -2439,7 +2439,7 @@ export function registerAdminRoutes(app: Express): void {
   // Partial update of a client profile. Used by the admin profile editor
   // to fill in smart-matching fields (equipmentTypes, maxGvwLbs,
   // payCentsPerMile, blockedBrokers, hoursAvailable, etc) added by
-  // PR #38 — Никита's scoreLoadForClient reads these but currently
+  // PR #38 — scoreLoadForClient reads these but currently
   // there is no UI to set them.
   //
   // Behavior:
@@ -2569,7 +2569,7 @@ export function registerAdminRoutes(app: Express): void {
 
       // MPG (only if we have enough data to be meaningful).
       const actualMpg = gallons > 0.5 && totalMiles > 10 ? totalMiles / gallons : null;
-      // avgMpg живёт в client payload (добавлен в clientSchema Владом, fuel task #2).
+      // avgMpg живёт в client payload (добавлен в clientSchema, fuel task #2).
       // Плоская колонка clients.avg_mpg (из #61) пока не используется —
       // оставлена для будущих SQL agg на больших датасетах.
       const expectedMpg = (client as { avgMpg?: number }).avgMpg ?? null;

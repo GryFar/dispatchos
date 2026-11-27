@@ -290,7 +290,7 @@ For the **second AI** (dispatcher + driver portals, later):
 - **Email for the first admin** when bootstrapping with username `owner`
   (which is what the smoke test does): becomes `owner@dispatchos.local`.
   For your real first admin, when you bootstrap via UI later, pass
-  `pily90371@gmail.com` directly.
+  your own email address directly.
 
 ---
 

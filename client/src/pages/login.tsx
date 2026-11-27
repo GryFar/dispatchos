@@ -33,7 +33,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
  *   ?reason=expired → "сессия истекла, войдите снова"
  *   ?redirect=/admin/users → куда после логина (вместо дефолтного)
  *
- * 2026-05-27 hotfix (Vlad report):
+ * 2026-05-27 hotfix (QA report):
  *  - Bug 1: rate-limit responses (HTTP 429) were swallowed by the catch-all
  *    branch and surfaced as "Неверный email или пароль", which is exactly
  *    the wrong UX when password-manager autofill happens to mis-fire a few

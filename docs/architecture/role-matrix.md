@@ -27,13 +27,13 @@ The same `Load` in the Client layer shows only status, rate, pickup/drop, requir
 
 | Prefix | Required role | Owner |
 |---|---|---|
-| `/api/admin/*` | `admin` | Vlad |
-| `/api/dispatch/*` | `dispatcher` (or `admin`) | Vlad (Phase 3) → Founder (Phase 5 portal) |
-| `/api/me/*` | any authenticated | Vlad (skeleton) → Founder (driver portal data) |
+| `/api/admin/*` | `admin` | Backend dev |
+| `/api/dispatch/*` | `dispatcher` (or `admin`) | Backend dev (Phase 3) → Founder (Phase 5 portal) |
+| `/api/me/*` | any authenticated | Backend dev (skeleton) → Founder (driver portal data) |
 | `/api/client/*` *(future)* | `client` | Second AI |
-| `/api/auth/*` | public | Vlad |
-| `/api/webhooks/*` | secret-token header | Vlad |
-| `/api/health` | public | Vlad |
+| `/api/auth/*` | public | Backend dev |
+| `/api/webhooks/*` | secret-token header | Backend dev |
+| `/api/health` | public | Backend dev |
 
 ## Tenant Scope (shared endpoints)
 

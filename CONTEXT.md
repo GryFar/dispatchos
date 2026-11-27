@@ -3,7 +3,7 @@
 ## What this is
 AI-powered dispatch/logistics automation for US trucking. Single-LLC SaaS.
 Repo: github.com/GryFar/dispatchos. Active branch: develop.
-Local: C:\Users\pily\Desktop\dispatchos\dispatchos-repo
+Local: <your local clone path>
 DB: dispatchos-unified.db (real data). smoke-*.db are throwaway test DBs.
 
 ## Stack
@@ -46,12 +46,12 @@ trap and the date-only bookedAt convention in any other writer.
 ## Open items
 - #3 detention: bill-endpoint (event->invoice line) NOT written; /detention/upcoming and
   billableDetentionCents contradict on whether an open leg is billable. Product decision
-  needed (Nikita/owner) before coding. Client money — do not write blind.
+  needed (owner) before coding. Client money — do not write blind.
 - ANTHROPIC_API_KEY not set -> dispatcher cockpit AI returns 503 (graceful by design).
   Owner task to set the key; not a code bug.
 - i18n: server has hardcoded RU literals (routes.ts, email.ts, ifta.ts, etc.) not yet in
-  the dictionary — Nikita's zone.
+  the dictionary — the owner's zone.
 
 ## Collaborators
-Owner/PM: Nikita (@GryFar, commits as GryFar). Pushes large feature batches to develop
-(matching engine, GMV/fleet-assignment, load-chaining). Pull before working; he moves fast.
+Owner/PM pushes large feature batches to develop
+(matching engine, GMV/fleet-assignment, load-chaining). Pull before working; it moves fast.

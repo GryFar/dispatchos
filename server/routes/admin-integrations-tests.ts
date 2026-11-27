@@ -1,6 +1,6 @@
 // Integration live-test endpoint.
 //
-// Companion to /api/admin/integrations (read-only status; see Vlad's
+// Companion to /api/admin/integrations (read-only status; see
 // server/lib/integrations.ts). Where the status endpoint says "configured
 // vs not", this one actually fires a network probe at each connector and
 // reports the result.

@@ -870,7 +870,7 @@ export type TotpResumeSetupResponse = z.infer<typeof totpResumeSetupResponseSche
 //               admin via the future POST /api/loads/:id/book hook.
 //   bookedAt  — "YYYY-MM-DD" date-only string. We intentionally drop the
 //               clock + timezone to avoid coordination pain between admins in
-//               FL, devs in Odessa, Canada, etc. If a per-second timestamp is
+//               different regions. If a per-second timestamp is
 //               ever needed, add a second `bookedAtTs` field — don't repurpose
 //               this one.
 //

@@ -1,15 +1,15 @@
 # DispatchOS Migration Plan: v1.2.7 → v1.3.0
 
-**Author:** Vlad
+**Author:** Backend dev
 **Date:** 12 May 2026
 **Status:** In progress
 
-This document captures the full plan posted by Vlad in the `DispatchOSDev` Telegram chat on 12 May 2026.
+This document captures the full plan posted by the backend dev in the team Telegram chat on 12 May 2026.
 
 ## Team Roles
 
 - **Founder (PM):** sets tasks, accepts deliverables, runs smoke tests, passes files between AIs.
-- **Vlad (Claude — backend):** splits the monolith, builds auth with roles, admin API, migrations, tests.
+- **Backend dev (Claude — backend):** splits the monolith, builds auth with roles, admin API, migrations, tests.
 - **Claude Design (separate chat — frontend):** design system, login/signup/forgot-password, all Admin Portal UI, API spec.
 - **Second AI (separate chat — Phase 5):** Dispatcher + Driver portals (UI and API).
 
@@ -26,11 +26,11 @@ This document captures the full plan posted by Vlad in the `DispatchOSDev` Teleg
 
 **Deliverable:** fixed baseline + answers to two questions.
 
-### Phase 1 — Backend foundation (2-3 days, Vlad)
+### Phase 1 — Backend foundation (2-3 days, backend dev)
 
 **Goal:** turn single-owner backend into multi-user with roles, without breaking any existing endpoint.
 
-What Vlad does:
+What the backend dev does:
 - Extends `shared/schema.ts`:
   - `userRoleSchema = z.enum(["admin","dispatcher","driver"])`
   - `userSchema` — id, email, fullName, role, passwordHash, passwordSalt, totpSecret?, blocked, createdAt, updatedAt
@@ -65,7 +65,7 @@ What Claude Design does:
 - Admin Portal — all 12 screens from spec
 - `admin-api-spec.md` — OpenAPI-style spec of all `/api/admin/*` endpoints
 
-### Phase 3 — Backend refactor (3-4 days, Vlad — parallel with Phase 2)
+### Phase 3 — Backend refactor (3-4 days, backend dev — parallel with Phase 2)
 
 **Goal:** split `routes.ts` (1068 lines) into modules, extract pure functions, implement admin endpoints per Claude Design spec.
 
@@ -82,7 +82,7 @@ What Claude Design does:
 
 ### Phase 4 — Sync & integration (1-2 days, both)
 
-**Goal:** combine Claude Design frontend with Vlad's backend, run end-to-end.
+**Goal:** combine Claude Design frontend with the backend, run end-to-end.
 
 Founder:
 - Takes backend from Phase 3, frontend from Phase 2
@@ -101,7 +101,7 @@ Second AI gets:
 - Final `shared/schema.ts` with roles
 - `dispatchos-v1.3.0-rc1` working build
 - `design-system.md` + Tailwind tokens
-- Doc from Vlad: reserved endpoints (`/api/dispatch/*`, `/api/me/*`), shared endpoints with tenant-scope
+- Doc from the backend dev: reserved endpoints (`/api/dispatch/*`, `/api/me/*`), shared endpoints with tenant-scope
 - Doc from Claude Design: UI patterns, shadcn/ui components already styled
 
 Zone:
